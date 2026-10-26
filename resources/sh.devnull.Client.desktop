@@ -1,0 +1,13 @@
+[Desktop Entry]
+Name=/dev/null
+GenericName=Developer social network
+Comment=Commits, logs, and remotes for developers
+Exec=devnull %u
+Icon=sh.devnull.Client
+Terminal=false
+Type=Application
+StartupNotify=true
+Categories=Network;InstantMessaging;GTK;
+MimeType=x-scheme-handler/devnull;
+Keywords=devnull;git;commit;log;remotes;
+StartupWMClass=sh.devnull.Client

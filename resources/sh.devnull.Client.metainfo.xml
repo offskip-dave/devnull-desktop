@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>sh.devnull.Client</id>
+  <name>/dev/null</name>
+  <summary>A social network for developers</summary>
+  <metadata_license>MIT</metadata_license>
+  <project_license>MIT</project_license>
+  <developer_name>/dev/null community</developer_name>
+  <url type="homepage">https://dev-null.sh</url>
+  <description>
+    <p>
+      Native Linux client for /dev/null. Sign in with GitHub, follow developers,
+      share commits, and push remotes.
+    </p>
+  </description>
+  <launchable type="desktop-id">sh.devnull.Client.desktop</launchable>
+  <provides>
+    <mediatype>x-scheme-handler/devnull</mediatype>
+  </provides>
+  <recommends>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </recommends>
+  <content_rating type="oars-1.1" />
+</component>

@@ -1,0 +1,12 @@
+/target
+**/*.rs.bk
+.flatpak-builder/
+build-dir/
+repo/
+.cargo-home/
+.inkscape-profile/
+*.swp
+*~
+.idea/
+.vscode/
+.env

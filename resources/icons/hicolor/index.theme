@@ -1,0 +1,26 @@
+[Icon Theme]
+Name=hicolor
+Comment=/dev/null icons
+Directories=scalable/actions,scalable/apps,scalable/status
+Hidden=true
+
+[scalable/actions]
+Size=16
+MinSize=8
+MaxSize=512
+Context=Actions
+Type=Scalable
+
+[scalable/apps]
+Size=16
+MinSize=8
+MaxSize=512
+Context=Applications
+Type=Scalable
+
+[scalable/status]
+Size=16
+MinSize=8
+MaxSize=512
+Context=Status
+Type=Scalable

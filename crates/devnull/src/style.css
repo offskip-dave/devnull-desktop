@@ -1,0 +1,2045 @@
+/* DESIGN.md — The Commit Graph.
+   Light tokens are the defaults. Dark @define-color tokens are
+   injected by prefs::reload_css when StyleManager is dark, because
+   GTK @media (prefers-color-scheme) follows the OS, not the app. */
+
+@define-color dn_shell #f6f7f8;
+@define-color dn_surface #ffffff;
+@define-color dn_ink #121417;
+@define-color dn_ink_muted #5b616b;
+@define-color dn_hairline #e1e4e8;
+@define-color dn_rail #d3d7dd;
+@define-color dn_wash #eef0f2;
+@define-color dn_primary #3b6fe0;
+@define-color dn_primary_hover #2e5ccb;
+@define-color dn_primary_soft #e8effc;
+@define-color dn_primary_ink #ffffff;
+@define-color dn_destructive #c92a2a;
+@define-color dn_lane_0 #d9480f;
+@define-color dn_lane_1 #2f9e44;
+@define-color dn_lane_2 #9c36b5;
+@define-color dn_lane_3 #0c8599;
+@define-color dn_lane_4 #c2255c;
+@define-color dn_lane_5 #b7791f;
+
+@define-color window_bg_color #f6f7f8;
+@define-color window_fg_color #121417;
+@define-color view_bg_color #ffffff;
+@define-color view_fg_color #121417;
+@define-color headerbar_bg_color #f6f7f8;
+@define-color headerbar_fg_color #121417;
+@define-color headerbar_border_color #e1e4e8;
+@define-color sidebar_bg_color #f6f7f8;
+@define-color sidebar_fg_color #121417;
+@define-color card_bg_color #ffffff;
+@define-color card_fg_color #121417;
+@define-color popover_bg_color #ffffff;
+@define-color popover_fg_color #121417;
+@define-color dialog_bg_color #ffffff;
+@define-color dialog_fg_color #121417;
+@define-color borders #e1e4e8;
+@define-color accent_bg_color #3b6fe0;
+@define-color accent_fg_color #ffffff;
+@define-color accent_color #3b6fe0;
+@define-color destructive_color #c92a2a;
+
+window {
+  color-scheme: light;
+}
+
+button,
+button *,
+button.flat,
+button.flat *,
+button.suggested-action,
+button.suggested-action *,
+.dn-nav-btn,
+.dn-nav-btn *,
+.dn-tab,
+.dn-tab *,
+.dn-star,
+.dn-star *,
+.dn-action,
+.dn-action *,
+.dn-commit-row,
+.dn-commit-row *,
+.dn-inbox-row,
+.dn-inbox-row *,
+headerbar button,
+headerbar button *,
+.dn-commit-bar-btn,
+.dn-commit-bar-btn *,
+.dn-search-trigger,
+.dn-search-trigger *,
+.dn-rail-avatar,
+.dn-rail-avatar *,
+.dn-emoji-row,
+.dn-emoji-row *,
+.dn-wordmark-btn,
+.dn-wordmark-btn *,
+.dn-user-popover button,
+.dn-user-popover button *,
+.dn-aside-link,
+.dn-aside-link *,
+.dn-aside-icon,
+.dn-aside-icon *,
+.dn-aside-menu-item,
+.dn-aside-menu-item *,
+.dn-lane-option,
+.dn-lane-option *,
+.dn-composer-avatar-btn,
+.dn-composer-avatar-btn *,
+.dn-link-card,
+.dn-link-card *,
+.dn-embed,
+.dn-embed *,
+.dn-images,
+.dn-images *,
+.dn-new-posts,
+.dn-new-posts *,
+.dn-icon-btn,
+.dn-icon-btn *,
+.dn-outline-btn,
+.dn-outline-btn *,
+.dn-follow-btn,
+.dn-follow-btn * {
+  cursor: pointer;
+}
+
+textview,
+textview *,
+textview text,
+entry,
+entry *,
+.dn-composer-text,
+.dn-composer-text * {
+  cursor: text;
+}
+
+window.dn-window {
+  background-color: @dn_shell;
+  color: @dn_ink;
+  font-family: "Geist", "Adwaita Sans", sans-serif;
+  font-size: 15px;
+}
+
+.dn-shell,
+.dn-sidebar {
+  background-color: @dn_shell;
+  color: @dn_ink;
+}
+
+.dn-sidebar {
+  min-width: 256px;
+  max-width: 256px;
+  padding: 12px 12px 16px;
+}
+
+.dn-sidebar.collapsed {
+  min-width: 80px;
+  max-width: 80px;
+  padding: 12px 6px 16px;
+}
+
+.dn-sidebar.collapsed .dn-wordmark-row {
+  padding: 8px 0 16px;
+}
+
+.dn-sidebar.collapsed .dn-nav-btn,
+.dn-sidebar.collapsed .dn-user-menu {
+  padding: 10px;
+  overflow: visible;
+}
+
+.dn-wordmark-row {
+  padding: 8px 12px 16px;
+}
+
+.dn-wordmark-btn {
+  min-height: 0;
+  background: transparent;
+}
+
+.dn-wordmark-btn:hover {
+  background-color: transparent;
+}
+
+.dn-wordmark {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  color: @dn_ink;
+}
+
+.dn-logo-menu {
+  padding: 6px;
+}
+
+.dn-logo-menu button {
+  min-height: 32px;
+}
+
+.dn-user-popover {
+  padding: 6px;
+}
+
+.dn-user-popover button.dn-nav-btn {
+  min-height: 32px;
+  padding: 8px 10px;
+}
+
+.dn-user-menu-header {
+  padding: 6px 8px 8px;
+}
+
+.dn-menu-sep {
+  margin: 4px 0;
+}
+
+.dn-tagline {
+  font-size: 13px;
+  color: @dn_ink_muted;
+}
+
+.dn-aside-links {
+  padding: 8px 20px 20px;
+  background-color: @dn_shell;
+}
+
+.dn-aside-legal {
+  padding-top: 8px;
+}
+
+.dn-feed {
+  background-color: @dn_surface;
+  color: @dn_ink;
+  border-left: 1px solid @dn_hairline;
+  border-right: 1px solid @dn_hairline;
+  min-width: 360px;
+}
+
+.dn-feed list {
+  background-color: transparent;
+  padding: 0;
+  margin: 0;
+}
+
+.dn-feed list > row {
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+  border: none;
+  color: @dn_ink;
+}
+
+.dn-feed list > row:hover,
+.dn-feed list > row:selected,
+.dn-feed list > row:active {
+  background: transparent;
+  box-shadow: none;
+}
+
+.dn-mono {
+  font-family: "Geist Mono", "Adwaita Mono", monospace;
+  font-size: 13px;
+  font-feature-settings: "tnum";
+}
+
+.dn-muted,
+.dn-handle,
+.dn-fatal,
+.dn-placeholder,
+.dn-day {
+  color: @dn_ink_muted;
+}
+
+.dn-handle {
+  font-family: "Geist Mono", "Adwaita Mono", monospace;
+  font-size: 13px;
+}
+
+.dn-fatal {
+  font-family: "Geist Mono", "Adwaita Mono", monospace;
+  font-size: 13px;
+}
+
+.dn-name {
+  font-weight: 600;
+  color: @dn_ink;
+}
+
+.dn-body {
+  font-size: 15px;
+  line-height: 1.625;
+  color: @dn_ink;
+}
+
+.dn-body-focus {
+  font-size: 17px;
+  line-height: 1.375;
+}
+
+.dn-actions {
+  margin-top: 4px;
+}
+
+.dn-action {
+  color: @dn_ink_muted;
+  font-size: 13px;
+  padding: 2px 8px;
+  min-height: 0;
+}
+
+.dn-nav-btn image,
+.dn-action image,
+.dn-composer-icon image,
+headerbar button image {
+  color: inherit;
+}
+
+.dn-action:hover {
+  background-color: @dn_wash;
+  color: @dn_ink;
+}
+
+.dn-replies {
+  color: @dn_primary;
+  font-weight: 500;
+}
+
+.dn-quote {
+  margin-top: 8px;
+  padding: 8px 12px;
+  border: 1px solid @dn_hairline;
+  border-radius: 8px;
+  background-color: @dn_surface;
+}
+
+.dn-skeleton {
+  padding: 8px 0;
+}
+
+.dn-nested {
+  border-left: 1px dashed @dn_hairline;
+  padding-left: 12px;
+}
+
+.dn-commit-row {
+  background: transparent;
+  box-shadow: none;
+}
+
+.dn-commit-content {
+  padding: 12px 16px 12px 0;
+  border-bottom: 1px solid @dn_hairline;
+}
+
+.dn-commit:hover,
+.dn-inbox-row:hover {
+  background-color: @dn_wash;
+}
+
+.dn-rail {
+  min-width: 64px;
+  background: transparent;
+}
+
+.dn-rail.dn-rail-nested {
+  min-width: 28px;
+}
+
+.dn-rail-avatar {
+  padding: 0;
+  min-width: 0;
+  min-height: 0;
+  background: transparent;
+  box-shadow: none;
+  overflow: visible;
+}
+
+.dn-rail-avatar:hover,
+.dn-rail-avatar:active {
+  background: transparent;
+}
+
+.dn-composer {
+  padding: 12px 16px 12px 16px;
+  border-bottom: 1px solid @dn_hairline;
+  background-color: @dn_surface;
+}
+
+.dn-composer.dn-log-composer,
+.dn-log-composer {
+  padding: 0;
+  border-bottom: none;
+}
+
+.dn-log-composer-row {
+  padding: 0;
+  background: transparent;
+}
+
+.dn-composer-body {
+  padding: 8px 16px 8px 0;
+}
+
+.dn-poll-editor,
+.dn-schedule-card {
+  border: 1px solid @dn_hairline;
+  border-radius: 8px;
+  padding: 12px;
+  background-color: @dn_surface;
+}
+
+.dn-schedule-card {
+  background-color: alpha(@dn_wash, 0.45);
+}
+
+.dn-poll-add {
+  margin-top: 8px;
+  color: @dn_primary;
+  min-height: 32px;
+  padding: 4px 8px;
+}
+
+.dn-poll-add:hover {
+  background-color: @dn_primary_soft;
+  color: @dn_primary;
+}
+
+.dn-poll-footer {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid @dn_hairline;
+}
+
+.dn-poll-remove {
+  color: @dn_ink_muted;
+  min-height: 32px;
+  padding: 4px 8px;
+}
+
+.dn-poll-remove:hover {
+  color: @dn_destructive;
+  background-color: transparent;
+}
+
+.dn-inline-reply {
+  padding: 8px 16px 12px 0;
+}
+
+.dn-composer-avatar {
+  background-color: @dn_surface;
+  border-radius: 9999px;
+}
+
+.dn-composer-avatar-btn {
+  padding: 0;
+  min-height: 0;
+  min-width: 0;
+  background: transparent;
+}
+
+.dn-composer-avatar-btn:hover {
+  background-color: transparent;
+}
+
+.dn-composer-input,
+scrolledwindow.dn-composer-input,
+.dn-composer-input > *,
+scrolledwindow.dn-composer-input > * {
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  outline: none;
+  padding: 0;
+  background-color: transparent;
+}
+
+.dn-composer-icon {
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  color: @dn_ink_muted;
+}
+
+.dn-composer-icon.active {
+  background-color: @dn_primary_soft;
+  color: @dn_primary;
+}
+
+.dn-composer-icon:disabled {
+  opacity: 0.4;
+}
+
+.dn-composer-preview {
+  font-size: 17px;
+  line-height: 1.375;
+  padding: 8px 4px;
+  color: @dn_ink;
+}
+
+.dn-user-menu {
+  padding: 8px 12px;
+}
+
+.dn-nav-avatar {
+  min-width: 36px;
+  min-height: 36px;
+}
+
+.dn-settings {
+  background-color: @dn_surface;
+}
+
+.dn-section {
+  padding: 24px 16px;
+  border-bottom: 1px solid @dn_hairline;
+}
+
+.dn-section-title {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  color: @dn_ink;
+}
+
+.dn-section-blurb {
+  margin-top: 4px;
+  max-width: 65ch;
+}
+
+.dn-section-body {
+  margin-top: 20px;
+}
+
+.dn-settings-actions {
+  margin-top: 0;
+}
+
+.dn-fields {
+  border: 1px solid @dn_hairline;
+  border-radius: 8px;
+}
+
+.dn-field-row {
+  padding: 10px 16px;
+  border-bottom: 1px solid @dn_hairline;
+}
+
+.dn-field-row.last {
+  border-bottom: none;
+}
+
+.dn-field-key {
+  min-width: 6.5rem;
+  font-family: "Geist Mono", "Adwaita Mono", monospace;
+  font-size: 13px;
+  color: @dn_ink_muted;
+}
+
+.dn-segmented {
+  border: 1px solid @dn_hairline;
+  border-radius: 8px;
+  padding: 4px;
+}
+
+.dn-segment {
+  padding: 6px 12px;
+  border-radius: 6px;
+  color: @dn_ink_muted;
+}
+
+.dn-segment.active {
+  background-color: @dn_primary_soft;
+  color: @dn_primary;
+}
+
+.dn-code {
+  border: 1px solid @dn_hairline;
+  border-radius: 8px;
+  padding: 8px 12px;
+  background-color: @dn_wash;
+}
+
+.dn-empty {
+  border: 1px dashed @dn_hairline;
+  border-radius: 8px;
+  padding: 24px 16px;
+}
+
+.dn-danger {
+  color: @dn_destructive;
+  border-color: alpha(@dn_destructive, 0.4);
+}
+
+.dn-text-btn {
+  padding: 0;
+  color: @dn_ink_muted;
+  font-size: 13px;
+}
+
+.dn-composer-text,
+.dn-composer-text > text,
+textview.dn-composer-text,
+textview.dn-composer-text text {
+  font-size: 17px;
+  line-height: 1.375;
+  background-color: @dn_surface;
+  color: @dn_ink;
+  caret-color: @dn_primary;
+  padding: 0;
+}
+
+.dn-placeholder {
+  font-size: 14px;
+  padding: 6px 4px 0 2px;
+  margin: 0;
+}
+
+.dn-link-card {
+  border: 1px solid @dn_hairline;
+  border-radius: 8px;
+  padding: 8px;
+  background-color: @dn_surface;
+  min-height: 0;
+}
+
+.dn-link-card:hover,
+.dn-embed-details:hover,
+.dn-embed-audio:hover {
+  background-color: @dn_wash;
+}
+
+.dn-link-thumb {
+  min-width: 80px;
+  min-height: 80px;
+  max-width: 80px;
+  max-height: 80px;
+  border-radius: 6px;
+  background-color: @dn_wash;
+}
+
+.dn-link-title {
+  font-size: 15px;
+  font-weight: 500;
+  color: @dn_ink;
+}
+
+.dn-embed {
+  border: 1px solid @dn_hairline;
+  border-radius: 8px;
+  padding: 0;
+  margin-top: 4px;
+  background-color: @dn_surface;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.dn-embed-frame {
+  min-width: 0;
+}
+
+.dn-embed-tall {
+  max-width: 320px;
+}
+
+.dn-embed-poster {
+  background-color: #000000;
+  min-width: 0;
+  min-height: 0;
+}
+
+.dn-embed-audio-thumb {
+  margin: 8px 0 8px 8px;
+  border-radius: 6px;
+}
+
+.dn-embed-play {
+  min-width: 56px;
+  min-height: 56px;
+  border-radius: 28px;
+  background-color: rgba(0, 0, 0, 0.7);
+  color: #ffffff;
+}
+
+.dn-embed-play image {
+  color: #ffffff;
+  margin-left: 2px;
+}
+
+.dn-embed-details {
+  padding: 8px 12px;
+}
+
+.dn-embed-frame + .dn-embed-details {
+  border-top: 1px solid @dn_hairline;
+}
+
+.dn-skeleton-block {
+  background-color: @dn_wash;
+  border-radius: 6px;
+}
+
+.dn-skeleton-line {
+  height: 10px;
+  border-radius: 4px;
+  background-color: @dn_wash;
+  min-width: 80px;
+}
+
+.dn-code {
+  margin-top: 4px;
+  border: 1px solid @dn_hairline;
+  border-radius: 8px;
+  background-color: @dn_wash;
+  overflow: hidden;
+}
+
+.dn-code-header {
+  padding: 4px 8px 4px 12px;
+  border-bottom: 1px solid @dn_hairline;
+}
+
+.dn-code-copy {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+}
+
+.dn-code-body {
+  padding: 10px 12px;
+  font-family: "Geist Mono", "Adwaita Mono", monospace;
+  font-size: 13px;
+  color: @dn_ink;
+}
+
+.dn-images {
+  margin-top: 4px;
+  border: 1px solid @dn_hairline;
+  border-radius: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.dn-images-single {
+  max-height: 512px;
+}
+
+.dn-images-grid {
+  min-height: 288px;
+}
+
+.dn-image {
+  min-width: 0;
+  min-height: 0;
+  border-radius: 0;
+}
+
+.dn-star {
+  color: @dn_ink_muted;
+  font-family: "Geist Mono", "Adwaita Mono", monospace;
+  font-size: 13px;
+}
+
+.dn-star.starred,
+.dn-star.starred *,
+.dn-star.starred image {
+  color: @dn_primary;
+}
+
+.dn-over {
+  color: @dn_destructive;
+}
+
+.dn-nav-btn {
+  padding: 12px;
+  border-radius: 8px;
+  color: @dn_ink_muted;
+  font-weight: 500;
+  font-size: 15px;
+}
+
+.dn-nav-btn:hover {
+  background-color: @dn_wash;
+  color: @dn_ink;
+}
+
+.dn-nav-btn.active {
+  background-color: @dn_primary_soft;
+  color: @dn_primary;
+}
+
+button.dn-nav-commit {
+  margin-top: 8px;
+  min-height: 52px;
+  padding: 12px;
+  border-radius: 8px;
+  font-weight: 500;
+  font-size: 15px;
+}
+
+.dn-sidebar.collapsed button.dn-nav-commit {
+  min-width: 52px;
+  padding: 10px;
+}
+
+.dn-compose-dialog .dn-composer,
+.dn-compose-dialog .dn-log-composer {
+  padding: 0 0 8px;
+}
+
+.dn-nav-count,
+.dn-nav-badge {
+  min-width: 16px;
+  padding: 0 5px;
+  border-radius: 9999px;
+  background-color: @dn_primary;
+  color: @dn_primary_ink;
+  font-family: "Geist Mono", "Adwaita Mono", monospace;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 16px;
+}
+
+.dn-nav-badge {
+  margin-top: -8px;
+  margin-right: -10px;
+}
+
+.dn-commit-bar {
+  min-height: 56px;
+  padding: 0 16px;
+  border-bottom: 1px solid @dn_hairline;
+  background-color: @dn_surface;
+}
+
+.dn-commit-bar-title {
+  font-weight: 600;
+  color: @dn_ink;
+}
+
+.dn-commit-bar-btn {
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  color: @dn_ink_muted;
+}
+
+.dn-commit-bar-btn:hover {
+  color: @dn_ink;
+  background-color: @dn_wash;
+}
+
+.dn-commit-bar-btn image {
+  color: inherit;
+}
+
+.dn-tabs {
+  border-bottom: 1px solid @dn_hairline;
+  background-color: @dn_surface;
+}
+
+.dn-tab {
+  padding: 14px 16px;
+  min-width: 0;
+  border-radius: 0;
+  color: @dn_ink_muted;
+  font-weight: 500;
+  box-shadow: none;
+  background: transparent;
+  border-bottom: 3px solid transparent;
+}
+
+.dn-notif-tabs {
+  padding: 0 8px;
+}
+
+.dn-notif-tabs .dn-tab {
+  padding: 12px 14px;
+}
+
+.dn-notif-node {
+  min-width: 36px;
+  min-height: 36px;
+  border-radius: 9999px;
+  border: 2px solid @dn_rail;
+  background-color: @dn_surface;
+}
+
+.dn-notif-node.unread {
+  border-color: @dn_primary;
+}
+
+.dn-notif-icon.lane-0 { color: @dn_lane_0; }
+.dn-notif-icon.lane-1 { color: @dn_lane_1; }
+.dn-notif-icon.lane-2 { color: @dn_lane_2; }
+.dn-notif-icon.lane-3 { color: @dn_lane_3; }
+.dn-notif-icon.lane-4 { color: @dn_lane_4; }
+.dn-notif-icon.lane-5 { color: @dn_lane_5; }
+
+.dn-notif-chip {
+  padding: 2px 8px;
+  border-radius: 9999px;
+  background-color: @dn_wash;
+  font-size: 12px;
+}
+
+.dn-notif-chip.dn-over {
+  background-color: alpha(@dn_destructive, 0.1);
+}
+
+.dn-notif-avatars .dn-avatar {
+  box-shadow: 0 0 0 2px @dn_surface;
+}
+
+.dn-notif-excerpt {
+  margin-top: 4px;
+  padding: 8px 12px;
+  border: 1px solid @dn_hairline;
+  border-radius: 8px;
+}
+
+.dn-window-scroll {
+  min-width: 12px;
+  margin: 0;
+}
+
+.dn-notif-more {
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0 6px;
+  border-radius: 9999px;
+  background-color: @dn_wash;
+  box-shadow: 0 0 0 2px @dn_surface;
+}
+
+.dn-activity-preview {
+  border: 1px solid @dn_hairline;
+  border-radius: 8px;
+  padding: 12px 16px;
+  background-color: @dn_surface;
+}
+
+.dn-activity-preview-img {
+  min-height: 96px;
+}
+
+.dn-tab:hover {
+  background-color: @dn_wash;
+  color: @dn_ink;
+}
+
+.dn-tab.active {
+  color: @dn_ink;
+  border-bottom-color: @dn_primary;
+}
+
+.dn-inbox-row {
+  padding: 10px 12px;
+  border-bottom: 1px solid @dn_hairline;
+}
+
+.dn-remotes-inbox {
+  min-width: 280px;
+}
+
+.dn-message {
+  padding: 6px 12px;
+  color: @dn_ink;
+}
+
+.dn-message.mine {
+  background-color: @dn_primary_soft;
+  border-radius: 8px;
+}
+
+.dn-avatar-ring {
+  border-radius: 9999px;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  background-color: transparent;
+  box-shadow: 0 0 0 2px transparent;
+}
+
+.dn-ring.lane-0 { box-shadow: 0 0 0 2px @dn_lane_0; }
+.dn-ring.lane-1 { box-shadow: 0 0 0 2px @dn_lane_1; }
+.dn-ring.lane-2 { box-shadow: 0 0 0 2px @dn_lane_2; }
+.dn-ring.lane-3 { box-shadow: 0 0 0 2px @dn_lane_3; }
+.dn-ring.lane-4 { box-shadow: 0 0 0 2px @dn_lane_4; }
+.dn-ring.lane-5 { box-shadow: 0 0 0 2px @dn_lane_5; }
+
+.dn-handle-dot {
+  min-width: 8px;
+  min-height: 8px;
+  border-radius: 9999px;
+}
+
+.dn-aside-you button,
+.dn-aside-avatar,
+.dn-suggest-row,
+.dn-suggest-row button {
+  overflow: visible;
+}
+
+.dn-handle-dot.lane-0 { background-color: @dn_lane_0; }
+.dn-handle-dot.lane-1 { background-color: @dn_lane_1; }
+.dn-handle-dot.lane-2 { background-color: @dn_lane_2; }
+.dn-handle-dot.lane-3 { background-color: @dn_lane_3; }
+.dn-handle-dot.lane-4 { background-color: @dn_lane_4; }
+.dn-handle-dot.lane-5 { background-color: @dn_lane_5; }
+
+.dn-day {
+  padding: 8px 16px 8px 0;
+  font-family: "Geist Mono", "Adwaita Mono", monospace;
+  font-size: 12px;
+  border-bottom: 1px solid @dn_hairline;
+}
+
+.dn-last-visit-rule {
+  min-height: 0;
+  border-top: 1px dashed @dn_hairline;
+}
+
+.dn-new-posts {
+  background-color: @dn_primary;
+  color: @dn_primary_ink;
+  border-radius: 9999px;
+  padding: 6px 16px;
+  min-height: 0;
+  box-shadow: 0 4px 14px -4px rgba(0, 0, 0, 0.35);
+}
+
+.dn-new-posts label,
+.dn-new-posts image {
+  color: @dn_primary_ink;
+}
+
+.dn-new-posts-avatar {
+  border: 2px solid @dn_primary;
+  border-radius: 9999px;
+}
+
+.dn-icon-btn {
+  min-width: 32px;
+  min-height: 32px;
+  padding: 0;
+  border-radius: 6px;
+}
+
+.dn-outline-btn {
+  min-height: 36px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 1px solid @dn_hairline;
+  background-color: @dn_surface;
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.dn-outline-btn.dn-icon-btn {
+  min-width: 36px;
+  min-height: 36px;
+  padding: 0;
+}
+
+.dn-follow-btn {
+  min-width: 112px;
+}
+
+.dn-outline-btn:hover {
+  background-color: @dn_wash;
+}
+
+.dn-suggest-row .dn-icon-btn {
+  min-width: 28px;
+  min-height: 28px;
+}
+
+button.dn-unfollow:hover {
+  color: @dn_destructive;
+}
+
+.dn-root {
+  padding: 16px 16px 24px 0;
+}
+
+.dn-ahead {
+  font-family: "Geist Mono", "Adwaita Mono", monospace;
+  font-size: 12px;
+  color: @dn_primary;
+  background-color: @dn_primary_soft;
+  border-radius: 9999px;
+  padding: 2px 8px;
+}
+
+.dn-profile-hero {
+  padding: 0;
+  background-color: @dn_surface;
+}
+
+.dn-profile-header {
+  padding: 24px 16px 20px;
+  border-bottom: 1px solid @dn_hairline;
+}
+
+.dn-profile-meta {
+  margin-top: 2px;
+}
+
+.dn-achievements-chip {
+  font-family: "Geist Mono", "Adwaita Mono", monospace;
+  font-size: 11px;
+  font-weight: 500;
+  min-height: 22px;
+  padding: 1px 8px;
+  border-radius: 9999px;
+}
+
+.dn-achievements-chip.lane-0 {
+  color: @dn_lane_0;
+  border: 1px solid alpha(@dn_lane_0, 0.25);
+  background-color: alpha(@dn_lane_0, 0.08);
+}
+.dn-achievements-chip.lane-1 {
+  color: @dn_lane_1;
+  border: 1px solid alpha(@dn_lane_1, 0.25);
+  background-color: alpha(@dn_lane_1, 0.08);
+}
+.dn-achievements-chip.lane-2 {
+  color: @dn_lane_2;
+  border: 1px solid alpha(@dn_lane_2, 0.25);
+  background-color: alpha(@dn_lane_2, 0.08);
+}
+.dn-achievements-chip.lane-3 {
+  color: @dn_lane_3;
+  border: 1px solid alpha(@dn_lane_3, 0.25);
+  background-color: alpha(@dn_lane_3, 0.08);
+}
+.dn-achievements-chip.lane-4 {
+  color: @dn_lane_4;
+  border: 1px solid alpha(@dn_lane_4, 0.25);
+  background-color: alpha(@dn_lane_4, 0.08);
+}
+.dn-achievements-chip.lane-5 {
+  color: @dn_lane_5;
+  border: 1px solid alpha(@dn_lane_5, 0.25);
+  background-color: alpha(@dn_lane_5, 0.08);
+}
+
+.dn-lane-picker {
+  padding-top: 0;
+}
+
+.dn-activity,
+.dn-streaks,
+.dn-achievements {
+  padding: 20px 16px 16px;
+  border-bottom: 1px solid @dn_hairline;
+}
+
+.dn-streaks {
+  padding-top: 12px;
+  padding-bottom: 12px;
+}
+
+.dn-activity-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.dn-activity-legend-label {
+  font-size: 12px;
+  margin: 0 4px;
+}
+
+.dn-achievements-open,
+.dn-achievements-more {
+  padding: 0;
+  min-height: 0;
+}
+
+.dn-xp-meta {
+  font-size: 11px;
+}
+
+.dn-xp-bar {
+  min-height: 6px;
+}
+
+.dn-badge {
+  padding: 4px 10px;
+  min-height: 0;
+  border-radius: 9999px;
+  border: 1px solid @dn_hairline;
+  background-color: @dn_surface;
+}
+
+.dn-badge.locked {
+  border-style: dashed;
+  border-color: alpha(@dn_ink_muted, 0.3);
+  background-color: alpha(@dn_wash, 0.35);
+  color: @dn_ink_muted;
+}
+
+.dn-badge.unlocked:hover {
+  border-color: @dn_ink;
+}
+
+.dn-badge.unlocked.lane-0:hover { border-color: @dn_lane_0; }
+.dn-badge.unlocked.lane-1:hover { border-color: @dn_lane_1; }
+.dn-badge.unlocked.lane-2:hover { border-color: @dn_lane_2; }
+.dn-badge.unlocked.lane-3:hover { border-color: @dn_lane_3; }
+.dn-badge.unlocked.lane-4:hover { border-color: @dn_lane_4; }
+.dn-badge.unlocked.lane-5:hover { border-color: @dn_lane_5; }
+
+.dn-profile-tabs .dn-tab {
+  min-width: 0;
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.dn-settings-tabs .dn-tab {
+  padding-left: 8px;
+  padding-right: 8px;
+}
+
+.dn-xp-card {
+  padding: 12px;
+  border: 1px solid @dn_hairline;
+  border-radius: 8px;
+  background-color: alpha(@dn_wash, 0.35);
+}
+
+.dn-achieve-tabs {
+  border-bottom: 1px solid @dn_hairline;
+}
+
+.dn-achieve-tab {
+  padding: 6px 12px;
+  min-height: 0;
+  border-radius: 0;
+  border-bottom: 2px solid transparent;
+  color: @dn_ink_muted;
+  font-family: "Geist Mono", "Adwaita Mono", monospace;
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.dn-achieve-tab.active {
+  color: @dn_ink;
+}
+
+.dn-achieve-tab.active.lane-0 { border-bottom-color: @dn_lane_0; }
+.dn-achieve-tab.active.lane-1 { border-bottom-color: @dn_lane_1; }
+.dn-achieve-tab.active.lane-2 { border-bottom-color: @dn_lane_2; }
+.dn-achieve-tab.active.lane-3 { border-bottom-color: @dn_lane_3; }
+.dn-achieve-tab.active.lane-4 { border-bottom-color: @dn_lane_4; }
+.dn-achieve-tab.active.lane-5 { border-bottom-color: @dn_lane_5; }
+
+.dn-badge-card,
+.dn-rank-card {
+  padding: 12px;
+  border: 1px solid @dn_hairline;
+  border-radius: 8px;
+  background-color: @dn_surface;
+}
+
+.dn-badge-card.locked,
+.dn-rank-card.locked {
+  border-style: dashed;
+  background-color: alpha(@dn_wash, 0.3);
+}
+
+.dn-rank-card.current.lane-0 { border-color: @dn_lane_0; }
+.dn-rank-card.current.lane-1 { border-color: @dn_lane_1; }
+.dn-rank-card.current.lane-2 { border-color: @dn_lane_2; }
+.dn-rank-card.current.lane-3 { border-color: @dn_lane_3; }
+.dn-rank-card.current.lane-4 { border-color: @dn_lane_4; }
+.dn-rank-card.current.lane-5 { border-color: @dn_lane_5; }
+
+.dn-badge-icon {
+  min-width: 24px;
+  min-height: 24px;
+  border: 1px solid @dn_hairline;
+  border-radius: 6px;
+  background-color: @dn_wash;
+}
+
+.dn-badge-done {
+  color: #2f9e44;
+  font-size: 11px;
+}
+
+window.dark .dn-badge-done {
+  color: #51cf66;
+}
+
+.dn-rank-level {
+  min-width: 24px;
+  min-height: 24px;
+  border-radius: 6px;
+  background-color: @dn_wash;
+  font-weight: 700;
+  font-size: 12px;
+}
+
+.dn-rank-now {
+  padding: 1px 6px;
+  border-radius: 4px;
+  background-color: @dn_wash;
+  font-size: 10px;
+}
+
+.dn-xp-footnote {
+  font-size: 11px;
+  padding-top: 8px;
+  border-top: 1px solid @dn_hairline;
+}
+
+.dn-lane-preview {
+  overflow: hidden;
+  border: 1px solid @dn_hairline;
+  border-radius: 8px;
+  min-height: 64px;
+}
+
+.dn-lane-option {
+  min-width: 56px;
+  padding: 8px 4px;
+  border-radius: 6px;
+}
+
+.dn-lane-option:hover {
+  background-color: @dn_wash;
+}
+
+.dn-lane-option-label {
+  font-size: 12px;
+  color: @dn_ink_muted;
+}
+
+.dn-lane-option-label.active {
+  font-weight: 500;
+  color: @dn_ink;
+}
+
+.dn-lane-swatch {
+  min-width: 22px;
+  min-height: 22px;
+  padding: 0;
+  border-radius: 9999px;
+  border: 2px solid transparent;
+}
+
+.dn-lane-swatch.active {
+  box-shadow: 0 0 0 2px @dn_ink;
+}
+
+.dn-lane-swatch.lane-0 { background-color: @dn_lane_0; }
+.dn-lane-swatch.lane-1 { background-color: @dn_lane_1; }
+.dn-lane-swatch.lane-2 { background-color: @dn_lane_2; }
+.dn-lane-swatch.lane-3 { background-color: @dn_lane_3; }
+.dn-lane-swatch.lane-4 { background-color: @dn_lane_4; }
+.dn-lane-swatch.lane-5 { background-color: @dn_lane_5; }
+
+.dn-search-trigger {
+  min-height: 36px;
+  padding: 4px 12px 4px 14px;
+  border: 1px solid @dn_hairline;
+  border-radius: 8px;
+  background-color: @dn_surface;
+  color: @dn_ink_muted;
+}
+
+.dn-search-trigger:hover {
+  color: @dn_ink;
+}
+
+.dn-kbd,
+label.dn-kbd,
+.dn-search-trigger label.dn-kbd,
+.dn-nav-btn label.dn-kbd,
+.dn-aside-link label.dn-kbd {
+  font-family: "Geist Mono", "Adwaita Mono", monospace;
+  font-size: 12px;
+  min-width: 20px;
+  min-height: 0;
+  padding: 2px 6px;
+  margin: 0;
+  border: 1px solid @dn_hairline;
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background-color: @dn_wash;
+  color: @dn_ink_muted;
+}
+
+.dn-aside-toast-host {
+  padding: 0;
+  opacity: 0;
+  transition: opacity 220ms ease;
+}
+
+.dn-aside-toast-host.visible {
+  opacity: 1;
+}
+
+.dn-aside-toast {
+  min-width: 220px;
+  max-width: 280px;
+  padding: 10px 14px;
+  border: 1px solid @dn_hairline;
+  border-radius: 8px;
+  background-color: @dn_surface;
+  color: @dn_ink;
+  box-shadow: 0 8px 24px -8px rgb(0 0 0 / 0.28);
+}
+
+.dn-omnibox {
+  border-radius: 12px;
+  background-color: @dn_surface;
+  color: @dn_ink;
+}
+
+.dn-omnibox-header {
+  min-height: 56px;
+  padding: 0 16px;
+  border-bottom: 1px solid @dn_hairline;
+  color: @dn_ink_muted;
+}
+
+.dn-omnibox-header image {
+  color: inherit;
+}
+
+entry.dn-omnibox-entry,
+entry.dn-omnibox-entry > text {
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  outline: none;
+  min-height: 48px;
+  font-size: 17px;
+  color: @dn_ink;
+}
+
+.dn-omnibox-status {
+  padding: 12px 20px 0;
+}
+
+.dn-omnibox-list {
+  background: transparent;
+  padding: 8px;
+}
+
+.dn-omnibox-list > row {
+  border-radius: 8px;
+  padding: 0;
+}
+
+.dn-omnibox-list > row:hover,
+.dn-omnibox-list > row:selected {
+  background-color: @dn_wash;
+}
+
+.dn-omnibox-row {
+  padding: 10px 12px;
+}
+
+.dn-omnibox-heading {
+  padding: 8px 12px 4px;
+}
+
+.dn-omnibox-all {
+  color: @dn_primary;
+}
+
+.dn-omnibox-footer {
+  padding: 8px 16px;
+  border-top: 1px solid @dn_hairline;
+  background-color: @dn_wash;
+}
+
+.dn-emoji {
+  padding: 6px;
+}
+
+.dn-emoji-list {
+  background: transparent;
+}
+
+.dn-emoji-list > row {
+  border-radius: 8px;
+  padding: 0;
+  min-height: 0;
+}
+
+.dn-emoji-list > row:hover,
+.dn-emoji-list > row:selected {
+  background-color: @dn_wash;
+}
+
+.dn-emoji-row {
+  padding: 6px 10px;
+}
+
+.dn-emoji-char {
+  font-size: 18px;
+}
+
+.dn-emoji-name {
+  font-size: 13px;
+  color: @dn_ink_muted;
+}
+
+.dn-emoji-name b {
+  color: @dn_ink;
+  font-weight: 600;
+}
+
+.dn-aside-scroll {
+  background-color: @dn_shell;
+  border-left: 1px solid @dn_hairline;
+}
+
+.dn-aside {
+  padding: 16px 20px 20px;
+  background-color: @dn_shell;
+  min-width: 280px;
+}
+
+.dn-aside-title {
+  font-weight: 600;
+  color: @dn_ink;
+}
+
+.dn-aside-you,
+.dn-aside-follow {
+  padding-top: 4px;
+}
+
+.dn-aside-icon {
+  min-width: 28px;
+  min-height: 28px;
+  padding: 0;
+  color: @dn_ink_muted;
+}
+
+.dn-aside-icon:hover {
+  color: @dn_ink;
+}
+
+.dn-aside-menu-item {
+  padding: 8px 10px;
+  border-radius: 6px;
+  min-height: 0;
+}
+
+.dn-aside-you button {
+  padding: 0;
+  min-height: 0;
+  overflow: visible;
+}
+
+.dn-aside-you .dn-name {
+  font-weight: 600;
+}
+
+.dn-aside-stats {
+  margin-top: 4px;
+}
+
+.dn-aside-handle {
+  min-height: 16px;
+}
+
+button.dn-aside-stat {
+  padding: 0;
+  min-height: 0;
+  min-width: 0;
+  border-radius: 0;
+}
+
+.dn-aside-stat-count {
+  font-weight: 500;
+  font-size: 13px;
+  color: @dn_ink;
+}
+
+.dn-aside-stat-label {
+  font-size: 13px;
+}
+
+button.dn-aside-stat:hover .dn-aside-stat-count,
+button.dn-aside-stat:hover .dn-aside-stat-label {
+  text-decoration: underline;
+}
+
+.dn-aside-link {
+  color: @dn_ink_muted;
+  font-size: 13px;
+  min-height: 28px;
+  padding: 0;
+}
+
+.dn-aside-link:hover {
+  color: @dn_ink;
+}
+
+.dn-aside-link:hover label.dn-kbd {
+  color: @dn_ink_muted;
+}
+
+.dn-suggest-row,
+.dn-search-user {
+  padding: 4px 0;
+}
+
+.dn-search-user {
+  padding: 10px 16px;
+}
+
+.dn-title {
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  color: @dn_ink;
+}
+
+button.suggested-action {
+  background-color: @dn_primary;
+  color: @dn_primary_ink;
+  border-radius: 6px;
+  min-height: 36px;
+}
+
+button.dn-commit-btn {
+  min-height: 28px;
+  min-width: 96px;
+  padding: 0 18px;
+}
+
+button.suggested-action:hover {
+  background-color: @dn_primary_hover;
+  color: @dn_primary_ink;
+}
+
+headerbar {
+  background-color: @dn_shell;
+  color: @dn_ink;
+  border-bottom: 1px solid @dn_hairline;
+}
+
+link {
+  color: @dn_primary;
+  cursor: pointer;
+}
+
+/* Dark: match DESIGN.md even if prefers-color-scheme is stale. */
+window.dark.dn-window,
+window.dark .dn-shell,
+window.dark .dn-sidebar,
+window.dark headerbar {
+  background-color: #111112;
+  color: #ececec;
+}
+
+window.dark .dn-feed,
+window.dark .dn-composer,
+window.dark .dn-composer-input,
+window.dark .dn-settings,
+window.dark .dn-section,
+window.dark .dn-code,
+window.dark .dn-embed,
+window.dark .dn-avatar-ring,
+window.dark .dn-composer-avatar,
+window.dark .dn-profile-hero,
+window.dark .dn-tabs,
+window.dark .dn-commit-bar,
+window.dark .dn-link-card,
+window.dark .dn-composer-text,
+window.dark .dn-composer-text > text,
+window.dark textview.dn-composer-text,
+window.dark textview.dn-composer-text text {
+  background-color: #18181a;
+  color: #ececec;
+}
+
+window.dark .dn-feed {
+  border-left-color: #2a2a2d;
+  border-right-color: #2a2a2d;
+}
+
+window.dark .dn-wordmark,
+window.dark .dn-wordmark-row,
+window.dark .dn-wordmark-btn,
+window.dark .dn-commit-bar-title,
+window.dark .dn-aside-stat-count,
+window.dark .dn-name,
+window.dark .dn-body,
+window.dark .dn-body-focus,
+window.dark .dn-title,
+window.dark .dn-section-title,
+window.dark .dn-message,
+window.dark .dn-feed list > row,
+window.dark .dn-tab.active {
+  color: #ececec;
+}
+
+window.dark .dn-search-trigger,
+window.dark .dn-omnibox,
+window.dark .dn-omnibox-header,
+window.dark entry.dn-omnibox-entry,
+window.dark entry.dn-omnibox-entry > text {
+  background-color: #18181a;
+  color: #ececec;
+}
+
+window.dark .dn-search-trigger,
+window.dark .dn-kbd,
+window.dark .dn-omnibox-header,
+window.dark .dn-omnibox-footer {
+  border-color: #2a2a2d;
+}
+
+window.dark .dn-omnibox-footer,
+window.dark .dn-omnibox-list > row:hover,
+window.dark .dn-omnibox-list > row:selected,
+window.dark .dn-emoji-list > row:hover,
+window.dark .dn-emoji-list > row:selected {
+  background-color: #232326;
+}
+
+window.dark .dn-emoji-name {
+  color: #a1a1a6;
+}
+
+window.dark .dn-emoji-name b {
+  color: #ececec;
+}
+
+window.dark .dn-search-trigger,
+window.dark .dn-kbd {
+  color: #a1a1a6;
+}
+
+window.dark .dn-kbd {
+  background-color: #232326;
+}
+
+window.dark .dn-search-trigger:hover {
+  color: #ececec;
+}
+
+window.dark .dn-omnibox-all {
+  color: #7aa2f7;
+}
+
+window.dark .dn-tagline,
+window.dark .dn-muted,
+window.dark .dn-handle,
+window.dark .dn-fatal,
+window.dark .dn-placeholder,
+window.dark .dn-day,
+window.dark .dn-star:not(.starred),
+window.dark .dn-action,
+window.dark .dn-nav-btn,
+window.dark .dn-tab {
+  color: #a1a1a6;
+}
+
+window.dark .dn-commit-content,
+window.dark .dn-composer,
+window.dark .dn-composer-input,
+window.dark .dn-commit-bar,
+window.dark .dn-tabs,
+window.dark .dn-inbox-row,
+window.dark .dn-day,
+window.dark .dn-outline-btn {
+  border-color: #2a2a2d;
+  background-color: #111112;
+}
+
+window.dark .dn-profile-header,
+window.dark .dn-activity,
+window.dark .dn-streaks,
+window.dark .dn-achievements,
+window.dark .dn-profile-tabs {
+  background-color: #18181a;
+  border-color: #2a2a2d;
+}
+
+window.dark .dn-profile-hero,
+window.dark .dn-profile-header,
+window.dark .dn-activity,
+window.dark .dn-streaks,
+window.dark .dn-achievements,
+window.dark .dn-xp-card,
+window.dark .dn-badge-card,
+window.dark .dn-rank-card,
+window.dark .dn-badge,
+window.dark headerbar,
+window.dark .dn-link-card,
+window.dark .dn-embed,
+window.dark .dn-images,
+window.dark .dn-section,
+window.dark .dn-lane-preview,
+window.dark .dn-fields,
+window.dark .dn-field-row,
+window.dark .dn-segmented,
+window.dark .dn-code,
+window.dark .dn-embed-details,
+window.dark .dn-empty {
+  border-color: #2a2a2d;
+}
+
+window.dark .dn-segment.active {
+  background-color: #18233a;
+  color: #7aa2f7;
+}
+
+window.dark .dn-danger {
+  color: #ff6b6b;
+}
+
+window.dark .dn-commit:hover,
+window.dark .dn-inbox-row:hover,
+window.dark .dn-nav-btn:hover,
+window.dark .dn-tab:hover,
+window.dark .dn-commit-bar-btn:hover {
+  background-color: #232326;
+}
+
+window.dark .dn-nav-btn:hover,
+window.dark .dn-tab:hover,
+window.dark .dn-commit-bar-btn:hover {
+  color: #ececec;
+}
+
+window.dark .dn-nav-btn.active {
+  background-color: #18233a;
+  color: #7aa2f7;
+}
+
+window.dark .dn-nav-count,
+window.dark .dn-nav-badge {
+  background-color: #7aa2f7;
+  color: #111112;
+}
+
+window.dark .dn-composer-icon.active {
+  background-color: #18233a;
+  color: #7aa2f7;
+}
+
+window.dark .dn-poll-editor,
+window.dark .dn-schedule-card,
+window.dark .dn-poll-footer {
+  border-color: #2a2a2d;
+}
+
+window.dark .dn-schedule-card {
+  background-color: #18181a;
+}
+
+window.dark .dn-poll-add {
+  color: #7aa2f7;
+}
+
+window.dark .dn-poll-add:hover {
+  background-color: #18233a;
+  color: #7aa2f7;
+}
+
+window.dark .dn-poll-remove:hover {
+  color: #ff6b6b;
+}
+
+window.dark .dn-tab.active {
+  border-bottom-color: #7aa2f7;
+}
+
+window.dark .dn-star.starred,
+window.dark .dn-star.starred *,
+window.dark .dn-star.starred image,
+window.dark .dn-replies,
+window.dark .dn-ahead,
+window.dark link {
+  color: #7aa2f7;
+}
+
+window.dark .dn-quote,
+window.dark .dn-nested {
+  border-color: #2a2a2d;
+}
+
+window.dark .dn-ahead,
+window.dark .dn-message.mine {
+  background-color: #18233a;
+}
+
+window.dark .dn-over {
+  color: #ff6b6b;
+}
+
+window.dark .dn-composer-text,
+window.dark textview.dn-composer-text,
+window.dark textview.dn-composer-text text {
+  caret-color: #7aa2f7;
+}
+
+window.dark button.suggested-action {
+  background-color: #7aa2f7;
+  color: #111112;
+}
+
+window.dark button.suggested-action:hover {
+  background-color: #94b5f9;
+  color: #111112;
+}
+
+window.dark .dn-ring.lane-0 { box-shadow: 0 0 0 2px #ff8a4c; }
+window.dark .dn-ring.lane-1 { box-shadow: 0 0 0 2px #51cf66; }
+window.dark .dn-ring.lane-2 { box-shadow: 0 0 0 2px #da77f2; }
+window.dark .dn-ring.lane-3 { box-shadow: 0 0 0 2px #3bc9db; }
+window.dark .dn-ring.lane-4 { box-shadow: 0 0 0 2px #f06595; }
+window.dark .dn-ring.lane-5 { box-shadow: 0 0 0 2px #fcc419; }
+
+window.dark .dn-handle-dot.lane-0 { background-color: #ff8a4c; }
+window.dark .dn-handle-dot.lane-1 { background-color: #51cf66; }
+window.dark .dn-handle-dot.lane-2 { background-color: #da77f2; }
+window.dark .dn-handle-dot.lane-3 { background-color: #3bc9db; }
+window.dark .dn-handle-dot.lane-4 { background-color: #f06595; }
+window.dark .dn-handle-dot.lane-5 { background-color: #fcc419; }
+
+window.dark .dn-lane-option:hover {
+  background-color: #232326;
+}
+
+window.dark .dn-lane-option-label {
+  color: #a1a1a6;
+}
+
+window.dark .dn-lane-option-label.active {
+  color: #ececec;
+}
+
+window.dark .dn-lane-swatch.active {
+  box-shadow: 0 0 0 2px #ececec;
+}
+
+window.dark .dn-lane-swatch.lane-0 { background-color: #ff8a4c; }
+window.dark .dn-lane-swatch.lane-1 { background-color: #51cf66; }
+window.dark .dn-lane-swatch.lane-2 { background-color: #da77f2; }
+window.dark .dn-lane-swatch.lane-3 { background-color: #3bc9db; }
+window.dark .dn-lane-swatch.lane-4 { background-color: #f06595; }
+window.dark .dn-lane-swatch.lane-5 { background-color: #fcc419; }
+
+window.dark .dn-aside-scroll {
+  background-color: #111112;
+  border-color: #2a2a2d;
+}
+
+window.dark .dn-aside,
+window.dark .dn-aside-links {
+  background-color: #111112;
+}
+
+window.dark .dn-aside-toast {
+  background-color: #18181a;
+  color: #ececec;
+  border-color: #2a2a2d;
+  box-shadow: 0 8px 24px -8px rgb(0 0 0 / 0.55);
+}
+
+window.dark .dn-aside-link {
+  color: #a1a1a6;
+}
+
+window.dark .dn-aside-link:hover,
+window.dark .dn-aside-icon:hover {
+  color: #ececec;
+}
+
+window.dark .dn-aside-icon {
+  color: #a1a1a6;
+}
+
+window.dark .dn-last-visit-rule {
+  border-color: #2a2a2d;
+}
+
+window.dark .dn-new-posts {
+  background-color: #7aa2f7;
+  color: #111112;
+}
+
+window.dark .dn-new-posts label,
+window.dark .dn-new-posts image {
+  color: #111112;
+}
+
+window.dark .dn-new-posts-avatar {
+  border-color: #7aa2f7;
+}
+
+window.dark button.dn-unfollow:hover {
+  color: #ff6b6b;
+}
+
+.dn-shortcuts {
+  min-width: 360px;
+}
+
+.dn-shortcut {
+  padding: 8px 0;
+  border-bottom: 1px solid @dn_hairline;
+}
+
+.dn-report-excerpt {
+  padding: 12px 0;
+  border-top: 1px solid @dn_hairline;
+  border-bottom: 1px solid @dn_hairline;
+}
+
+.dn-report-reason {
+  padding: 4px 0;
+}
+
+window.dark .dn-shortcut,
+window.dark .dn-report-excerpt,
+window.dark .dn-activity-preview {
+  border-color: #2a2a2d;
+}
+
+window.dark .dn-notif-node {
+  border-color: #36363a;
+  background-color: #111112;
+}
+
+window.dark .dn-notif-node.unread {
+  border-color: #7aa2f7;
+}
+
+window.dark .dn-notif-icon.lane-0 { color: #ff8a4c; }
+window.dark .dn-notif-icon.lane-1 { color: #51cf66; }
+window.dark .dn-notif-icon.lane-2 { color: #da77f2; }
+window.dark .dn-notif-icon.lane-3 { color: #3bc9db; }
+window.dark .dn-notif-icon.lane-4 { color: #f06595; }
+window.dark .dn-notif-icon.lane-5 { color: #fcc419; }
+
+window.dark .dn-notif-chip,
+window.dark .dn-notif-more {
+  background-color: #1c1c1f;
+}
+
+window.dark .dn-notif-avatars .dn-avatar,
+window.dark .dn-notif-more {
+  box-shadow: 0 0 0 2px #111112;
+}
+
+window.dark .dn-notif-excerpt {
+  border-color: #2a2a2d;
+}

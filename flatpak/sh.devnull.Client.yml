@@ -1,0 +1,35 @@
+app-id: sh.devnull.Client
+runtime: org.gnome.Platform
+runtime-version: "48"
+sdk: org.gnome.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: devnull
+finish-args:
+  - --share=network
+  - --share=ipc
+  - --socket=fallback-x11
+  - --socket=wayland
+  - --device=dri
+  - --talk-name=org.freedesktop.secrets
+  - --talk-name=org.freedesktop.Notifications
+  - --talk-name=org.freedesktop.portal.Desktop
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/devnull/cargo
+  build-args:
+    - --share=network
+modules:
+  - name: devnull
+    buildsystem: simple
+    sources:
+      - type: dir
+        path: ..
+    build-commands:
+      - cargo build --release --locked -p devnull
+      - install -Dm755 ./target/release/devnull /app/bin/devnull
+      - install -Dm644 ./resources/sh.devnull.Client.desktop /app/share/applications/sh.devnull.Client.desktop
+      - install -Dm644 ./resources/sh.devnull.Client.metainfo.xml /app/share/metainfo/sh.devnull.Client.metainfo.xml
+      - mkdir -p /app/share/icons
+      - cp -a ./resources/icons/hicolor /app/share/icons/

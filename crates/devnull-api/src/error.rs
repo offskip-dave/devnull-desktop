@@ -1,0 +1,93 @@
+use std::fmt;
+
+/// An error the API answered with, or a failure to reach it.
+#[derive(Debug, Clone)]
+pub struct ApiError {
+    pub status: u16,
+    pub code: Option<String>,
+    pub message: String,
+}
+
+impl ApiError {
+    pub fn network() -> Self {
+        Self {
+            status: 0,
+            code: None,
+            message: "Couldn't reach /dev/null. Check your connection.".into(),
+        }
+    }
+
+    pub fn decode() -> Self {
+        Self {
+            status: 200,
+            code: None,
+            message: "/dev/null answered in a way this version of the app doesn't understand. Check for an update."
+                .into(),
+        }
+    }
+
+    pub fn signing(message: impl Into<String>) -> Self {
+        Self {
+            status: 0,
+            code: Some("invalid_signature".into()),
+            message: message.into(),
+        }
+    }
+
+    /// The device was revoked, or the key was never approved.
+    pub fn requires_sign_in(&self) -> bool {
+        self.code.as_deref() == Some("device_not_approved")
+            || (self.code.as_deref() == Some("invalid_signature") && self.status == 401)
+    }
+
+    pub fn is_commit_rules(&self) -> bool {
+        self.status == 403 && self.message.to_ascii_lowercase().contains("commit")
+    }
+}
+
+impl fmt::Display for ApiError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for ApiError {}
+
+impl From<reqwest::Error> for ApiError {
+    fn from(_: reqwest::Error) -> Self {
+        Self::network()
+    }
+}
+
+pub fn from_body(status: u16, data: &[u8]) -> ApiError {
+    let json: serde_json::Value = serde_json::from_slice(data).unwrap_or(serde_json::Value::Null);
+    let code = json.get("code").and_then(|v| v.as_str()).map(str::to_owned);
+
+    let message = json
+        .get("errors")
+        .and_then(|errors| errors.as_object())
+        .and_then(|map| map.values().next())
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|v| v.as_str())
+        .map(str::to_owned)
+        .or_else(|| {
+            json.get("message")
+                .and_then(|v| v.as_str())
+                .map(str::to_owned)
+        })
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| {
+            if status == 0 {
+                "Couldn't reach /dev/null. Check your connection.".into()
+            } else {
+                "Something went wrong.".into()
+            }
+        });
+
+    ApiError {
+        status,
+        code,
+        message,
+    }
+}
