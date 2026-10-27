@@ -66,6 +66,13 @@ pub fn absolute_url(url: &str) -> Option<String> {
     }
 }
 
+pub fn bind_bytes(picture: &gtk::Picture, data: &[u8]) {
+    let bytes = glib::Bytes::from_owned(data.to_vec());
+    if let Some(texture) = texture_from_bytes(&bytes) {
+        picture.set_paintable(Some(&texture));
+    }
+}
+
 fn texture_from_bytes(bytes: &glib::Bytes) -> Option<gdk::Texture> {
     if let Ok(texture) = gdk::Texture::from_bytes(bytes) {
         return Some(texture);

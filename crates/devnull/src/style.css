@@ -43,79 +43,6 @@
 @define-color accent_color #3b6fe0;
 @define-color destructive_color #c92a2a;
 
-window {
-  color-scheme: light;
-}
-
-button,
-button *,
-button.flat,
-button.flat *,
-button.suggested-action,
-button.suggested-action *,
-.dn-nav-btn,
-.dn-nav-btn *,
-.dn-tab,
-.dn-tab *,
-.dn-star,
-.dn-star *,
-.dn-action,
-.dn-action *,
-.dn-commit-row,
-.dn-commit-row *,
-.dn-inbox-row,
-.dn-inbox-row *,
-headerbar button,
-headerbar button *,
-.dn-commit-bar-btn,
-.dn-commit-bar-btn *,
-.dn-search-trigger,
-.dn-search-trigger *,
-.dn-rail-avatar,
-.dn-rail-avatar *,
-.dn-emoji-row,
-.dn-emoji-row *,
-.dn-wordmark-btn,
-.dn-wordmark-btn *,
-.dn-user-popover button,
-.dn-user-popover button *,
-.dn-aside-link,
-.dn-aside-link *,
-.dn-aside-icon,
-.dn-aside-icon *,
-.dn-aside-menu-item,
-.dn-aside-menu-item *,
-.dn-lane-option,
-.dn-lane-option *,
-.dn-composer-avatar-btn,
-.dn-composer-avatar-btn *,
-.dn-link-card,
-.dn-link-card *,
-.dn-embed,
-.dn-embed *,
-.dn-images,
-.dn-images *,
-.dn-new-posts,
-.dn-new-posts *,
-.dn-icon-btn,
-.dn-icon-btn *,
-.dn-outline-btn,
-.dn-outline-btn *,
-.dn-follow-btn,
-.dn-follow-btn * {
-  cursor: pointer;
-}
-
-textview,
-textview *,
-textview text,
-entry,
-entry *,
-.dn-composer-text,
-.dn-composer-text * {
-  cursor: text;
-}
-
 window.dn-window {
   background-color: @dn_shell;
   color: @dn_ink;
@@ -129,15 +56,21 @@ window.dn-window {
   color: @dn_ink;
 }
 
+.dn-gutter {
+  min-width: 0;
+}
+
+.dn-main {
+  min-width: 0;
+}
+
 .dn-sidebar {
   min-width: 256px;
-  max-width: 256px;
   padding: 12px 12px 16px;
 }
 
 .dn-sidebar.collapsed {
   min-width: 80px;
-  max-width: 80px;
   padding: 12px 6px 16px;
 }
 
@@ -148,7 +81,20 @@ window.dn-window {
 .dn-sidebar.collapsed .dn-nav-btn,
 .dn-sidebar.collapsed .dn-user-menu {
   padding: 10px;
-  overflow: visible;
+}
+
+.dn-mobile-header {
+  min-height: 56px;
+  padding: 0 12px;
+  border-bottom: 1px solid @dn_hairline;
+  background-color: @dn_surface;
+}
+
+.dn-mobile-header-btn {
+  min-width: 36px;
+  min-height: 36px;
+  padding: 0;
+  border-radius: 6px;
 }
 
 .dn-wordmark-row {
@@ -215,17 +161,23 @@ window.dn-window {
   color: @dn_ink;
   border-left: 1px solid @dn_hairline;
   border-right: 1px solid @dn_hairline;
-  min-width: 360px;
+  min-width: 0;
 }
 
 .dn-feed list {
   background-color: transparent;
   padding: 0;
   margin: 0;
+  min-width: 0;
+}
+
+.dn-feed scrolledwindow {
+  min-width: 0;
 }
 
 .dn-feed list > row {
   padding: 0;
+  min-width: 0;
   background: transparent;
   box-shadow: none;
   border: none;
@@ -317,6 +269,20 @@ headerbar button image {
 
 .dn-skeleton {
   padding: 8px 0;
+  min-width: 0;
+}
+
+@keyframes dn-pulse {
+  0% { opacity: 1; }
+  50% { opacity: 0.4; }
+  100% { opacity: 1; }
+}
+
+.dn-skeleton-pulse {
+  animation-name: dn-pulse;
+  animation-duration: 1.4s;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
 }
 
 .dn-nested {
@@ -332,6 +298,7 @@ headerbar button image {
 .dn-commit-content {
   padding: 12px 16px 12px 0;
   border-bottom: 1px solid @dn_hairline;
+  min-width: 0;
 }
 
 .dn-commit:hover,
@@ -354,7 +321,6 @@ headerbar button image {
   min-height: 0;
   background: transparent;
   box-shadow: none;
-  overflow: visible;
 }
 
 .dn-rail-avatar:hover,
@@ -479,6 +445,30 @@ scrolledwindow.dn-composer-input > * {
   color: @dn_ink;
 }
 
+.dn-attach-previews {
+  margin-top: 4px;
+}
+
+.dn-attach-thumb {
+  min-width: 80px;
+  min-height: 80px;
+  border: 1px solid @dn_hairline;
+  border-radius: 6px;
+  background-color: @dn_wash;
+}
+
+.dn-attach-remove {
+  min-width: 20px;
+  min-height: 20px;
+  padding: 2px;
+  color: @dn_ink;
+  background-color: alpha(@dn_surface, 0.82);
+}
+
+.dn-attach-remove:hover {
+  background-color: @dn_surface;
+}
+
 .dn-user-menu {
   padding: 8px 12px;
 }
@@ -506,7 +496,6 @@ scrolledwindow.dn-composer-input > * {
 
 .dn-section-blurb {
   margin-top: 4px;
-  max-width: 65ch;
 }
 
 .dn-section-body {
@@ -614,8 +603,6 @@ textview.dn-composer-text text {
 .dn-link-thumb {
   min-width: 80px;
   min-height: 80px;
-  max-width: 80px;
-  max-height: 80px;
   border-radius: 6px;
   background-color: @dn_wash;
 }
@@ -634,7 +621,6 @@ textview.dn-composer-text text {
   background-color: @dn_surface;
   min-width: 0;
   min-height: 0;
-  overflow: hidden;
 }
 
 .dn-embed-frame {
@@ -642,7 +628,7 @@ textview.dn-composer-text text {
 }
 
 .dn-embed-tall {
-  max-width: 320px;
+  min-width: 0;
 }
 
 .dn-embed-poster {
@@ -683,10 +669,28 @@ textview.dn-composer-text text {
 }
 
 .dn-skeleton-line {
-  height: 10px;
+  min-height: 10px;
   border-radius: 4px;
   background-color: @dn_wash;
-  min-width: 80px;
+  min-width: 40px;
+}
+
+.dn-bone {
+  background-color: @dn_wash;
+  border-radius: 4px;
+  min-width: 0;
+}
+
+.dn-bone-circle {
+  border-radius: 9999px;
+}
+
+.dn-skeleton-bubble {
+  border-radius: 8px;
+}
+
+.dn-skeleton-bars {
+  min-width: 0;
 }
 
 .dn-code {
@@ -694,7 +698,6 @@ textview.dn-composer-text text {
   border: 1px solid @dn_hairline;
   border-radius: 8px;
   background-color: @dn_wash;
-  overflow: hidden;
 }
 
 .dn-code-header {
@@ -720,11 +723,10 @@ textview.dn-composer-text text {
   border: 1px solid @dn_hairline;
   border-radius: 8px;
   min-width: 0;
-  overflow: hidden;
 }
 
 .dn-images-single {
-  max-height: 512px;
+  min-width: 0;
 }
 
 .dn-images-grid {
@@ -773,16 +775,21 @@ textview.dn-composer-text text {
 
 button.dn-nav-commit {
   margin-top: 8px;
+  min-width: 0;
   min-height: 52px;
-  padding: 12px;
+  padding: 0 12px;
   border-radius: 8px;
   font-weight: 500;
   font-size: 15px;
 }
 
+.dn-sidebar.expanded button.dn-nav-commit {
+  min-width: 0;
+}
+
 .dn-sidebar.collapsed button.dn-nav-commit {
   min-width: 52px;
-  padding: 10px;
+  padding: 0;
 }
 
 .dn-compose-dialog .dn-composer,
@@ -810,6 +817,7 @@ button.dn-nav-commit {
 
 .dn-commit-bar {
   min-height: 56px;
+  min-width: 0;
   padding: 0 16px;
   border-bottom: 1px solid @dn_hairline;
   background-color: @dn_surface;
@@ -818,6 +826,10 @@ button.dn-nav-commit {
 .dn-commit-bar-title {
   font-weight: 600;
   color: @dn_ink;
+}
+
+.dn-profile-bar-count {
+  font-size: 13px;
 }
 
 .dn-commit-bar-btn {
@@ -852,12 +864,24 @@ button.dn-nav-commit {
   border-bottom: 3px solid transparent;
 }
 
+.dn-notif-page,
+.dn-remotes-page,
+.dn-remotes-thread,
+.dn-remotes-inbox {
+  min-width: 0;
+}
+
 .dn-notif-tabs {
-  padding: 0 8px;
+  min-width: 0;
 }
 
 .dn-notif-tabs .dn-tab {
-  padding: 12px 14px;
+  padding: 12px 2px;
+  min-width: 0;
+}
+
+.dn-notif-tabs .dn-tab label {
+  min-width: 0;
 }
 
 .dn-notif-node {
@@ -899,6 +923,7 @@ button.dn-nav-commit {
   padding: 8px 12px;
   border: 1px solid @dn_hairline;
   border-radius: 8px;
+  min-width: 0;
 }
 
 .dn-window-scroll {
@@ -939,15 +964,13 @@ button.dn-nav-commit {
 .dn-inbox-row {
   padding: 10px 12px;
   border-bottom: 1px solid @dn_hairline;
-}
-
-.dn-remotes-inbox {
-  min-width: 280px;
+  min-width: 0;
 }
 
 .dn-message {
   padding: 6px 12px;
   color: @dn_ink;
+  min-width: 0;
 }
 
 .dn-message.mine {
@@ -975,13 +998,6 @@ button.dn-nav-commit {
   min-width: 8px;
   min-height: 8px;
   border-radius: 9999px;
-}
-
-.dn-aside-you button,
-.dn-aside-avatar,
-.dn-suggest-row,
-.dn-suggest-row button {
-  overflow: visible;
 }
 
 .dn-handle-dot.lane-0 { background-color: @dn_lane_0; }
@@ -1029,27 +1045,45 @@ button.dn-nav-commit {
   border-radius: 6px;
 }
 
-.dn-outline-btn {
+.dn-outline-btn,
+button.dn-outline-btn,
+menubutton.dn-outline-btn > button {
   min-height: 36px;
   padding: 0 12px;
-  border-radius: 8px;
+  border-radius: 6px;
   border: 1px solid @dn_hairline;
   background-color: @dn_surface;
   font-weight: 500;
   font-size: 14px;
 }
 
-.dn-outline-btn.dn-icon-btn {
+menubutton.dn-outline-btn {
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  box-shadow: none;
+  outline: none;
+}
+
+.dn-outline-btn.dn-icon-btn,
+button.dn-outline-btn.dn-icon-btn,
+menubutton.dn-outline-btn.dn-icon-btn > button {
   min-width: 36px;
   min-height: 36px;
   padding: 0;
 }
 
-.dn-follow-btn {
+.dn-follow-btn,
+button.dn-follow-btn,
+button.suggested-action.dn-follow-btn {
   min-width: 112px;
+  border-radius: 6px;
 }
 
-.dn-outline-btn:hover {
+button.dn-outline-btn:hover,
+menubutton.dn-outline-btn > button:hover {
   background-color: @dn_wash;
 }
 
@@ -1075,9 +1109,43 @@ button.dn-unfollow:hover {
   padding: 2px 8px;
 }
 
+.dn-profile-page,
+.dn-profile-hero,
+.dn-profile-hero-row,
+.dn-profile-header,
+.dn-activity,
+.dn-streaks,
+.dn-achievements,
+.dn-badge-row,
+.dn-shrink {
+  min-width: 0;
+}
+
+.dn-profile-hero-row {
+  padding: 0;
+}
+
 .dn-profile-hero {
   padding: 0;
   background-color: @dn_surface;
+}
+
+.dn-profile-hero button:not(.dn-achievements-chip),
+.dn-profile-hero menubutton > button {
+  border-radius: 6px;
+}
+
+.dn-profile-hero menubutton.dn-badge-row,
+.dn-profile-hero menubutton.dn-badge-row > button {
+  border-radius: 4px;
+}
+
+.dn-profile-hero button.dn-tab,
+.dn-profile-hero button.dn-profile-stat,
+.dn-profile-hero button.dn-profile-link,
+.dn-profile-hero button.dn-achievements-open,
+.dn-profile-hero button.dn-achievements-more {
+  border-radius: 0;
 }
 
 .dn-profile-header {
@@ -1089,10 +1157,59 @@ button.dn-unfollow:hover {
   margin-top: 2px;
 }
 
-.dn-achievements-chip {
+.dn-profile-link,
+.dn-profile-stat,
+button.dn-profile-link,
+button.dn-profile-stat {
+  padding: 0;
+  min-height: 0;
+  min-width: 0;
+  border-radius: 0;
+}
+
+.dn-profile-chip {
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background-color: @dn_wash;
+  color: @dn_ink_muted;
+}
+
+.dn-profile-link {
+  color: @dn_primary;
+}
+
+.dn-profile-link:hover label {
+  text-decoration: underline;
+}
+
+.dn-profile-counts {
+  margin-top: 4px;
+}
+
+.dn-stat-count,
+.dn-aside-stat-count,
+.dn-activity-count {
+  font-weight: 700;
+  font-size: 13px;
+  color: @dn_ink;
+}
+
+.dn-stat-label {
+  font-size: 13px;
+}
+
+button.dn-profile-stat:hover .dn-stat-count,
+button.dn-profile-stat:hover .dn-stat-label {
+  text-decoration: underline;
+}
+
+.dn-achievements-chip,
+button.dn-achievements-chip {
   font-family: "Geist Mono", "Adwaita Mono", monospace;
   font-size: 11px;
   font-weight: 500;
+  min-width: 0;
   min-height: 22px;
   padding: 1px 8px;
   border-radius: 9999px;
@@ -1169,10 +1286,45 @@ button.dn-unfollow:hover {
   min-height: 6px;
 }
 
+button.dn-badge-row,
+menubutton.dn-badge-row,
+menubutton.dn-badge-row > button {
+  padding: 0;
+  min-height: 28px;
+  margin-top: 2px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  box-shadow: none;
+}
+
+menubutton.dn-badge-row {
+  min-width: 0;
+}
+
+menubutton.dn-badge-row overlay {
+  min-width: 0;
+}
+
+.dn-badge-more {
+  font-family: "Geist Mono", "Adwaita Mono", monospace;
+  font-size: 12px;
+  color: @dn_ink_muted;
+}
+
+.dn-achievements-popover {
+  padding: 12px;
+}
+
+.dn-achievements-popover-title {
+  font-weight: 500;
+  font-size: 14px;
+}
+
 .dn-badge {
   padding: 4px 10px;
   min-height: 0;
-  border-radius: 9999px;
+  border-radius: 6px;
   border: 1px solid @dn_hairline;
   background-color: @dn_surface;
 }
@@ -1184,21 +1336,81 @@ button.dn-unfollow:hover {
   color: @dn_ink_muted;
 }
 
-.dn-badge.unlocked:hover {
+button.dn-badge-chip {
+  padding: 0;
+  min-width: 0;
+  min-height: 0;
+  background: none;
+  border: none;
+  box-shadow: none;
+  outline: none;
+  border-radius: 6px;
+}
+
+button.dn-badge-chip:hover,
+button.dn-badge-chip:active,
+button.dn-badge-chip:focus {
+  background: none;
+  box-shadow: none;
+  outline: none;
+}
+
+.dn-badge.unlocked:hover,
+.dn-badge.unlocked.hover,
+button.dn-badge-chip:hover .dn-badge.unlocked {
   border-color: @dn_ink;
 }
 
-.dn-badge.unlocked.lane-0:hover { border-color: @dn_lane_0; }
-.dn-badge.unlocked.lane-1:hover { border-color: @dn_lane_1; }
-.dn-badge.unlocked.lane-2:hover { border-color: @dn_lane_2; }
-.dn-badge.unlocked.lane-3:hover { border-color: @dn_lane_3; }
-.dn-badge.unlocked.lane-4:hover { border-color: @dn_lane_4; }
-.dn-badge.unlocked.lane-5:hover { border-color: @dn_lane_5; }
+.dn-badge.unlocked.lane-0:hover,
+.dn-badge.unlocked.lane-0.hover,
+button.dn-badge-chip:hover .dn-badge.unlocked.lane-0 { border-color: @dn_lane_0; }
+.dn-badge.unlocked.lane-1:hover,
+.dn-badge.unlocked.lane-1.hover,
+button.dn-badge-chip:hover .dn-badge.unlocked.lane-1 { border-color: @dn_lane_1; }
+.dn-badge.unlocked.lane-2:hover,
+.dn-badge.unlocked.lane-2.hover,
+button.dn-badge-chip:hover .dn-badge.unlocked.lane-2 { border-color: @dn_lane_2; }
+.dn-badge.unlocked.lane-3:hover,
+.dn-badge.unlocked.lane-3.hover,
+button.dn-badge-chip:hover .dn-badge.unlocked.lane-3 { border-color: @dn_lane_3; }
+.dn-badge.unlocked.lane-4:hover,
+.dn-badge.unlocked.lane-4.hover,
+button.dn-badge-chip:hover .dn-badge.unlocked.lane-4 { border-color: @dn_lane_4; }
+.dn-badge.unlocked.lane-5:hover,
+.dn-badge.unlocked.lane-5.hover,
+button.dn-badge-chip:hover .dn-badge.unlocked.lane-5 { border-color: @dn_lane_5; }
 
 .dn-profile-tabs .dn-tab {
   min-width: 0;
   padding-left: 0;
   padding-right: 0;
+}
+
+.dn-readme {
+  padding: 20px 24px 28px;
+}
+
+.dn-readme-image {
+  margin: 8px 0;
+  border-radius: 8px;
+  background-color: @dn_wash;
+}
+
+.dn-readme-source {
+  padding: 0;
+  min-height: 0;
+  margin-top: 8px;
+}
+
+.dn-readme-source,
+.dn-readme-source label {
+  font-family: "Geist Mono", "Adwaita Mono", monospace;
+  font-size: 12px;
+  color: @dn_ink_muted;
+}
+
+.dn-readme-source:hover label {
+  color: @dn_ink;
 }
 
 .dn-settings-tabs .dn-tab {
@@ -1300,7 +1512,6 @@ window.dark .dn-badge-done {
 }
 
 .dn-lane-preview {
-  overflow: hidden;
   border: 1px solid @dn_hairline;
   border-radius: 8px;
   min-height: 64px;
@@ -1388,13 +1599,16 @@ label.dn-kbd,
 
 .dn-aside-toast {
   min-width: 220px;
-  max-width: 280px;
   padding: 10px 14px;
   border: 1px solid @dn_hairline;
   border-radius: 8px;
   background-color: @dn_surface;
   color: @dn_ink;
   box-shadow: 0 8px 24px -8px rgb(0 0 0 / 0.28);
+}
+
+.dn-toast-link .dn-aside-toast:hover {
+  border-color: @dn_primary;
 }
 
 .dn-omnibox {
@@ -1520,6 +1734,62 @@ entry.dn-omnibox-entry > text {
   padding-top: 4px;
 }
 
+.dn-live-card {
+  padding: 12px;
+  border: 1px solid @dn_hairline;
+  border-radius: 8px;
+  background-color: @dn_surface;
+}
+
+.dn-live-row {
+  padding: 8px 6px;
+  border-radius: 8px;
+  min-height: 0;
+}
+
+.dn-live-row:hover {
+  background-color: @dn_wash;
+}
+
+.dn-live-row:hover .dn-live-arrow {
+  color: @dn_primary;
+}
+
+.dn-live-arrow {
+  color: @dn_ink_muted;
+}
+
+.dn-live-row .dn-live-avatar-wrap {
+  margin-bottom: 6px;
+}
+
+.dn-live-ring {
+  padding: 2px;
+  border-radius: 9999px;
+  background-color: #dc2626;
+}
+
+.dn-live-badge {
+  padding: 1px 4px;
+  border-radius: 3px;
+  background-color: #dc2626;
+  color: #ffffff;
+}
+
+.dn-live-badge-label {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: #ffffff;
+}
+
+.dn-live-dot {
+  min-width: 5px;
+  min-height: 5px;
+  border-radius: 9999px;
+  background-color: #ffffff;
+}
+
 .dn-aside-icon {
   min-width: 28px;
   min-height: 28px;
@@ -1540,7 +1810,6 @@ entry.dn-omnibox-entry > text {
 .dn-aside-you button {
   padding: 0;
   min-height: 0;
-  overflow: visible;
 }
 
 .dn-aside-you .dn-name {
@@ -1560,12 +1829,6 @@ button.dn-aside-stat {
   min-height: 0;
   min-width: 0;
   border-radius: 0;
-}
-
-.dn-aside-stat-count {
-  font-weight: 500;
-  font-size: 13px;
-  color: @dn_ink;
 }
 
 .dn-aside-stat-label {
@@ -1634,7 +1897,6 @@ headerbar {
 
 link {
   color: @dn_primary;
-  cursor: pointer;
 }
 
 /* Dark: match DESIGN.md even if prefers-color-scheme is stale. */
@@ -1647,6 +1909,7 @@ window.dark headerbar {
 }
 
 window.dark .dn-feed,
+window.dark .dn-mobile-header,
 window.dark .dn-composer,
 window.dark .dn-composer-input,
 window.dark .dn-settings,
@@ -1677,6 +1940,8 @@ window.dark .dn-wordmark-row,
 window.dark .dn-wordmark-btn,
 window.dark .dn-commit-bar-title,
 window.dark .dn-aside-stat-count,
+window.dark .dn-stat-count,
+window.dark .dn-activity-count,
 window.dark .dn-name,
 window.dark .dn-body,
 window.dark .dn-body-focus,
@@ -1757,7 +2022,8 @@ window.dark .dn-commit-bar,
 window.dark .dn-tabs,
 window.dark .dn-inbox-row,
 window.dark .dn-day,
-window.dark .dn-outline-btn {
+window.dark button.dn-outline-btn,
+window.dark menubutton.dn-outline-btn > button {
   border-color: #2a2a2d;
   background-color: #111112;
 }
@@ -1766,7 +2032,8 @@ window.dark .dn-profile-header,
 window.dark .dn-activity,
 window.dark .dn-streaks,
 window.dark .dn-achievements,
-window.dark .dn-profile-tabs {
+window.dark .dn-profile-tabs,
+window.dark .dn-live-card {
   background-color: #18181a;
   border-color: #2a2a2d;
 }
@@ -1781,6 +2048,7 @@ window.dark .dn-badge-card,
 window.dark .dn-rank-card,
 window.dark .dn-badge,
 window.dark headerbar,
+window.dark .dn-mobile-header,
 window.dark .dn-link-card,
 window.dark .dn-embed,
 window.dark .dn-images,

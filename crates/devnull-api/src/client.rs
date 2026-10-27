@@ -227,6 +227,50 @@ impl Client {
         Profile::from_value(value).map_err(|_| ApiError::decode())
     }
 
+    /// The GitHub profile README (`login/login`). Tries the signed API first, then GitHub.
+    /// `Ok(None)` when there is no README.
+    pub async fn profile_readme(
+        &self,
+        handle: &str,
+        github_login: &str,
+    ) -> Result<Option<String>, ApiError> {
+        if let Ok(request) = self.signed_request(
+            Method::GET,
+            &format!("users/{handle}/readme"),
+            &[],
+            None,
+            JSON_NAMESPACE,
+        ) {
+            match self.execute(request).await {
+                Ok(bytes) => return readme_from_bytes(&bytes),
+                Err(_) => {}
+            }
+        }
+        self.fetch_github_readme(github_login).await
+    }
+
+    async fn fetch_github_readme(&self, login: &str) -> Result<Option<String>, ApiError> {
+        let url = format!("https://api.github.com/repos/{login}/{login}/readme");
+        let response = self
+            .inner
+            .http
+            .get(&url)
+            .header(reqwest::header::ACCEPT, "application/vnd.github.raw+json")
+            .header(reqwest::header::USER_AGENT, USER_AGENT)
+            .send()
+            .await
+            .map_err(|_| ApiError::network())?;
+        match response.status() {
+            StatusCode::OK => {
+                let text = response.text().await.map_err(|_| ApiError::network())?;
+                let text = text.trim().to_owned();
+                Ok(if text.is_empty() { None } else { Some(text) })
+            }
+            StatusCode::NOT_FOUND => Ok(None),
+            _ => Err(ApiError::network()),
+        }
+    }
+
     pub async fn sync_github(&self) -> Result<CurrentUser, ApiError> {
         let bytes = self
             .execute(self.signed_request(Method::PUT, "me/github", &[], None, JSON_NAMESPACE)?)
@@ -270,7 +314,11 @@ impl Client {
             .await
         {
             if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                let users = SearchResults::from_value(value).users;
+                let users: Vec<User> = SearchResults::from_value(value)
+                    .users
+                    .into_iter()
+                    .filter(|user| !user.is_followed_by_me())
+                    .collect();
                 if !users.is_empty() {
                     return Ok(users);
                 }
@@ -283,6 +331,9 @@ impl Client {
             let Some(author) = commit.author else {
                 continue;
             };
+            if author.is_followed_by_me() {
+                continue;
+            }
             if seen.insert(author.username.clone()) {
                 out.push(author);
             }
@@ -293,8 +344,30 @@ impl Client {
         Ok(out)
     }
 
-    pub async fn saved(&self, cursor: Option<&str>) -> Result<LogPage, ApiError> {
-        let page: Page<Commit> = self.get("saved", &[("cursor", cursor)]).await?;
+    pub async fn live_following(&self) -> Result<Vec<User>, ApiError> {
+        for path in ["live-following", "me/live-following"] {
+            match self
+                .execute(self.signed_request(Method::GET, path, &[], None, JSON_NAMESPACE)?)
+                .await
+            {
+                Ok(bytes) => {
+                    let value: serde_json::Value =
+                        serde_json::from_slice(&bytes).map_err(|_| ApiError::decode())?;
+                    return Ok(User::list_from_value(value)
+                        .into_iter()
+                        .filter(User::is_live)
+                        .take(3)
+                        .collect());
+                }
+                Err(err) if err.status == 404 => continue,
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(Vec::new())
+    }
+
+    pub async fn starred(&self, cursor: Option<&str>) -> Result<LogPage, ApiError> {
+        let page: Page<Commit> = self.get("starred", &[("cursor", cursor)]).await?;
         Ok(LogPage {
             data: page.data,
             links: page.links,
@@ -397,11 +470,13 @@ impl Client {
         filter: NotificationFilter,
         cursor: Option<&str>,
     ) -> Result<Page<Notification>, ApiError> {
-        self.get(
-            "notifications",
-            &[("type", filter.query()), ("cursor", cursor)],
-        )
-        .await
+        let value: serde_json::Value = self
+            .get(
+                "notifications",
+                &[("type", filter.query()), ("cursor", cursor)],
+            )
+            .await?;
+        Ok(Notification::page_from_value(value))
     }
 
     pub async fn remotes(
@@ -703,6 +778,35 @@ fn header_value(value: &str) -> Result<HeaderValue, ApiError> {
     HeaderValue::from_str(value).map_err(|_| ApiError::signing("Couldn't sign this request."))
 }
 
+fn readme_from_bytes(bytes: &[u8]) -> Result<Option<String>, ApiError> {
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    let value: serde_json::Value = serde_json::from_slice(bytes).map_err(|_| ApiError::decode())?;
+    let data = value.get("data").unwrap_or(&value);
+    if data.is_null() {
+        return Ok(None);
+    }
+    if let Some(text) = data.as_str() {
+        return Ok(nonempty_readme(text));
+    }
+    for key in ["readme", "body", "markdown", "html"] {
+        if let Some(text) = data.get(key).and_then(|value| value.as_str()) {
+            return Ok(nonempty_readme(text));
+        }
+    }
+    Err(ApiError::decode())
+}
+
+fn nonempty_readme(text: &str) -> Option<String> {
+    let text = text.trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.to_owned())
+    }
+}
+
 fn decode_maybe_wrapped<T: DeserializeOwned>(bytes: Vec<u8>) -> Result<T, ApiError> {
     if bytes.is_empty() {
         return serde_json::from_str("null").map_err(|_| ApiError::decode());
@@ -711,10 +815,77 @@ fn decode_maybe_wrapped<T: DeserializeOwned>(bytes: Vec<u8>) -> Result<T, ApiErr
         serde_json::from_slice(&bytes).map_err(|_| ApiError::decode())?;
     if let Some(data) = value.get("data") {
         if data.is_object() {
-            if let Ok(parsed) = serde_json::from_value::<T>(data.clone()) {
+            if let Ok(parsed) = serde_json::from_value::<T>(merge_envelope(&value, data)) {
                 return Ok(parsed);
+            }
+            if let Some(user) = data.get("user").filter(|user| user.is_object()) {
+                if let Ok(parsed) = serde_json::from_value::<T>(merge_envelope(&value, user)) {
+                    return Ok(parsed);
+                }
             }
         }
     }
     serde_json::from_value(value).map_err(|_| ApiError::decode())
+}
+
+/// Copy envelope fields such as `unread_notifications_count` onto the inner object
+/// when Laravel puts them beside `data` via `JsonResource::additional`.
+fn merge_envelope(envelope: &serde_json::Value, inner: &serde_json::Value) -> serde_json::Value {
+    let mut merged = inner.clone();
+    let Some(object) = merged.as_object_mut() else {
+        return merged;
+    };
+    let Some(map) = envelope.as_object() else {
+        return merged;
+    };
+    for (key, value) in map {
+        if key != "data" {
+            object.entry(key.clone()).or_insert_with(|| value.clone());
+        }
+    }
+    merged
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redeem_body_reads_handle_and_unread_count_beside_data() {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "data": {
+                "id": "01a13fa8-6cd4-70ef-b8e5-f46a3ca70ca8",
+                "handle": "nunomaduro",
+                "name": "Nuno Maduro",
+                "created_at": "2026-10-15T13:02:44Z",
+                "automatic_lane": 3,
+                "remotes": { "from": "following", "unread_count": 2 }
+            },
+            "unread_notifications_count": 7
+        }))
+        .unwrap();
+
+        let user: CurrentUser = decode_maybe_wrapped(bytes).unwrap();
+        assert_eq!(user.username(), "nunomaduro");
+        assert_eq!(user.unread_notifications(), 7);
+        assert_eq!(user.unread_remotes(), 2);
+    }
+
+    #[test]
+    fn readme_from_a_string_payload() {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "data": "# Hello"
+        }))
+        .unwrap();
+        assert_eq!(
+            readme_from_bytes(&bytes).unwrap().as_deref(),
+            Some("# Hello")
+        );
+    }
+
+    #[test]
+    fn empty_readme_is_missing() {
+        let bytes = serde_json::to_vec(&serde_json::json!({ "data": null })).unwrap();
+        assert_eq!(readme_from_bytes(&bytes).unwrap(), None);
+    }
 }

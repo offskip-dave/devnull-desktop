@@ -1,13 +1,17 @@
 use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 use relm4::gtk;
+use relm4::gtk::glib;
 use relm4::gtk::pango;
 use relm4::gtk::prelude::*;
+use relm4::Sender;
+use std::collections::HashMap;
 use std::sync::OnceLock;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::{FontStyle, ThemeSet};
 use syntect::parsing::SyntaxSet;
 use syntect::util::LinesWithEndings;
 
+use crate::app::AppMsg;
 use crate::ui;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,7 +24,13 @@ pub enum Segment {
     },
 }
 
-pub fn body_widget(text: &str, class: &str) -> gtk::Widget {
+pub fn body_widget(
+    text: &str,
+    class: &str,
+    mentions: Option<&HashMap<String, String>>,
+    sender: Option<&Sender<AppMsg>>,
+) -> gtk::Widget {
+    let sender = sender.cloned();
     let wrap = gtk::Box::new(gtk::Orientation::Vertical, 8);
     for class in class.split_whitespace() {
         wrap.add_css_class(class);
@@ -31,12 +41,12 @@ pub fn body_widget(text: &str, class: &str) -> gtk::Widget {
         if prose.is_empty() {
             return;
         }
-        wrap.append(&prose_label(prose));
+        wrap.append(&prose_label(prose, sender.as_ref()));
         prose.clear();
     };
     for segment in segments(text) {
         match segment {
-            Segment::Text(text) => prose.push_str(&markdown_markup(&text)),
+            Segment::Text(text) => prose.push_str(&markdown_markup(&text, mentions)),
             Segment::Code(code) => {
                 let chip = if is_dark() { "#232326" } else { "#eef0f2" };
                 prose.push_str(&format!(
@@ -56,6 +66,10 @@ pub fn body_widget(text: &str, class: &str) -> gtk::Widget {
 }
 
 pub fn body_markup(text: &str) -> String {
+    render_markup(text, None)
+}
+
+fn render_markup(text: &str, mentions: Option<&HashMap<String, String>>) -> String {
     let mut out = String::new();
     for (index, segment) in segments(text).into_iter().enumerate() {
         if index > 0 && !out.ends_with('\n') {
@@ -65,7 +79,7 @@ pub fn body_markup(text: &str) -> String {
             }
         }
         match segment {
-            Segment::Text(text) => out.push_str(&markdown_markup(&text)),
+            Segment::Text(text) => out.push_str(&markdown_markup(&text, mentions)),
             Segment::Code(code) => {
                 out.push_str("<tt>");
                 out.push_str(&escape(&code));
@@ -138,6 +152,320 @@ pub fn segments(text: &str) -> Vec<Segment> {
         raw.push(Segment::Text(prose));
     }
     trim_block_edges(raw)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ColorSpan {
+    value: String,
+    index: usize,
+    length: usize,
+}
+
+/// Keep in sync with `app/Services/Mentions.php` and `linkified-text.tsx`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MentionSpan {
+    start: usize,
+    end: usize,
+    username: String,
+}
+
+fn with_mentions(text: &str, mentions: Option<&HashMap<String, String>>) -> String {
+    let Some(mentions) = mentions.filter(|map| !map.is_empty()) else {
+        return with_wordmarks(&with_colors(&escape(text)));
+    };
+    let mut out = String::new();
+    let mut last = 0;
+    for mention in mention_spans(text) {
+        out.push_str(&with_wordmarks(&with_colors(&escape(
+            &text[last..mention.start],
+        ))));
+        let token = &text[mention.start..mention.end];
+        if captured_mention(mentions, &mention.username).is_some() {
+            out.push_str(&format!(
+                "<a href=\"mention:{}\">{}</a>",
+                escape(&mention.username),
+                escape(token)
+            ));
+        } else {
+            out.push_str(&with_wordmarks(&with_colors(&escape(token))));
+        }
+        last = mention.end;
+    }
+    out.push_str(&with_wordmarks(&with_colors(&escape(&text[last..]))));
+    out
+}
+
+fn captured_mention<'a>(mentions: &'a HashMap<String, String>, username: &str) -> Option<&'a str> {
+    mentions
+        .get(&username.to_ascii_lowercase())
+        .or_else(|| mentions.get(username))
+        .map(String::as_str)
+}
+
+fn mention_spans(text: &str) -> Vec<MentionSpan> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < text.len() {
+        let Some(at) = text[i..].find('@') else {
+            break;
+        };
+        let start = i + at;
+        if !mention_left_ok(text, start) {
+            i = start + 1;
+            continue;
+        }
+        let Some(username) = take_github_username(&text[start + 1..]) else {
+            i = start + 1;
+            continue;
+        };
+        let end = start + 1 + username.len();
+        if !mention_right_ok(text, end) {
+            i = start + 1;
+            continue;
+        }
+        out.push(MentionSpan {
+            start,
+            end,
+            username: username.to_ascii_lowercase(),
+        });
+        i = end;
+    }
+    out
+}
+
+#[cfg(test)]
+fn mention_usernames(text: &str) -> Vec<String> {
+    let mut names = Vec::new();
+    for mention in mention_spans(text) {
+        if !names.contains(&mention.username) {
+            names.push(mention.username);
+        }
+    }
+    names
+}
+
+fn mention_left_ok(text: &str, at: usize) -> bool {
+    let Some(prev) = text[..at].chars().next_back() else {
+        return true;
+    };
+    !(prev.is_alphabetic() || prev.is_numeric() || matches!(prev, '_' | '.' | '/' | '@' | '-'))
+}
+
+fn take_github_username(s: &str) -> Option<&str> {
+    let bytes = s.as_bytes();
+    if !bytes.first().is_some_and(u8::is_ascii_alphanumeric) {
+        return None;
+    }
+    let mut i = 1;
+    let mut n = 1;
+    while i < bytes.len() && n < 39 {
+        let b = bytes[i];
+        if b.is_ascii_alphanumeric() {
+            i += 1;
+            n += 1;
+        } else if b == b'-'
+            && n + 1 <= 39
+            && bytes
+                .get(i + 1)
+                .is_some_and(|next| next.is_ascii_alphanumeric())
+        {
+            i += 1;
+            n += 1;
+        } else {
+            break;
+        }
+    }
+    Some(&s[..i])
+}
+
+fn mention_right_ok(text: &str, end: usize) -> bool {
+    let rest = &text[end..];
+    let mut chars = rest.chars();
+    let Some(next) = chars.next() else {
+        return true;
+    };
+    if next.is_ascii_alphanumeric() || matches!(next, '_' | '@' | '/' | '-') {
+        return false;
+    }
+    if next == '.' {
+        if chars
+            .next()
+            .is_some_and(|after| after.is_ascii_alphanumeric())
+        {
+            return false;
+        }
+    }
+    true
+}
+
+fn with_colors(text: &str) -> String {
+    let mut out = String::new();
+    let mut last = 0;
+    for color in colors_in(text, false) {
+        out.push_str(&text[last..color.index]);
+        let token = &text[color.index..color.index + color.length];
+        if let Some(css) = css_hex(&color.value) {
+            out.push_str(&format!("<span foreground=\"{css}\">■</span>{token}"));
+        } else {
+            out.push_str(token);
+        }
+        last = color.index + color.length;
+    }
+    out.push_str(&text[last..]);
+    out
+}
+
+/// Hex colors in prose: 3, 4, 6 or 8 digits, a whole word like a hashtag.
+/// Short forms need a letter or a leading zero so `#123` stays an issue reference.
+fn colors_in(text: &str, starts_text: bool) -> Vec<ColorSpan> {
+    let hay = if starts_text {
+        format!("\n{text}")
+    } else {
+        text.to_owned()
+    };
+    let shift = usize::from(starts_text);
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < hay.len() {
+        let Some(next) = hay[i..].chars().next() else {
+            break;
+        };
+        let hash_len = match next {
+            '#' => 1,
+            '\u{FF03}' => next.len_utf8(),
+            _ => {
+                i += next.len_utf8();
+                continue;
+            }
+        };
+        if !color_left_ok(&hay, i) {
+            i += next.len_utf8();
+            continue;
+        }
+        let hex_at = i + hash_len;
+        let Some((digits, hex_len)) = take_color_digits(&hay[hex_at..]) else {
+            i += next.len_utf8();
+            continue;
+        };
+        let end = hex_at + hex_len;
+        if !color_right_ok(&hay[end..]) {
+            i += next.len_utf8();
+            continue;
+        }
+        let index = i.saturating_sub(shift);
+        out.push(ColorSpan {
+            value: digits,
+            index,
+            length: hash_len + hex_len,
+        });
+        i = end;
+    }
+    out
+}
+
+fn color_left_ok(text: &str, i: usize) -> bool {
+    if i == 0 {
+        return true;
+    }
+    let before = &text[..i];
+    let mut chars = before.chars().rev();
+    match chars.next() {
+        None => true,
+        Some(c) if c.is_whitespace() => true,
+        Some('>') => chars.next().is_none_or(|c| c == '\n'),
+        _ => false,
+    }
+}
+
+fn color_right_ok(rest: &str) -> bool {
+    let mut chars = rest.chars();
+    loop {
+        match chars.next() {
+            None => return true,
+            Some(c) if is_color_space(c) => return true,
+            Some(c) if is_color_punct(c) => {}
+            _ => return false,
+        }
+    }
+}
+
+fn is_color_space(c: char) -> bool {
+    c.is_whitespace()
+        || matches!(
+            c,
+            '\u{00AD}'
+                | '\u{2060}'
+                | '\u{200A}'
+                | '\u{200B}'
+                | '\u{200C}'
+                | '\u{200D}'
+                | '\u{20E2}'
+        )
+}
+
+fn is_color_punct(c: char) -> bool {
+    c.is_ascii_punctuation()
+        || matches!(
+            c,
+            '—' | '–'
+                | '…'
+                | '“'
+                | '”'
+                | '‘'
+                | '’'
+                | '。'
+                | '、'
+                | '！'
+                | '？'
+                | '：'
+                | '；'
+        )
+}
+
+fn take_color_digits(rest: &str) -> Option<(String, usize)> {
+    let mut hex_len = 0;
+    for (offset, c) in rest.char_indices() {
+        if c.is_ascii_hexdigit() && offset < 8 {
+            hex_len = offset + 1;
+        } else {
+            break;
+        }
+    }
+    let take = if hex_len >= 8 {
+        8
+    } else if hex_len >= 6 {
+        6
+    } else if hex_len >= 4 && short_color_ok(&rest[..4]) {
+        4
+    } else if hex_len >= 3 && short_color_ok(&rest[..3]) {
+        3
+    } else {
+        return None;
+    };
+    Some((rest[..take].to_owned(), take))
+}
+
+fn short_color_ok(digits: &str) -> bool {
+    digits.as_bytes().first() == Some(&b'0')
+        || digits
+            .bytes()
+            .any(|b| b.is_ascii_hexdigit() && !b.is_ascii_digit())
+}
+
+fn css_hex(digits: &str) -> Option<String> {
+    let d = digits.to_ascii_lowercase();
+    let rgb = match d.len() {
+        3 | 4 => {
+            let b = d.as_bytes();
+            format!(
+                "{}{}{}{}{}{}",
+                b[0] as char, b[0] as char, b[1] as char, b[1] as char, b[2] as char, b[2] as char
+            )
+        }
+        6 | 8 => d[..6].to_owned(),
+        _ => return None,
+    };
+    Some(format!("#{rgb}"))
 }
 
 fn left_ok(prev: Option<char>) -> bool {
@@ -252,8 +580,9 @@ fn trim_block_edges(mut raw: Vec<Segment>) -> Vec<Segment> {
     raw
 }
 
-fn markdown_markup(text: &str) -> String {
+fn markdown_markup(text: &str, mentions: Option<&HashMap<String, String>>) -> String {
     let mut out = String::new();
+    let mut in_link = false;
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     let parser = Parser::new_ext(text, options);
@@ -271,15 +600,23 @@ fn markdown_markup(text: &str) -> String {
                 out.push_str("</tt>");
             }
             Event::Text(t) | Event::Html(t) | Event::InlineHtml(t) => {
-                out.push_str(&with_wordmarks(&escape(&t)));
+                if in_link {
+                    out.push_str(&with_wordmarks(&with_colors(&escape(&t))));
+                } else {
+                    out.push_str(&with_mentions(&t, mentions));
+                }
             }
             Event::SoftBreak | Event::HardBreak => out.push('\n'),
             Event::Start(Tag::Link { dest_url, .. }) => {
+                in_link = true;
                 out.push_str("<a href=\"");
                 out.push_str(&escape(&dest_url));
                 out.push_str("\">");
             }
-            Event::End(TagEnd::Link) => out.push_str("</a>"),
+            Event::End(TagEnd::Link) => {
+                in_link = false;
+                out.push_str("</a>");
+            }
             Event::Rule => out.push('\n'),
             _ => {}
         }
@@ -287,20 +624,34 @@ fn markdown_markup(text: &str) -> String {
     out
 }
 
-fn prose_label(markup: &str) -> gtk::Label {
+fn prose_label(markup: &str, sender: Option<&Sender<AppMsg>>) -> gtk::Label {
     let label = gtk::Label::new(None);
     label.set_wrap(true);
     label.set_wrap_mode(pango::WrapMode::WordChar);
     label.set_xalign(0.0);
+    label.set_hexpand(true);
+    label.set_width_chars(1);
     label.set_selectable(true);
     label.set_use_markup(true);
     label.set_markup(markup);
+    if let Some(sender) = sender {
+        let sender = sender.clone();
+        label.connect_activate_link(move |_, uri| {
+            if let Some(username) = uri.strip_prefix("mention:") {
+                sender.emit(AppMsg::OpenProfile(username.to_string()));
+            } else {
+                sender.emit(AppMsg::OpenWeb(uri.to_string()));
+            }
+            glib::Propagation::Stop
+        });
+    }
     label
 }
 
 fn code_block(language: Option<&str>, code: &str) -> gtk::Widget {
     let wrap = gtk::Box::new(gtk::Orientation::Vertical, 0);
     wrap.add_css_class("dn-code");
+    wrap.set_overflow(gtk::Overflow::Hidden);
     wrap.set_hexpand(true);
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     header.add_css_class("dn-code-header");
@@ -324,6 +675,8 @@ fn code_block(language: Option<&str>, code: &str) -> gtk::Widget {
     let body = gtk::Label::new(None);
     body.add_css_class("dn-code-body");
     body.set_xalign(0.0);
+    body.set_hexpand(true);
+    body.set_width_chars(1);
     body.set_selectable(true);
     body.set_wrap(true);
     body.set_wrap_mode(pango::WrapMode::Char);
@@ -404,6 +757,7 @@ fn escape(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     #[test]
     fn splits_inline_and_fenced_code() {
@@ -432,5 +786,105 @@ mod tests {
             "/dev/nullable /dev/null/log a/dev/null /dev/null_1 /DEV/NULL https://example.com/dev/null @devnull",
         );
         assert!(!kept.contains("foreground="));
+    }
+
+    #[test]
+    fn finds_hex_colors_and_skips_issue_numbers() {
+        let colors = colors_in("#fff then #000 and #ff8a4c", true);
+        assert_eq!(
+            colors.iter().map(|c| c.value.as_str()).collect::<Vec<_>>(),
+            ["fff", "000", "ff8a4c"]
+        );
+        assert!(colors_in("#123 is an issue", true).is_empty());
+        assert!(colors_in("x#fff", true).is_empty());
+        assert!(colors_in("#fff-x", true).is_empty());
+        assert!(colors_in("#ff8a4c.com", true).is_empty());
+        assert_eq!(
+            colors_in(">#abc", true)
+                .iter()
+                .map(|c| c.value.as_str())
+                .collect::<Vec<_>>(),
+            ["abc"]
+        );
+        let marked = with_colors("#ff8a4c");
+        assert!(marked.contains("foreground=\"#ff8a4c\""));
+        assert!(marked.contains("■"));
+        assert!(marked.contains("#ff8a4c"));
+    }
+
+    #[test]
+    fn finds_mentions_lowercased_once_each_in_order() {
+        assert_eq!(
+            mention_usernames("@NunoMaduro and @taylorotwell, thanks! cc @nunomaduro"),
+            ["nunomaduro", "taylorotwell"]
+        );
+    }
+
+    #[test]
+    fn finds_mentions_next_to_punctuation() {
+        assert_eq!(mention_usernames("Thanks @nuno."), ["nuno"]);
+        assert_eq!(mention_usernames("Right, @nuno?"), ["nuno"]);
+        assert_eq!(mention_usernames("(with @nuno)"), ["nuno"]);
+        assert_eq!(mention_usernames("Shipped\n@nuno"), ["nuno"]);
+        assert_eq!(mention_usernames("Hi @jess-archer"), ["jess-archer"]);
+        assert_eq!(mention_usernames("@nuno: look"), ["nuno"]);
+    }
+
+    #[test]
+    fn ignores_what_only_looks_like_a_mention() {
+        for text in [
+            "Mail me at nuno@laravel.com",
+            "npm i @inertiajs/react",
+            "Try @vue.js",
+            "See medium.com/@nuno",
+            "Meet @ 5pm",
+            "@-nuno",
+            "@nuno-",
+            "@@nuno",
+            &format!("@{}", "a".repeat(40)),
+        ] {
+            assert!(
+                mention_usernames(text).is_empty(),
+                "expected no mentions in {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn allows_usernames_of_up_to_39_characters() {
+        let name = "a".repeat(39);
+        assert_eq!(mention_usernames(&format!("@{name}")), [name]);
+    }
+
+    #[test]
+    fn links_captured_mentions_and_keeps_unknown_plain() {
+        let id = "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b";
+        let mentions = HashMap::from([("original".into(), id.into())]);
+        let marked = with_mentions("Thanks @ORIGINAL and @futuredev.", Some(&mentions));
+        assert!(marked.contains("href=\"mention:original\""));
+        assert!(marked.contains(">@ORIGINAL</a>"));
+        assert!(marked.contains("@futuredev"));
+        assert_eq!(marked.matches("href=\"mention:").count(), 1);
+        assert_eq!(
+            with_mentions("Thanks @original!", None),
+            "Thanks @original!"
+        );
+    }
+
+    #[test]
+    fn skips_mentions_in_code() {
+        let mentions = HashMap::from([
+            ("taylorotwell".into(), "t".into()),
+            ("override".into(), "o".into()),
+            ("deprecated".into(), "d".into()),
+        ]);
+        let marked = render_markup(
+            "thanks @taylorotwell for `@Override`\n```java\n@Deprecated\nvoid run() {}\n```",
+            Some(&mentions),
+        );
+        assert!(marked.contains("href=\"mention:taylorotwell\""));
+        assert!(!marked.contains("mention:override"));
+        assert!(!marked.contains("mention:deprecated"));
+        assert!(marked.contains("@Override"));
     }
 }

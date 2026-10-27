@@ -1,5 +1,7 @@
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::date::deserialize_opt_datetime;
 
@@ -33,6 +35,7 @@ impl Lane {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct User {
     pub id: String,
+    #[serde(alias = "handle")]
     pub username: String,
     #[serde(default)]
     pub name: Option<String>,
@@ -49,6 +52,8 @@ pub struct User {
     #[serde(default)]
     pub github_url: Option<String>,
     #[serde(default)]
+    pub has_github_account: Option<bool>,
+    #[serde(default)]
     pub html_url: Option<String>,
     #[serde(default)]
     pub feed_url: Option<String>,
@@ -62,7 +67,7 @@ pub struct User {
     pub following_count: Option<i64>,
     #[serde(default)]
     pub lane: Option<Lane>,
-    #[serde(default)]
+    #[serde(default, alias = "is_following")]
     pub is_followed: Option<bool>,
     #[serde(default)]
     pub follows_you: Option<bool>,
@@ -70,6 +75,40 @@ pub struct User {
     pub has_sponsors_listing: Option<bool>,
     #[serde(default)]
     pub timezone: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_opt_live")]
+    pub live: Option<LiveStream>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct LiveStream {
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub thumbnail_url: Option<String>,
+}
+
+fn deserialize_opt_live<'de, D>(deserializer: D) -> Result<Option<LiveStream>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(match value {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::String(url)) => {
+            let url = url.trim().to_owned();
+            if url.is_empty() {
+                None
+            } else {
+                Some(LiveStream {
+                    url,
+                    thumbnail_url: None,
+                })
+            }
+        }
+        Some(value) => serde_json::from_value::<LiveStream>(value)
+            .ok()
+            .filter(|stream| !stream.url.is_empty()),
+    })
 }
 
 impl User {
@@ -79,10 +118,44 @@ impl User {
             _ => &self.username,
         }
     }
+
+    pub fn live_url(&self) -> Option<&str> {
+        self.live
+            .as_ref()
+            .map(|stream| stream.url.as_str())
+            .filter(|url| !url.is_empty())
+    }
+
+    pub fn is_live(&self) -> bool {
+        self.live_url().is_some()
+    }
+
+    pub fn github_login(&self) -> &str {
+        self.github_url
+            .as_deref()
+            .and_then(github_login_from_url)
+            .unwrap_or(&self.username)
+    }
+
+    pub fn is_followed_by_me(&self) -> bool {
+        self.is_followed.unwrap_or(false)
+    }
+}
+
+fn github_login_from_url(url: &str) -> Option<&str> {
+    let url = url.trim().trim_end_matches('/');
+    let rest = url
+        .strip_prefix("https://github.com/")
+        .or_else(|| url.strip_prefix("http://github.com/"))
+        .or_else(|| url.strip_prefix("https://www.github.com/"))
+        .or_else(|| url.strip_prefix("http://www.github.com/"))?;
+    let login = rest.split('/').next()?;
+    (!login.is_empty()).then_some(login)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RemotesSettings {
+    #[serde(default)]
     pub from: String,
     #[serde(default)]
     pub pull_receipts: bool,
@@ -163,7 +236,14 @@ impl User {
                 return users;
             }
         }
-        for key in ["muted", "blocked", "mutes", "blocks"] {
+        for key in [
+            "liveFollowing",
+            "live_following",
+            "muted",
+            "blocked",
+            "mutes",
+            "blocks",
+        ] {
             if let Some(users) = json_vec::<User>(&data, key).or_else(|| json_vec(&value, key)) {
                 return users;
             }
@@ -371,7 +451,11 @@ impl Achievements {
     }
 
     pub fn unlocked_count(&self) -> usize {
-        self.badges.iter().filter(|b| b.unlocked).count()
+        self.unlocked_badges().count()
+    }
+
+    pub fn unlocked_badges(&self) -> impl Iterator<Item = &Badge> {
+        self.badges.iter().filter(|badge| badge.unlocked)
     }
 }
 
@@ -464,6 +548,89 @@ fn json_vec<T: serde::de::DeserializeOwned>(
         .and_then(|v| serde_json::from_value(v).ok())
 }
 
+fn deserialize_mentions<'de, D>(
+    deserializer: D,
+) -> Result<Option<HashMap<String, String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(match value {
+        None | Some(serde_json::Value::Null) => None,
+        Some(serde_json::Value::Object(map)) => {
+            let mut out = HashMap::new();
+            for (key, item) in map {
+                if let Some(id) = item.as_str() {
+                    out.insert(key, id.to_owned());
+                }
+            }
+            Some(out)
+        }
+        Some(_) => None,
+    })
+}
+
+fn deserialize_opt_kind<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| match value {
+        serde_json::Value::String(kind) => Some(kind),
+        serde_json::Value::Object(map) => map
+            .get("value")
+            .or_else(|| map.get("name"))
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_owned),
+        _ => None,
+    }))
+}
+
+fn deserialize_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+fn deserialize_opt_i64<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| {
+        value
+            .as_i64()
+            .or_else(|| value.as_u64().map(|n| n as i64))
+            .or_else(|| value.as_f64().map(|n| n as i64))
+            .or_else(|| value.as_str().and_then(|s| s.parse().ok()))
+    }))
+}
+
+fn deserialize_opt_commit<'de, D>(deserializer: D) -> Result<Option<Commit>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| {
+        if value.is_null() {
+            None
+        } else {
+            serde_json::from_value(value).ok()
+        }
+    }))
+}
+
+fn json_list<'a>(value: &'a serde_json::Value) -> Option<&'a Vec<serde_json::Value>> {
+    value.as_array().or_else(|| {
+        value
+            .get("data")
+            .and_then(serde_json::Value::as_array)
+            .or_else(|| value.get("notifications").and_then(json_list))
+    })
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Embed {
     #[serde(default)]
@@ -551,6 +718,9 @@ pub struct Commit {
     pub quoted_commit: Option<Box<Commit>>,
     #[serde(default)]
     pub parent: Option<Box<Commit>>,
+    /// Captured `@username` → user id, lowercased keys. Only these mentions are linkified.
+    #[serde(default, deserialize_with = "deserialize_mentions")]
+    pub mentions: Option<HashMap<String, String>>,
 }
 
 impl Commit {
@@ -718,10 +888,11 @@ impl LogKind {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Notification {
+    #[serde(default)]
     pub id: String,
     #[serde(default)]
     pub type_name: Option<String>,
-    #[serde(rename = "type", default)]
+    #[serde(rename = "type", default, deserialize_with = "deserialize_opt_kind")]
     pub kind: Option<String>,
     #[serde(default)]
     pub subject_id: Option<String>,
@@ -733,17 +904,17 @@ pub struct Notification {
     pub created_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub actor: Option<User>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_vec")]
     pub actors: Vec<User>,
     #[serde(default)]
     pub group_id: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_i64")]
     pub event_count: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_i64")]
     pub actors_count: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_i64")]
     pub unread_count: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_commit")]
     pub commit: Option<Commit>,
 }
 
@@ -782,6 +953,23 @@ impl Notification {
 
     pub fn is_unread(&self) -> bool {
         self.read_at.is_none() || self.unread_count.unwrap_or(0) > 0
+    }
+
+    pub fn page_from_value(value: serde_json::Value) -> Page<Self> {
+        let root = value.get("data").unwrap_or(&value);
+        let items = json_list(&value)
+            .or_else(|| json_list(root))
+            .cloned()
+            .unwrap_or_default();
+        let data = items
+            .into_iter()
+            .filter_map(|item| serde_json::from_value(item).ok())
+            .collect();
+        let links =
+            serde_json::from_value(nested(&value, root, "links").cloned().unwrap_or_default()).ok();
+        let meta =
+            serde_json::from_value(nested(&value, root, "meta").cloned().unwrap_or_default()).ok();
+        Page { data, links, meta }
     }
 }
 
@@ -947,6 +1135,9 @@ pub struct Message {
     pub body: Option<String>,
     #[serde(default)]
     pub reply_to_id: Option<i64>,
+    /// Captured `@username` → user id, lowercased keys. Only these mentions are linkified.
+    #[serde(default, deserialize_with = "deserialize_mentions")]
+    pub mentions: Option<HashMap<String, String>>,
     #[serde(default)]
     pub link_preview: Option<LinkPreview>,
     #[serde(default)]
@@ -1124,5 +1315,165 @@ mod unread_count_tests {
             ..Default::default()
         };
         assert!(notice.is_unread());
+    }
+
+    #[test]
+    fn current_user_reads_handle_the_way_devices_and_me_send_it() {
+        let value = json!({
+            "id": "01a13fa8-6cd4-70ef-b8e5-f46a3ca70ca8",
+            "handle": "nunomaduro",
+            "name": "Nuno Maduro",
+            "avatar_url": "https://avatars.githubusercontent.com/u/5457236?v=4",
+            "created_at": "2026-10-15T13:02:44Z",
+            "commits_count": 355,
+            "lane": 3,
+            "pasteis_mode": false,
+            "pasteis_remaining": 10,
+            "pasteis_received": 0,
+            "preferred_lane": null,
+            "automatic_lane": 3,
+            "sponsors_url": null,
+            "github_synced_at": null,
+            "terms_version": "2026-10-01",
+            "terms_accepted": true,
+            "unread_notifications_count": 4,
+            "remotes": {
+                "from": "following",
+                "pull_receipts": true,
+                "requests": true,
+                "everyone": false,
+                "unread_count": 2
+            }
+        });
+        let user: CurrentUser = serde_json::from_value(value).unwrap();
+        assert_eq!(user.username(), "nunomaduro");
+        assert_eq!(user.unread_notifications(), 4);
+        assert!(user.remotes_on());
+        assert_eq!(user.unread_remotes(), 2);
+    }
+
+    #[test]
+    fn user_still_reads_the_older_username_field() {
+        let user: User = serde_json::from_value(json!({
+            "id": "1",
+            "username": "local_dev"
+        }))
+        .unwrap();
+        assert_eq!(user.username, "local_dev");
+    }
+
+    #[test]
+    fn user_reads_a_live_stream_object() {
+        let user: User = serde_json::from_value(json!({
+            "id": "1",
+            "handle": "nuno",
+            "live": {
+                "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+                "thumbnail_url": "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault_live.jpg"
+            }
+        }))
+        .unwrap();
+        assert_eq!(user.username, "nuno");
+        assert_eq!(
+            user.live_url(),
+            Some("https://www.youtube.com/watch?v=dQw4w9WgXcQ")
+        );
+    }
+
+    #[test]
+    fn live_following_list_reads_wrapped_users() {
+        let users = User::list_from_value(json!({
+            "data": [{
+                "id": "1",
+                "handle": "ada",
+                "name": "Ada",
+                "live": { "url": "https://www.twitch.tv/ada" }
+            }]
+        }));
+        assert_eq!(users.len(), 1);
+        assert!(users[0].is_live());
+    }
+
+    #[test]
+    fn github_login_comes_from_github_url_when_present() {
+        let user = User {
+            username: "ada".into(),
+            github_url: Some("https://github.com/AdaLovelace/".into()),
+            ..Default::default()
+        };
+        assert_eq!(user.github_login(), "AdaLovelace");
+        let fallback = User {
+            username: "ada".into(),
+            ..Default::default()
+        };
+        assert_eq!(fallback.github_login(), "ada");
+    }
+
+    #[test]
+    fn is_followed_reads_is_following_alias() {
+        let user: User = serde_json::from_value(json!({
+            "id": "1",
+            "handle": "ada",
+            "is_following": true
+        }))
+        .unwrap();
+        assert!(user.is_followed_by_me());
+    }
+
+    fn badge(id: &str, unlocked: bool) -> Badge {
+        Badge {
+            id: id.into(),
+            name: id.into(),
+            unlocked,
+            progress: if unlocked { 1 } else { 0 },
+            target: 1,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn shelf_only_counts_unlocked_badges() {
+        let achievements = Achievements {
+            level: 4,
+            rank: "maintainer".into(),
+            xp: 916,
+            next_level_xp: Some(1000),
+            level_progress: 84,
+            ranks: vec![Rank {
+                rank: "wheel".into(),
+                level: 5,
+                min_xp: 1000,
+                ..Default::default()
+            }],
+            badges: vec![
+                badge("init", true),
+                badge("syntax", true),
+                badge("uptime", false),
+                badge("luddite", false),
+            ],
+        };
+        assert_eq!(achievements.label(), "Lv. 4 · maintainer");
+        assert_eq!(achievements.xp_label(), "916 / 1000 XP");
+        assert_eq!(achievements.next_rank_label(), "84 XP to wheel");
+        assert_eq!(achievements.unlocked_count(), 2);
+        let names: Vec<&str> = achievements
+            .unlocked_badges()
+            .map(|badge| badge.name.as_str())
+            .collect();
+        assert_eq!(names, ["init", "syntax"]);
+    }
+
+    #[test]
+    fn max_rank_has_no_next_level() {
+        let achievements = Achievements {
+            level: 0,
+            rank: "root".into(),
+            xp: 9001,
+            next_level_xp: None,
+            ..Default::default()
+        };
+        assert_eq!(achievements.xp_label(), "9001 XP");
+        assert_eq!(achievements.next_rank_label(), "Maximum rank (UID 0)");
+        assert_eq!(achievements.unlocked_count(), 0);
     }
 }

@@ -8,6 +8,7 @@ use relm4::adw::{self};
 use relm4::gtk;
 use relm4::gtk::gio;
 use relm4::gtk::glib;
+use relm4::gtk::pango;
 use relm4::prelude::*;
 
 use devnull_api::{
@@ -91,6 +92,7 @@ pub enum AppMsg {
     ToggleSidebar,
     NavCompact(bool),
     AsideCompact(bool),
+    ShellCompact(bool),
     TogglePoll,
     RemovePoll,
     ToggleSchedule,
@@ -143,7 +145,8 @@ pub enum AppMsg {
         Result<Box<Profile>, ApiError>,
         Result<Page<Commit>, ApiError>,
     ),
-    ProfileTab(bool),
+    ProfileTab(ProfileFeed),
+    ProfileReadmeLoaded(String, Result<Option<String>, ApiError>),
     GoLive,
     ShareProfile,
     EditOnGitHub,
@@ -159,12 +162,15 @@ pub enum AppMsg {
     RunSearch(String),
     SearchLoaded(Result<SearchResults, ApiError>),
     SuggestedLoaded(Result<Vec<User>, ApiError>),
+    LiveFollowingLoaded(Result<Vec<User>, ApiError>),
     FollowUser(String, bool),
     UserFollowed(String, bool),
     RefreshSuggested,
     ToggleFollowCurrent,
     AttachImages,
     ImagesPicked(Vec<Upload>),
+    RemoveComposerImage(usize),
+    RemoveRemoteImage(usize),
     SubmitCommit,
     CommitCreated(Result<Commit, ApiError>),
     NotificationsLoaded(Result<Page<Notification>, ApiError>),
@@ -202,8 +208,10 @@ pub struct App {
     nav: Nav,
     log_cursor: Option<String>,
     profile: Option<Profile>,
-    profile_replies: bool,
+    profile_tab: ProfileFeed,
+    profile_readme: Option<(String, Result<Option<String>, ApiError>)>,
     suggested: Vec<User>,
+    live_following: Vec<User>,
     muted: Vec<User>,
     blocked: Vec<User>,
     settings_tab: SettingsTab,
@@ -234,9 +242,11 @@ pub struct App {
     composer_poll: bool,
     composer_schedule: bool,
     composer_preview: bool,
-    sidebar_pinned: bool,
+    /// `None` follows the window breakpoint; `Some` is a Collapse/Expand choice.
+    sidebar_collapsed: Option<bool>,
     nav_compact: bool,
     aside_compact: bool,
+    shell_compact: bool,
     log_last_day: Option<String>,
     log_last_lane: Option<String>,
     log_visit_at: Option<String>,
@@ -249,6 +259,7 @@ pub struct App {
     new_posts: gtk::Button,
     aside_toast: gtk::Revealer,
     aside_toast_label: gtk::Label,
+    toast_commit: Rc<RefCell<Option<String>>>,
     toast_hide: Rc<RefCell<Option<glib::SourceId>>>,
     stars: HashMap<String, (bool, i64)>,
     pasteis: HashMap<String, i64>,
@@ -260,9 +271,11 @@ pub struct App {
     aside_handle: gtk::Box,
     aside_stats: gtk::Box,
     nav_avatar: gtk::Box,
+    header_avatar: gtk::Box,
     wordmark_btn: gtk::Button,
     logo_menu: gtk::Popover,
     user_menu: ui::UserMenu,
+    header_user_menu: ui::UserMenu,
     log_list: gtk::ListBox,
     reply_list: gtk::ListBox,
     profile_list: gtk::ListBox,
@@ -279,14 +292,24 @@ pub struct App {
     omnibox_gen: u64,
     profile_hero: gtk::Box,
     suggested_list: gtk::Box,
+    live_list: gtk::Box,
     settings_box: gtk::Box,
     poll_ui: ui::PollComposer,
     schedule_ui: ui::ScheduleCard,
     poll_editor: gtk::Box,
     schedule_card: gtk::Box,
+    image_previews: gtk::Box,
+    remote_image_previews: gtk::Box,
     compose_dialog: adw::Dialog,
     compose_host: gtk::Box,
     compose_open: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileFeed {
+    Commits,
+    Replies,
+    Readme,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -336,8 +359,14 @@ impl SimpleComponent for App {
                     set_orientation: gtk::Orientation::Horizontal,
                     set_vexpand: true,
                     add_css_class: "dn-shell",
-                    set_halign: gtk::Align::Center,
                     set_hexpand: true,
+
+                    gtk::Box {
+                        set_hexpand: true,
+                        add_css_class: "dn-gutter",
+                        #[watch]
+                        set_visible: !model.feed_fills(),
+                    },
 
                     #[name = "nav_sidebar"]
                     gtk::Box {
@@ -350,7 +379,7 @@ impl SimpleComponent for App {
                         #[watch]
                         set_width_request: model.sidebar_width(),
                         #[watch]
-                        set_visible: model.phase == Phase::SignedIn,
+                        set_visible: model.nav_visible(),
 
                         #[local_ref]
                         wordmark_btn -> gtk::Button {
@@ -426,6 +455,7 @@ impl SimpleComponent for App {
                             set_css_classes: &model.nav_classes(Sidebar::Notifications),
                             #[watch]
                             set_halign: model.nav_rail_align(),
+                            set_overflow: gtk::Overflow::Visible,
                             set_tooltip_text: Some("Notifications"),
                             connect_clicked => AppMsg::Select(Nav::Notifications),
                             #[wrap(Some)]
@@ -471,6 +501,7 @@ impl SimpleComponent for App {
                             set_css_classes: &model.nav_classes(Sidebar::Remotes),
                             #[watch]
                             set_halign: model.nav_rail_align(),
+                            set_overflow: gtk::Overflow::Visible,
                             set_tooltip_text: Some("Remotes"),
                             #[watch]
                             set_visible: model.remotes_on(),
@@ -586,8 +617,42 @@ impl SimpleComponent for App {
                             },
                         },
                         gtk::Button {
+                            add_css_class: "flat",
+                            add_css_class: "dn-nav-btn",
+                            #[watch]
+                            set_halign: model.nav_rail_align(),
+                            #[watch]
+                            set_visible: model.nav_search_visible(),
+                            set_tooltip_text: Some("Search"),
+                            connect_clicked => AppMsg::FocusSearch,
+                            #[wrap(Some)]
+                            set_child = &gtk::Box {
+                                set_orientation: gtk::Orientation::Horizontal,
+                                set_spacing: 12,
+                                gtk::Image {
+                                    set_icon_name: Some("dn-search-symbolic"),
+                                    set_pixel_size: 20,
+                                },
+                                gtk::Label {
+                                    set_label: "Search",
+                                    set_xalign: 0.0,
+                                    set_hexpand: true,
+                                    #[watch]
+                                    set_visible: !model.nav_collapsed(),
+                                },
+                                gtk::Label {
+                                    set_label: "Ctrl+K",
+                                    add_css_class: "dn-kbd",
+                                    #[watch]
+                                    set_visible: !model.nav_collapsed(),
+                                },
+                            },
+                        },
+                        gtk::Button {
                             add_css_class: "suggested-action",
                             add_css_class: "dn-nav-commit",
+                            #[watch]
+                            set_hexpand: !model.nav_collapsed(),
                             #[watch]
                             set_halign: model.nav_rail_align(),
                             set_tooltip_text: Some("Write a commit (C)"),
@@ -595,7 +660,13 @@ impl SimpleComponent for App {
                             #[wrap(Some)]
                             set_child = &gtk::Box {
                                 set_orientation: gtk::Orientation::Horizontal,
-                                set_spacing: 12,
+                                set_valign: gtk::Align::Center,
+                                #[watch]
+                                set_halign: model.nav_rail_align(),
+                                #[watch]
+                                set_hexpand: !model.nav_collapsed(),
+                                #[watch]
+                                set_spacing: if model.nav_collapsed() { 0 } else { 12 },
                                 gtk::Image {
                                     set_icon_name: Some("dn-square-pen-symbolic"),
                                     set_pixel_size: 20,
@@ -614,8 +685,6 @@ impl SimpleComponent for App {
                             add_css_class: "dn-nav-btn",
                             #[watch]
                             set_halign: model.nav_rail_align(),
-                            #[watch]
-                            set_visible: !model.nav_compact,
                             #[watch]
                             set_tooltip_text: Some(model.collapse_label()),
                             connect_clicked => AppMsg::ToggleSidebar,
@@ -647,6 +716,7 @@ impl SimpleComponent for App {
                                 add_css_class: "flat",
                                 add_css_class: "dn-nav-btn",
                                 add_css_class: "dn-user-menu",
+                                set_overflow: gtk::Overflow::Visible,
                                 set_always_show_arrow: false,
                                 set_has_frame: false,
                                 #[watch]
@@ -685,19 +755,86 @@ impl SimpleComponent for App {
                         },
                     },
 
+                    gtk::Box {
+                        set_orientation: gtk::Orientation::Vertical,
+                        #[watch]
+                        set_css_classes: &model.feed_classes(),
+                        set_hexpand: true,
+                        set_vexpand: true,
+
+                        gtk::Box {
+                            set_orientation: gtk::Orientation::Horizontal,
+                            set_spacing: 4,
+                            add_css_class: "dn-mobile-header",
+                            #[watch]
+                            set_visible: model.mobile_header_visible(),
+
+                            gtk::Button {
+                                add_css_class: "flat",
+                                add_css_class: "dn-wordmark-btn",
+                                set_has_frame: false,
+                                set_tooltip_text: Some("/dev/null"),
+                                connect_clicked => AppMsg::Select(Nav::Latest),
+                                #[wrap(Some)]
+                                set_child = &gtk::Box {
+                                    set_orientation: gtk::Orientation::Horizontal,
+                                    set_spacing: 8,
+                                    gtk::Image {
+                                        #[watch]
+                                        set_from_file: Some(ui::mark_path(ui::adw_is_dark())),
+                                        set_pixel_size: 24,
+                                    },
+                                    gtk::Label {
+                                        #[watch]
+                                        set_markup: &ui::wordmark_markup(),
+                                        set_xalign: 0.0,
+                                        add_css_class: "dn-wordmark",
+                                    },
+                                },
+                            },
+                            gtk::Box {
+                                set_hexpand: true,
+                            },
+                            gtk::Button {
+                                add_css_class: "flat",
+                                add_css_class: "dn-mobile-header-btn",
+                                set_icon_name: "dn-search-symbolic",
+                                set_tooltip_text: Some("Search"),
+                                connect_clicked => AppMsg::FocusSearch,
+                            },
+                            gtk::MenuButton {
+                                add_css_class: "flat",
+                                add_css_class: "dn-mobile-header-btn",
+                                add_css_class: "dn-user-menu",
+                                set_always_show_arrow: false,
+                                set_has_frame: false,
+                                set_tooltip_text: Some("Account menu"),
+                                #[wrap(Some)]
+                                set_child = &gtk::Box {
+                                    #[local_ref]
+                                    header_avatar -> gtk::Box {
+                                        add_css_class: "dn-nav-avatar",
+                                        set_valign: gtk::Align::Center,
+                                    },
+                                },
+                                set_popover: Some(&model.header_user_menu.popover),
+                            },
+                        },
+
                     adw::Clamp {
                         #[watch]
                         set_maximum_size: model.feed_width(),
-                        set_tightening_threshold: 400,
+                        #[watch]
+                        set_tightening_threshold: model.feed_width(),
+                        set_unit: adw::LengthUnit::Px,
                         set_hexpand: true,
 
                     #[name = "stack"]
                     #[wrap(Some)]
                     set_child = &gtk::Stack {
                         set_hexpand: true,
+                        set_hhomogeneous: false,
                         add_css_class: "dn-feed",
-                        #[watch]
-                        set_visible_child_name: model.visible,
 
                         add_titled[Some("sign_in"), "Sign in"] = &gtk::Box {
                             set_orientation: gtk::Orientation::Vertical,
@@ -878,6 +1015,16 @@ impl SimpleComponent for App {
                                         #[watch]
                                         set_sensitive: !model.composer_preview,
                                     },
+                                    #[local_ref]
+                                    image_previews -> gtk::Box {
+                                        set_orientation: gtk::Orientation::Horizontal,
+                                        set_spacing: 8,
+                                        add_css_class: "dn-attach-previews",
+                                        #[watch]
+                                        set_visible: !model.composer_images.is_empty(),
+                                        #[watch]
+                                        set_sensitive: !model.composer_preview,
+                                    },
                                     gtk::Box {
                                         set_orientation: gtk::Orientation::Horizontal,
                                         set_spacing: 4,
@@ -888,7 +1035,7 @@ impl SimpleComponent for App {
                                             add_css_class: "flat",
                                             add_css_class: "dn-composer-icon",
                                             #[watch]
-                                            set_sensitive: !model.composer_poll,
+                                            set_sensitive: !model.composer_poll && model.composer_images.len() < 3,
                                             connect_clicked => AppMsg::AttachImages,
                                         },
                                         gtk::Button {
@@ -1008,29 +1155,32 @@ impl SimpleComponent for App {
 
                         add_titled[Some("profile"), "Profile"] = &gtk::Box {
                             set_orientation: gtk::Orientation::Vertical,
+                            set_hexpand: true,
+                            add_css_class: "dn-profile-page",
                             gtk::Box {
                                 set_orientation: gtk::Orientation::Horizontal,
                                 set_spacing: 12,
                                 add_css_class: "dn-commit-bar",
-                                gtk::Button {
-                                    set_icon_name: "dn-arrow-left-symbolic",
-                                    set_tooltip_text: Some("Back"),
-                                    add_css_class: "flat",
-                                    add_css_class: "dn-commit-bar-btn",
-                                    connect_clicked => AppMsg::Back,
+                                gtk::Label {
+                                    #[watch]
+                                    set_label: &model.profile_bar_name(),
+                                    add_css_class: "dn-commit-bar-title",
+                                    set_xalign: 0.0,
+                                    set_ellipsize: pango::EllipsizeMode::End,
+                                    set_width_chars: 1,
                                 },
                                 gtk::Label {
-                                    set_label: "Profile",
-                                    add_css_class: "dn-commit-bar-title",
+                                    #[watch]
+                                    set_label: &model.profile_bar_commits(),
+                                    add_css_class: "dn-mono",
+                                    add_css_class: "dn-muted",
+                                    add_css_class: "dn-profile-bar-count",
                                 },
-                            },
-                            #[local_ref]
-                            profile_hero -> gtk::Box {
-                                set_orientation: gtk::Orientation::Vertical,
                             },
                             #[name = "profile_scroll"]
                             gtk::ScrolledWindow {
                                 set_vexpand: true,
+                                set_hexpand: true,
                                 set_hscrollbar_policy: gtk::PolicyType::Never,
                                 set_child: Some(&model.profile_list),
                             },
@@ -1125,62 +1275,104 @@ impl SimpleComponent for App {
 
                         add_titled[Some("notifications"), "Notifications"] = &gtk::Box {
                             set_orientation: gtk::Orientation::Vertical,
-                            gtk::ScrolledWindow {
-                                set_hscrollbar_policy: gtk::PolicyType::Automatic,
-                                set_vscrollbar_policy: gtk::PolicyType::Never,
-                                #[wrap(Some)]
-                                set_child = &gtk::Box {
-                                    set_orientation: gtk::Orientation::Horizontal,
-                                    set_spacing: 8,
-                                    add_css_class: "dn-tabs",
-                                    add_css_class: "dn-notif-tabs",
-                                    gtk::Button {
+                            set_hexpand: true,
+                            add_css_class: "dn-notif-page",
+                            gtk::Box {
+                                set_orientation: gtk::Orientation::Horizontal,
+                                set_homogeneous: true,
+                                set_hexpand: true,
+                                add_css_class: "dn-tabs",
+                                add_css_class: "dn-notif-tabs",
+                                gtk::Button {
+                                    set_hexpand: true,
+                                    #[watch]
+                                    set_css_classes: &model.notif_tab_classes(NotificationFilter::All),
+                                    connect_clicked => AppMsg::FilterNotifications(NotificationFilter::All),
+                                    #[wrap(Some)]
+                                    set_child = &gtk::Label {
                                         set_label: "All",
-                                        #[watch]
-                                        set_css_classes: &model.notif_tab_classes(NotificationFilter::All),
-                                        connect_clicked => AppMsg::FilterNotifications(NotificationFilter::All),
+                                        set_ellipsize: pango::EllipsizeMode::End,
+                                        set_width_chars: 1,
                                     },
-                                    gtk::Button {
+                                },
+                                gtk::Button {
+                                    set_hexpand: true,
+                                    #[watch]
+                                    set_css_classes: &model.notif_tab_classes(NotificationFilter::Replies),
+                                    connect_clicked => AppMsg::FilterNotifications(NotificationFilter::Replies),
+                                    #[wrap(Some)]
+                                    set_child = &gtk::Label {
                                         set_label: "Replies",
-                                        #[watch]
-                                        set_css_classes: &model.notif_tab_classes(NotificationFilter::Replies),
-                                        connect_clicked => AppMsg::FilterNotifications(NotificationFilter::Replies),
+                                        set_ellipsize: pango::EllipsizeMode::End,
+                                        set_width_chars: 1,
                                     },
-                                    gtk::Button {
+                                },
+                                gtk::Button {
+                                    set_hexpand: true,
+                                    #[watch]
+                                    set_css_classes: &model.notif_tab_classes(NotificationFilter::Quotes),
+                                    connect_clicked => AppMsg::FilterNotifications(NotificationFilter::Quotes),
+                                    #[wrap(Some)]
+                                    set_child = &gtk::Label {
                                         set_label: "Quotes",
-                                        #[watch]
-                                        set_css_classes: &model.notif_tab_classes(NotificationFilter::Quotes),
-                                        connect_clicked => AppMsg::FilterNotifications(NotificationFilter::Quotes),
+                                        set_ellipsize: pango::EllipsizeMode::End,
+                                        set_width_chars: 1,
                                     },
-                                    gtk::Button {
+                                },
+                                gtk::Button {
+                                    set_hexpand: true,
+                                    #[watch]
+                                    set_css_classes: &model.notif_tab_classes(NotificationFilter::Stars),
+                                    connect_clicked => AppMsg::FilterNotifications(NotificationFilter::Stars),
+                                    #[wrap(Some)]
+                                    set_child = &gtk::Label {
                                         set_label: "Stars",
-                                        #[watch]
-                                        set_css_classes: &model.notif_tab_classes(NotificationFilter::Stars),
-                                        connect_clicked => AppMsg::FilterNotifications(NotificationFilter::Stars),
+                                        set_ellipsize: pango::EllipsizeMode::End,
+                                        set_width_chars: 1,
                                     },
-                                    gtk::Button {
+                                },
+                                gtk::Button {
+                                    set_hexpand: true,
+                                    #[watch]
+                                    set_css_classes: &model.notif_tab_classes(NotificationFilter::Mentions),
+                                    connect_clicked => AppMsg::FilterNotifications(NotificationFilter::Mentions),
+                                    #[wrap(Some)]
+                                    set_child = &gtk::Label {
                                         set_label: "Mentions",
-                                        #[watch]
-                                        set_css_classes: &model.notif_tab_classes(NotificationFilter::Mentions),
-                                        connect_clicked => AppMsg::FilterNotifications(NotificationFilter::Mentions),
+                                        set_ellipsize: pango::EllipsizeMode::End,
+                                        set_width_chars: 1,
                                     },
-                                    gtk::Button {
+                                },
+                                gtk::Button {
+                                    set_hexpand: true,
+                                    #[watch]
+                                    set_css_classes: &model.notif_tab_classes(NotificationFilter::Follows),
+                                    connect_clicked => AppMsg::FilterNotifications(NotificationFilter::Follows),
+                                    #[wrap(Some)]
+                                    set_child = &gtk::Label {
                                         set_label: "Follows",
-                                        #[watch]
-                                        set_css_classes: &model.notif_tab_classes(NotificationFilter::Follows),
-                                        connect_clicked => AppMsg::FilterNotifications(NotificationFilter::Follows),
+                                        set_ellipsize: pango::EllipsizeMode::End,
+                                        set_width_chars: 1,
                                     },
-                                    gtk::Button {
+                                },
+                                gtk::Button {
+                                    set_hexpand: true,
+                                    #[watch]
+                                    set_css_classes: &model.notif_tab_classes(NotificationFilter::Moderation),
+                                    connect_clicked => AppMsg::FilterNotifications(NotificationFilter::Moderation),
+                                    #[wrap(Some)]
+                                    set_child = &gtk::Label {
                                         set_label: "Moderation",
-                                        #[watch]
-                                        set_css_classes: &model.notif_tab_classes(NotificationFilter::Moderation),
-                                        connect_clicked => AppMsg::FilterNotifications(NotificationFilter::Moderation),
+                                        set_ellipsize: pango::EllipsizeMode::End,
+                                        set_width_chars: 1,
                                     },
                                 },
                             },
                             #[name = "notif_scroll"]
                             gtk::ScrolledWindow {
                                 set_vexpand: true,
+                                set_hexpand: true,
+                                set_propagate_natural_width: false,
                                 set_hscrollbar_policy: gtk::PolicyType::Never,
                                 set_child: Some(&model.notif_list),
                             },
@@ -1190,25 +1382,36 @@ impl SimpleComponent for App {
                             set_orientation: gtk::Orientation::Horizontal,
                             set_hexpand: true,
                             set_vexpand: true,
-                            gtk::Box {
-                                set_orientation: gtk::Orientation::Vertical,
-                                set_width_request: 320,
+                            add_css_class: "dn-remotes-page",
+                            adw::Clamp {
+                                set_maximum_size: 320,
+                                set_tightening_threshold: 320,
+                                set_unit: adw::LengthUnit::Px,
                                 set_hexpand: false,
                                 set_vexpand: true,
-                                add_css_class: "dn-remotes-inbox",
-                                gtk::Label {
-                                    set_label: "Remotes",
-                                    add_css_class: "dn-title",
-                                    set_xalign: 0.0,
-                                    set_margin_start: 16,
-                                    set_margin_end: 16,
-                                    set_margin_top: 16,
-                                    set_margin_bottom: 8,
-                                },
-                                gtk::ScrolledWindow {
+                                #[wrap(Some)]
+                                set_child = &gtk::Box {
+                                    set_orientation: gtk::Orientation::Vertical,
+                                    set_hexpand: true,
                                     set_vexpand: true,
-                                    set_hscrollbar_policy: gtk::PolicyType::Never,
-                                    set_child: Some(&model.inbox_list),
+                                    add_css_class: "dn-remotes-inbox",
+                                    gtk::Label {
+                                        set_label: "Remotes",
+                                        add_css_class: "dn-title",
+                                        set_xalign: 0.0,
+                                        set_ellipsize: pango::EllipsizeMode::End,
+                                        set_width_chars: 1,
+                                        set_margin_start: 16,
+                                        set_margin_end: 16,
+                                        set_margin_top: 16,
+                                        set_margin_bottom: 8,
+                                    },
+                                    gtk::ScrolledWindow {
+                                        set_vexpand: true,
+                                        set_hexpand: true,
+                                        set_hscrollbar_policy: gtk::PolicyType::Never,
+                                        set_child: Some(&model.inbox_list),
+                                    },
                                 },
                             },
                             gtk::Separator {
@@ -1218,8 +1421,10 @@ impl SimpleComponent for App {
                                 set_orientation: gtk::Orientation::Vertical,
                                 set_hexpand: true,
                                 set_vexpand: true,
+                                add_css_class: "dn-remotes-thread",
                                 gtk::ScrolledWindow {
                                     set_vexpand: true,
+                                    set_hexpand: true,
                                     set_hscrollbar_policy: gtk::PolicyType::Never,
                                     set_child: Some(&model.thread_list),
                                 },
@@ -1230,12 +1435,22 @@ impl SimpleComponent for App {
                                         set_min_content_height: 60,
                                         set_child: Some(&model.remote_composer),
                                     },
+                                    #[local_ref]
+                                    remote_image_previews -> gtk::Box {
+                                        set_orientation: gtk::Orientation::Horizontal,
+                                        set_spacing: 8,
+                                        add_css_class: "dn-attach-previews",
+                                        #[watch]
+                                        set_visible: !model.remote_images.is_empty(),
+                                    },
                                     gtk::Box {
                                         set_orientation: gtk::Orientation::Horizontal,
                                         set_spacing: 8,
                                         gtk::Button {
                                             set_label: "Attach images",
                                             add_css_class: "flat",
+                                            #[watch]
+                                            set_sensitive: model.remote_images.len() < 3,
                                             connect_clicked => AppMsg::AttachRemoteImages,
                                         },
                                         gtk::Button {
@@ -1247,6 +1462,10 @@ impl SimpleComponent for App {
                                 },
                             },
                         },
+
+                        #[watch]
+                        set_visible_child_name: model.visible,
+                    },
                     },
                     },
 
@@ -1307,6 +1526,7 @@ impl SimpleComponent for App {
 
                                     gtk::Button {
                                         add_css_class: "flat",
+                                        set_overflow: gtk::Overflow::Visible,
                                         connect_clicked => AppMsg::OpenMe,
                                         #[wrap(Some)]
                                         set_child = &gtk::Box {
@@ -1315,6 +1535,7 @@ impl SimpleComponent for App {
                                             #[local_ref]
                                             aside_avatar -> gtk::Box {
                                                 add_css_class: "dn-aside-avatar",
+                                                set_overflow: gtk::Overflow::Visible,
                                                 set_valign: gtk::Align::Start,
                                             },
                                             gtk::Box {
@@ -1351,6 +1572,24 @@ impl SimpleComponent for App {
                                         set_wrap: true,
                                         #[watch]
                                         set_visible: !model.me_bio().is_empty(),
+                                    },
+                                },
+
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Vertical,
+                                    set_spacing: 6,
+                                    add_css_class: "dn-live-card",
+                                    #[watch]
+                                    set_visible: model.user.is_some() && !model.live_following.is_empty(),
+                                    gtk::Label {
+                                        set_label: "Live now",
+                                        set_xalign: 0.0,
+                                        add_css_class: "dn-aside-title",
+                                    },
+                                    #[local_ref]
+                                    live_list -> gtk::Box {
+                                        set_orientation: gtk::Orientation::Vertical,
+                                        set_spacing: 2,
                                     },
                                 },
 
@@ -1483,7 +1722,14 @@ impl SimpleComponent for App {
                                 },
                             },
                         },
-                    }
+                    },
+
+                    gtk::Box {
+                        set_hexpand: true,
+                        add_css_class: "dn-gutter",
+                        #[watch]
+                        set_visible: !model.feed_fills(),
+                    },
             }
         }
     }
@@ -1553,7 +1799,7 @@ impl SimpleComponent for App {
 
         let log_list = gtk::ListBox::new();
         log_list.set_selection_mode(gtk::SelectionMode::None);
-        log_list.set_vexpand(true);
+        fill_feed_list(&log_list);
         let log_scroll = gtk::ScrolledWindow::new();
         log_scroll.set_vexpand(true);
         log_scroll.set_hscrollbar_policy(gtk::PolicyType::Never);
@@ -1568,16 +1814,22 @@ impl SimpleComponent for App {
         new_posts.set_cursor_from_name(Some("pointer"));
         let reply_list = gtk::ListBox::new();
         reply_list.set_selection_mode(gtk::SelectionMode::None);
+        fill_feed_list(&reply_list);
         let profile_list = gtk::ListBox::new();
         profile_list.set_selection_mode(gtk::SelectionMode::None);
+        fill_feed_list(&profile_list);
         let search_list = gtk::ListBox::new();
         search_list.set_selection_mode(gtk::SelectionMode::None);
+        fill_feed_list(&search_list);
         let notif_list = gtk::ListBox::new();
         notif_list.set_selection_mode(gtk::SelectionMode::None);
+        fill_feed_list(&notif_list);
         let inbox_list = gtk::ListBox::new();
         inbox_list.set_selection_mode(gtk::SelectionMode::None);
+        fill_feed_list(&inbox_list);
         let thread_list = gtk::ListBox::new();
         thread_list.set_selection_mode(gtk::SelectionMode::None);
+        fill_feed_list(&thread_list);
         let poll_ui = ui::PollComposer::new(sender.input_sender().clone());
         let schedule_ui = ui::ScheduleCard::new();
         let poll_editor = poll_ui.root.clone();
@@ -1594,8 +1846,10 @@ impl SimpleComponent for App {
             nav: Nav::Latest,
             log_cursor: None,
             profile: None,
-            profile_replies: false,
+            profile_tab: ProfileFeed::Commits,
+            profile_readme: None,
             suggested: Vec::new(),
+            live_following: Vec::new(),
             muted: Vec::new(),
             blocked: Vec::new(),
             settings_tab: SettingsTab::Profile,
@@ -1626,9 +1880,10 @@ impl SimpleComponent for App {
             composer_poll: false,
             composer_schedule: false,
             composer_preview: false,
-            sidebar_pinned: false,
+            sidebar_collapsed: None,
             nav_compact: false,
             aside_compact: false,
+            shell_compact: false,
             log_last_day: None,
             log_last_lane: None,
             log_visit_at: None,
@@ -1641,6 +1896,7 @@ impl SimpleComponent for App {
             new_posts,
             aside_toast: gtk::Revealer::new(),
             aside_toast_label: gtk::Label::new(None),
+            toast_commit: Rc::new(RefCell::new(None)),
             toast_hide: Rc::new(RefCell::new(None)),
             stars: HashMap::new(),
             pasteis: HashMap::new(),
@@ -1652,9 +1908,11 @@ impl SimpleComponent for App {
             aside_handle: gtk::Box::new(gtk::Orientation::Horizontal, 6),
             aside_stats: gtk::Box::new(gtk::Orientation::Horizontal, 16),
             nav_avatar: gtk::Box::new(gtk::Orientation::Horizontal, 0),
+            header_avatar: gtk::Box::new(gtk::Orientation::Horizontal, 0),
             wordmark_btn: gtk::Button::new(),
             logo_menu: ui::logo_menu(sender.input_sender().clone()),
             user_menu: ui::UserMenu::new(sender.input_sender().clone()),
+            header_user_menu: ui::UserMenu::for_header(sender.input_sender().clone()),
             log_list,
             reply_list,
             profile_list,
@@ -1671,11 +1929,14 @@ impl SimpleComponent for App {
             omnibox_gen: 0,
             profile_hero: gtk::Box::new(gtk::Orientation::Vertical, 0),
             suggested_list: gtk::Box::new(gtk::Orientation::Vertical, 8),
+            live_list: gtk::Box::new(gtk::Orientation::Vertical, 2),
             settings_box: gtk::Box::new(gtk::Orientation::Vertical, 0),
             poll_ui,
             schedule_ui,
             poll_editor,
             schedule_card,
+            image_previews: gtk::Box::new(gtk::Orientation::Horizontal, 8),
+            remote_image_previews: gtk::Box::new(gtk::Orientation::Horizontal, 8),
             compose_dialog,
             compose_host,
             compose_open: false,
@@ -1683,18 +1944,22 @@ impl SimpleComponent for App {
 
         model.omnibox.window.set_transient_for(Some(&root));
         let paste_entry = &model.paste_entry;
-        let profile_hero = &model.profile_hero;
         let suggested_list = &model.suggested_list;
+        let live_list = &model.live_list;
         let poll_editor = &model.poll_editor;
         let schedule_card = &model.schedule_card;
+        let image_previews = &model.image_previews;
+        let remote_image_previews = &model.remote_image_previews;
         let log_composer = &model.log_composer;
         let composer_rail = &model.composer_rail;
         let aside_avatar = &model.aside_avatar;
         let aside_handle = &model.aside_handle;
         let aside_stats = &model.aside_stats;
         let nav_avatar = &model.nav_avatar;
+        let header_avatar = &model.header_avatar;
         let wordmark_btn = &model.wordmark_btn;
         let widgets = view_output!();
+        ui::pin_profile_hero(&model.profile_list, &model.profile_hero);
         ui::apply_pointer_cursors(&root);
         model.logo_menu.set_parent(&model.wordmark_btn);
         let logo_press = gtk::GestureClick::new();
@@ -1737,6 +2002,23 @@ impl SimpleComponent for App {
         let toast_card = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         toast_card.add_css_class("dn-aside-toast");
         toast_card.append(&model.aside_toast_label);
+        let toast_press = gtk::GestureClick::new();
+        toast_press.set_button(1);
+        let toast_commit = model.toast_commit.clone();
+        let toast_host = model.aside_toast.clone();
+        let toast_hide = model.toast_hide.clone();
+        let toast_sender = sender.clone();
+        toast_press.connect_released(move |_, _, _, _| {
+            if let Some(id) = toast_commit.borrow().clone() {
+                toast_host.remove_css_class("visible");
+                toast_host.set_reveal_child(false);
+                if let Some(src) = toast_hide.borrow_mut().take() {
+                    src.remove();
+                }
+                toast_sender.input(AppMsg::OpenCommit(id));
+            }
+        });
+        toast_card.add_controller(toast_press);
         model.aside_toast.set_child(Some(&toast_card));
         model.aside_toast.add_css_class("dn-aside-toast-host");
         model
@@ -1960,6 +2242,8 @@ impl SimpleComponent for App {
                 });
                 self.client = None;
                 self.set_user(None);
+                self.live_following.clear();
+                ui::fill_live_following(&self.live_list, &[], sender.input_sender().clone());
                 self.phase = Phase::SignedOut;
                 self.visible = "sign_in";
             }
@@ -2161,7 +2445,6 @@ impl SimpleComponent for App {
                 self.omnibox_gen = self.omnibox_gen.wrapping_add(1);
                 let gen = self.omnibox_gen;
                 let trimmed = query.trim().to_string();
-                self.omnibox.spinner.set_spinning(false);
                 if trimmed.is_empty() {
                     self.omnibox.set_status(None);
                     self.omnibox.show_suggestions();
@@ -2186,7 +2469,7 @@ impl SimpleComponent for App {
                 let Some(client) = self.client.clone() else {
                     return;
                 };
-                self.omnibox.spinner.set_spinning(true);
+                self.omnibox.show_skeletons();
                 let sender2 = sender.clone();
                 relm4::spawn(async move {
                     sender2.input(AppMsg::OmniboxLoaded(
@@ -2200,7 +2483,6 @@ impl SimpleComponent for App {
                 if gen != self.omnibox_gen || self.omnibox.entry.text().trim() != query {
                     return;
                 }
-                self.omnibox.spinner.set_spinning(false);
                 match result {
                     Ok(results) => self.omnibox.show_results(&query, results),
                     Err(err) if err.status == 429 => self
@@ -2210,15 +2492,16 @@ impl SimpleComponent for App {
                 }
             }
             AppMsg::ToggleSidebar => {
-                if !self.nav_compact {
-                    self.sidebar_pinned = !self.sidebar_pinned;
-                }
+                self.sidebar_collapsed = Some(!self.nav_collapsed());
             }
             AppMsg::NavCompact(compact) => {
                 self.nav_compact = compact;
             }
             AppMsg::AsideCompact(compact) => {
                 self.aside_compact = compact;
+            }
+            AppMsg::ShellCompact(compact) => {
+                self.shell_compact = compact;
             }
             AppMsg::TogglePoll => {
                 if self.composer_poll || !self.composer_images.is_empty() {
@@ -2227,6 +2510,7 @@ impl SimpleComponent for App {
                 self.composer_poll = true;
                 self.composer_images.clear();
                 self.poll_ui.reset();
+                self.sync_image_previews(&sender);
             }
             AppMsg::RemovePoll => {
                 self.composer_poll = false;
@@ -2353,6 +2637,7 @@ impl SimpleComponent for App {
                         self.log_commits = page.data.clone();
                         self.log_first_seen = first_seen.clone();
                     }
+                    self.set_live_following(self.live_following.clone(), &sender);
                     let ctx = self.feed_ctx(&sender);
                     ui::append_commits(
                         &self.log_list,
@@ -2578,7 +2863,7 @@ impl SimpleComponent for App {
                 }
                 self.begin_busy();
                 ui::clear_list(&self.reply_list);
-                self.reply_list.append(&ui::skeleton_row());
+                ui::append_commit_skeletons(&self.reply_list, 2);
                 if let Some(client) = self.client.clone() {
                     let sender2 = sender.clone();
                     relm4::spawn(async move {
@@ -2609,19 +2894,42 @@ impl SimpleComponent for App {
             }
             AppMsg::OpenProfile(username) => {
                 self.visible = "profile";
-                self.profile_replies = false;
+                self.profile_tab = ProfileFeed::Commits;
+                self.profile_readme = None;
                 self.load_profile(&sender, username, false);
             }
-            AppMsg::ProfileTab(replies) => {
-                self.profile_replies = replies;
+            AppMsg::ProfileTab(tab) => {
+                let same = self.profile_tab == tab;
+                self.profile_tab = tab;
                 self.render_profile(&sender);
-                if let Some(username) = self.profile.as_ref().map(|p| p.username().to_owned()) {
-                    self.load_profile(&sender, username, replies);
+                match tab {
+                    ProfileFeed::Readme => {
+                        if !same || self.profile_readme.is_none() {
+                            self.load_readme(&sender);
+                        }
+                    }
+                    ProfileFeed::Commits | ProfileFeed::Replies => {
+                        if let Some(username) =
+                            self.profile.as_ref().map(|p| p.username().to_owned())
+                        {
+                            self.load_profile(&sender, username, tab == ProfileFeed::Replies);
+                        }
+                    }
+                }
+            }
+            AppMsg::ProfileReadmeLoaded(username, result) => {
+                self.end_busy();
+                if self.profile.as_ref().map(|p| p.username()) != Some(username.as_str()) {
+                    return;
+                }
+                self.profile_readme = Some((username, result));
+                if self.profile_tab == ProfileFeed::Readme {
+                    self.render_profile_readme(&sender);
                 }
             }
             AppMsg::ProfileLoaded(user, commits) => {
                 self.end_busy();
-                ui::clear_list(&self.profile_list);
+                self.reset_profile_list();
                 match user {
                     Ok(u) => self.profile = Some(*u),
                     Err(err) => {
@@ -2631,7 +2939,7 @@ impl SimpleComponent for App {
                 }
                 self.render_profile(&sender);
                 if let Ok(page) = commits {
-                    let pinned = if self.profile_replies {
+                    let pinned = if self.profile_tab == ProfileFeed::Replies {
                         None
                     } else {
                         self.profile.as_ref().and_then(|p| p.pinned_commit.clone())
@@ -2646,7 +2954,10 @@ impl SimpleComponent for App {
                             .filter(|commit| pinned.as_ref().is_none_or(|pin| pin.id != commit.id)),
                     );
                     self.profile_commits = commits;
-                    self.render_profile_feed(&sender, false);
+                }
+                match self.profile_tab {
+                    ProfileFeed::Readme => self.load_readme(&sender),
+                    _ => self.render_profile_feed(&sender, false),
                 }
             }
             AppMsg::GoLive => {
@@ -2668,6 +2979,12 @@ impl SimpleComponent for App {
             }
             AppMsg::AppearanceChanged => {
                 self.refresh_me_avatars();
+                if self.visible == "profile" {
+                    self.render_profile(&sender);
+                    if self.profile_tab == ProfileFeed::Readme {
+                        self.render_profile_readme(&sender);
+                    }
+                }
             }
             AppMsg::CopyHomeLink => {
                 let url = devnull_api::default_base_url();
@@ -2817,7 +3134,7 @@ impl SimpleComponent for App {
                 self.omnibox.close();
                 self.visible = "search";
                 ui::clear_list(&self.search_list);
-                self.search_list.append(&ui::skeleton_row());
+                ui::append_commit_skeletons(&self.search_list, 3);
                 if let Some(client) = self.client.clone() {
                     self.begin_busy();
                     let sender2 = sender.clone();
@@ -2842,37 +3159,44 @@ impl SimpleComponent for App {
             }
             AppMsg::RefreshSuggested => {
                 if let Some(client) = self.client.clone() {
+                    ui::fill_suggestion_skeletons(&self.suggested_list);
+                    let live_client = client.clone();
                     let sender2 = sender.clone();
                     relm4::spawn(async move {
                         sender2.input(AppMsg::SuggestedLoaded(client.suggested().await));
+                    });
+                    let sender2 = sender.clone();
+                    relm4::spawn(async move {
+                        sender2.input(AppMsg::LiveFollowingLoaded(
+                            live_client.live_following().await,
+                        ));
                     });
                 }
             }
             AppMsg::SuggestedLoaded(result) => {
                 if let Ok(users) = result {
                     self.suggested = users;
-                    ui::fill_suggestions(
-                        &self.suggested_list,
-                        &self.suggested,
-                        self.user.as_ref().map(|u| u.username()),
-                        sender.input_sender().clone(),
-                    );
+                    self.render_suggestions(&sender);
+                }
+            }
+            AppMsg::LiveFollowingLoaded(result) => {
+                if let Ok(users) = result {
+                    self.set_live_following(users, &sender);
                 }
             }
             AppMsg::DismissSuggested(username) => {
                 self.suggested.retain(|user| user.username != username);
-                ui::fill_suggestions(
-                    &self.suggested_list,
-                    &self.suggested,
-                    self.user.as_ref().map(|u| u.username()),
-                    sender.input_sender().clone(),
-                );
+                self.render_suggestions(&sender);
             }
             AppMsg::UserFollowed(username, follow) => {
                 self.toast(&format!(
                     "{} @{username}",
                     if follow { "Following" } else { "Unfollowed" }
                 ));
+                if follow {
+                    self.suggested.retain(|user| user.username != username);
+                    self.render_suggestions(&sender);
+                }
                 sender.input(AppMsg::RefreshSuggested);
                 if self.profile.as_ref().map(|p| p.username()) == Some(username.as_str())
                     && self.visible == "profile"
@@ -2904,7 +3228,7 @@ impl SimpleComponent for App {
                 sender.input(AppMsg::FollowUser(profile.username().to_owned(), follow));
             }
             AppMsg::AttachImages => {
-                if self.composer_poll {
+                if self.composer_poll || self.composer_images.len() >= 3 {
                     return;
                 }
                 pick_images(&sender);
@@ -2918,9 +3242,28 @@ impl SimpleComponent for App {
                 } else {
                     &mut self.composer_images
                 };
-                dest.extend(files);
-                dest.truncate(3);
+                let room = 3usize.saturating_sub(dest.len());
+                if files.len() > room {
+                    dest.extend(files.into_iter().take(room));
+                    self.toast("Up to 3 images per commit.");
+                } else {
+                    dest.extend(files);
+                }
+                self.sync_image_previews(&sender);
                 self.sync_composer_ring();
+            }
+            AppMsg::RemoveComposerImage(index) => {
+                if index < self.composer_images.len() {
+                    self.composer_images.remove(index);
+                    self.sync_image_previews(&sender);
+                    self.sync_composer_ring();
+                }
+            }
+            AppMsg::RemoveRemoteImage(index) => {
+                if index < self.remote_images.len() {
+                    self.remote_images.remove(index);
+                    self.sync_image_previews(&sender);
+                }
             }
             AppMsg::SubmitReply => {
                 let (parent, body) = if let Some(parent) = self.replying_to.clone() {
@@ -3014,6 +3357,7 @@ impl SimpleComponent for App {
                 self.composer_schedule = false;
                 self.composer_preview = false;
                 self.composer_len = 0;
+                self.sync_image_previews(&sender);
                 self.sync_composer_ring();
                 let hash = commit
                     .short_hash
@@ -3021,7 +3365,7 @@ impl SimpleComponent for App {
                     .unwrap_or_else(|| commit.id[..7.min(commit.id.len())].to_owned());
                 let body = commit.body.clone().unwrap_or_default();
                 let excerpt: String = body.chars().take(48).collect();
-                self.toast(&format!("[log {hash}] {excerpt}"));
+                self.toast_commit(&format!("[log {hash}] {excerpt}"), commit.id.clone());
                 if self.compose_open {
                     self.compose_dialog.close();
                 }
@@ -3082,6 +3426,11 @@ impl SimpleComponent for App {
             }
             AppMsg::NotificationsLoaded(Err(err)) => {
                 self.end_busy();
+                ui::clear_list(&self.notif_list);
+                self.notif_list.append(&ui::empty_row(
+                    "fatal: could not load notifications",
+                    &err.message,
+                ));
                 self.fail(err);
             }
             AppMsg::RemotesLoaded(Ok(page)) => {
@@ -3109,6 +3458,8 @@ impl SimpleComponent for App {
             }
             AppMsg::OpenThread(reference) => {
                 self.thread_ref = Some(reference.clone());
+                ui::clear_list(&self.thread_list);
+                ui::append_thread_skeletons(&self.thread_list);
                 if let Some(client) = self.client.clone() {
                     let sender2 = sender.clone();
                     relm4::spawn(async move {
@@ -3138,7 +3489,12 @@ impl SimpleComponent for App {
                 }
             }
             AppMsg::ThreadLoaded(Err(err)) => self.fail(err),
-            AppMsg::AttachRemoteImages => pick_images(&sender),
+            AppMsg::AttachRemoteImages => {
+                if self.remote_images.len() >= 3 {
+                    return;
+                }
+                pick_images(&sender);
+            }
             AppMsg::PushRemote => {
                 let body = buffer_text(&self.remote_composer);
                 let Some(reference) = self.thread_ref.clone() else {
@@ -3162,6 +3518,7 @@ impl SimpleComponent for App {
             }
             AppMsg::RemotePushed(Ok(_)) => {
                 self.remote_composer.buffer().set_text("");
+                self.sync_image_previews(&sender);
                 if let Some(reference) = self.thread_ref.clone() {
                     sender.input(AppMsg::OpenThread(reference));
                 }
@@ -3289,6 +3646,7 @@ impl App {
 
     const NAV_EXPAND_WIDTH: f64 = 1024.0;
     const ASIDE_WIDTH: f64 = 1280.0;
+    const SHELL_COMPACT_WIDTH: f64 = 768.0;
 
     fn bind_width_breakpoints(root: &adw::ApplicationWindow, sender: &ComponentSender<Self>) {
         let aside = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
@@ -3320,22 +3678,59 @@ impl App {
             move |_| sender.input(AppMsg::NavCompact(false))
         });
         root.add_breakpoint(nav);
+
+        let shell = adw::Breakpoint::new(adw::BreakpointCondition::new_length(
+            adw::BreakpointConditionLengthType::MaxWidth,
+            Self::SHELL_COMPACT_WIDTH - 1.0,
+            adw::LengthUnit::Px,
+        ));
+        shell.connect_apply({
+            let sender = sender.clone();
+            move |_| sender.input(AppMsg::ShellCompact(true))
+        });
+        shell.connect_unapply({
+            let sender = sender.clone();
+            move |_| sender.input(AppMsg::ShellCompact(false))
+        });
+        root.add_breakpoint(shell);
     }
 
     fn nav_collapsed(&self) -> bool {
-        self.sidebar_pinned || self.nav_compact
+        nav_is_collapsed(self.sidebar_collapsed, self.nav_compact)
+    }
+
+    fn nav_visible(&self) -> bool {
+        self.phase == Phase::SignedIn && !self.shell_compact
+    }
+
+    fn nav_search_visible(&self) -> bool {
+        nav_shows_search(self.aside_compact, self.nav_compact, self.shell_compact)
+    }
+
+    fn mobile_header_visible(&self) -> bool {
+        self.phase == Phase::SignedIn && self.shell_compact
     }
 
     fn aside_visible(&self) -> bool {
-        self.phase == Phase::SignedIn && !self.aside_compact && self.visible != "remotes"
+        aside_is_visible(
+            self.phase == Phase::SignedIn,
+            self.aside_compact,
+            self.nav_compact,
+            self.shell_compact,
+            self.visible,
+        )
     }
 
     fn feed_width(&self) -> i32 {
-        if self.visible == "remotes" {
-            940
-        } else {
-            620
-        }
+        feed_column_width(self.visible, self.shell_compact)
+    }
+
+    fn feed_fills(&self) -> bool {
+        feed_column_fills(self.shell_compact)
+    }
+
+    fn feed_classes(&self) -> [&'static str; 2] {
+        feed_column_classes(self.visible, self.shell_compact)
     }
 
     fn sidebar_width(&self) -> i32 {
@@ -3360,6 +3755,22 @@ impl App {
         } else {
             gtk::Align::Fill
         }
+    }
+
+    fn profile_bar_name(&self) -> String {
+        self.profile
+            .as_ref()
+            .map(|profile| profile.user.display_name().to_owned())
+            .unwrap_or_default()
+    }
+
+    fn profile_bar_commits(&self) -> String {
+        let n = self
+            .profile
+            .as_ref()
+            .and_then(|profile| profile.user.commits_count)
+            .unwrap_or(0);
+        ui::commits_label(n)
     }
 
     fn collapse_label(&self) -> &'static str {
@@ -3397,6 +3808,8 @@ impl App {
     fn image_tooltip(&self) -> &'static str {
         if self.composer_poll {
             "A commit can have images or a poll, not both"
+        } else if self.composer_images.len() >= 3 {
+            "Up to 3 images per commit."
         } else {
             "Attach images"
         }
@@ -3525,6 +3938,9 @@ impl App {
     fn refresh_visible_feed(&mut self, sender: &ComponentSender<App>, restore: bool) {
         match self.visible {
             "commit" => self.render_thread(sender),
+            "profile" if self.profile_tab == ProfileFeed::Readme => {
+                self.render_profile_readme(sender)
+            }
             "profile" => self.render_profile_feed(sender, restore),
             _ => self.render_log(sender, restore),
         }
@@ -3599,13 +4015,9 @@ impl App {
     }
 
     fn render_profile_feed(&mut self, sender: &ComponentSender<App>, restore: bool) {
-        let value = self
-            .profile_list
-            .parent()
-            .and_then(|parent| parent.downcast::<gtk::ScrolledWindow>().ok())
-            .map(|scroll| scroll.vadjustment().value());
-        ui::unparent(&self.inline_reply_box);
-        ui::clear_list(&self.profile_list);
+        let value =
+            ui::enclosing_scroll(&self.profile_list).map(|scroll| scroll.vadjustment().value());
+        self.reset_profile_list();
         if self.profile_commits.is_empty() {
             return;
         }
@@ -3628,7 +4040,7 @@ impl App {
             .map(|p| p.username().to_owned())
             .unwrap_or_default();
         let own = self.user.as_ref().map(|u| u.username()) == Some(username.as_str());
-        let end = if self.profile_replies {
+        let end = if self.profile_tab == ProfileFeed::Replies {
             if own {
                 "That was your first reply."
             } else {
@@ -3641,10 +4053,8 @@ impl App {
         };
         self.profile_list.append(&ui::root_row(end));
         if let Some(value) = value.filter(|_| restore) {
-            if let Some(parent) = self.profile_list.parent() {
-                if let Ok(scroll) = parent.downcast::<gtk::ScrolledWindow>() {
-                    scroll.vadjustment().set_value(value);
-                }
+            if let Some(scroll) = ui::enclosing_scroll(&self.profile_list) {
+                scroll.vadjustment().set_value(value);
             }
         }
     }
@@ -3671,9 +4081,20 @@ impl App {
             ui::fill_aside_you(&self.aside_handle, &self.aside_stats, user, sender.clone());
         }
         ui::fill_avatar(&self.nav_avatar, user, 36, false);
+        ui::fill_avatar(&self.header_avatar, user, 32, false);
         self.user_menu.set_user(user);
+        self.header_user_menu.set_user(user);
         ui::set_staged_user(&self.staged_paint, &self.composer_rail_area, user);
         self.sync_composer_ring();
+    }
+
+    fn render_suggestions(&self, sender: &ComponentSender<App>) {
+        ui::fill_suggestions(
+            &self.suggested_list,
+            &self.suggested,
+            self.user.as_ref().map(|u| u.username()),
+            sender.input_sender().clone(),
+        );
     }
 
     fn sync_composer_ring(&self) {
@@ -3681,6 +4102,22 @@ impl App {
             &self.composer_rail_area,
             &self.staged_paint,
             self.composer_fill_amount(),
+        );
+    }
+
+    fn sync_image_previews(&self, sender: &ComponentSender<Self>) {
+        let sender = sender.input_sender().clone();
+        ui::fill_attach_previews(
+            &self.image_previews,
+            &self.composer_images,
+            sender.clone(),
+            false,
+        );
+        ui::fill_attach_previews(
+            &self.remote_image_previews,
+            &self.remote_images,
+            sender,
+            true,
         );
     }
 
@@ -3856,10 +4293,59 @@ impl App {
             return;
         };
         let remotes = self.remotes_on();
+        let live_client = client.clone();
         let sender2 = sender.clone();
         relm4::spawn(async move {
             sender2.input(AppMsg::UnreadPolled(client.unread_counts(remotes).await));
         });
+        let sender2 = sender.clone();
+        relm4::spawn(async move {
+            sender2.input(AppMsg::LiveFollowingLoaded(
+                live_client.live_following().await,
+            ));
+        });
+    }
+
+    fn set_live_following(&mut self, mut users: Vec<User>, sender: &ComponentSender<App>) {
+        users.retain(User::is_live);
+        users.truncate(3);
+        if users.len() < 3 {
+            let have: HashSet<_> = users.iter().map(|user| user.username.clone()).collect();
+            for extra in self.harvest_live() {
+                if have.contains(&extra.username) {
+                    continue;
+                }
+                users.push(extra);
+                if users.len() >= 3 {
+                    break;
+                }
+            }
+        }
+        self.live_following = users;
+        ui::fill_live_following(
+            &self.live_list,
+            &self.live_following,
+            sender.input_sender().clone(),
+        );
+    }
+
+    fn harvest_live(&self) -> Vec<User> {
+        let mut seen = HashSet::new();
+        let mut out = Vec::new();
+        let authors = self
+            .log_commits
+            .iter()
+            .filter_map(|commit| commit.author.as_ref());
+        let suggested = self.suggested.iter();
+        for author in authors.chain(suggested) {
+            if author.is_live() && seen.insert(author.username.clone()) {
+                out.push(author.clone());
+            }
+            if out.len() >= 3 {
+                break;
+            }
+        }
+        out
     }
 
     fn settings_tab_classes(&self, tab: SettingsTab) -> [&'static str; 3] {
@@ -3912,8 +4398,8 @@ impl App {
     }
 
     fn load_profile(&mut self, sender: &ComponentSender<App>, username: String, replies: bool) {
-        ui::clear_list(&self.profile_list);
-        self.profile_list.append(&ui::skeleton_row());
+        self.reset_profile_list();
+        ui::append_commit_skeletons(&self.profile_list, 3);
         let client = self.client.clone().or_else(|| Client::unsigned().ok());
         if let Some(client) = client {
             self.begin_busy();
@@ -3924,6 +4410,52 @@ impl App {
                 sender2.input(AppMsg::ProfileLoaded(profile, commits));
             });
         }
+    }
+
+    fn load_readme(&mut self, sender: &ComponentSender<App>) {
+        let Some(profile) = &self.profile else {
+            return;
+        };
+        let handle = profile.username().to_owned();
+        let github_login = profile.user.github_login().to_owned();
+        if let Some((user, _)) = &self.profile_readme {
+            if user == &handle {
+                self.render_profile_readme(sender);
+                return;
+            }
+        }
+        self.reset_profile_list();
+        self.profile_list.append(&ui::content_skeleton_row());
+        let client = self.client.clone().or_else(|| Client::unsigned().ok());
+        if let Some(client) = client {
+            self.begin_busy();
+            let sender2 = sender.clone();
+            relm4::spawn(async move {
+                sender2.input(AppMsg::ProfileReadmeLoaded(
+                    handle.clone(),
+                    client.profile_readme(&handle, &github_login).await,
+                ));
+            });
+        }
+    }
+
+    fn render_profile_readme(&self, sender: &ComponentSender<App>) {
+        self.reset_profile_list();
+        let Some(profile) = &self.profile else {
+            return;
+        };
+        let Some((_, result)) = &self.profile_readme else {
+            self.profile_list.append(&ui::content_skeleton_row());
+            return;
+        };
+        let own = self.user.as_ref().map(|u| u.username()) == Some(profile.username());
+        self.profile_list.append(&ui::profile_readme_row(
+            result,
+            profile.username(),
+            profile.user.github_login(),
+            own,
+            sender.input_sender().clone(),
+        ));
     }
 
     fn render_settings(&self, sender: &ComponentSender<App>) {
@@ -3953,13 +4485,18 @@ impl App {
         if let Some(client) = self.client.clone() {
             self.begin_busy();
             if !more && self.log_commits.is_empty() {
-                self.log_list.append(&ui::skeleton_row());
+                ui::append_commit_skeletons(&self.log_list, 3);
             }
             let sender2 = sender.clone();
             relm4::spawn(async move {
-                sender2.input(AppMsg::LogLoaded(client.saved(cursor.as_deref()).await));
+                sender2.input(AppMsg::LogLoaded(client.starred(cursor.as_deref()).await));
             });
         }
+    }
+
+    fn reset_profile_list(&self) {
+        ui::unparent(&self.inline_reply_box);
+        ui::reset_profile_list(&self.profile_list, &self.profile_hero);
     }
 
     fn render_profile(&self, sender: &ComponentSender<App>) {
@@ -3967,14 +4504,16 @@ impl App {
             self.profile_hero.remove(&child);
         }
         if let Some(profile) = &self.profile {
-            self.profile_hero.append(&ui::profile_hero(
+            ui::fill_profile_hero(
+                &self.profile_hero,
                 profile,
                 self.user.as_ref(),
                 self.follow_label(),
-                self.profile_replies,
+                self.profile_tab,
                 sender.input_sender().clone(),
-            ));
+            );
         }
+        ui::pin_profile_hero(&self.profile_list, &self.profile_hero);
     }
 
     fn can_commit(&self) -> bool {
@@ -4005,7 +4544,23 @@ impl App {
     }
 
     fn toast(&self, text: &str) {
+        self.show_toast(text, None);
+    }
+
+    fn toast_commit(&self, text: &str, id: String) {
+        self.show_toast(text, Some(id));
+    }
+
+    fn show_toast(&self, text: &str, commit_id: Option<String>) {
+        *self.toast_commit.borrow_mut() = commit_id.clone();
         self.aside_toast_label.set_label(text);
+        if commit_id.is_some() {
+            self.aside_toast.add_css_class("dn-toast-link");
+            self.aside_toast.set_cursor_from_name(Some("pointer"));
+        } else {
+            self.aside_toast.remove_css_class("dn-toast-link");
+            self.aside_toast.set_cursor_from_name(None);
+        }
         self.aside_toast.add_css_class("visible");
         self.aside_toast.set_reveal_child(true);
         if let Some(id) = self.toast_hide.borrow_mut().take() {
@@ -4013,10 +4568,13 @@ impl App {
         }
         let revealer = self.aside_toast.downgrade();
         let slot = self.toast_hide.clone();
+        let commit_slot = self.toast_commit.clone();
         let id = glib::timeout_add_local_once(Duration::from_secs(4), move || {
             slot.borrow_mut().take();
+            commit_slot.borrow_mut().take();
             if let Some(revealer) = revealer.upgrade() {
                 revealer.remove_css_class("visible");
+                revealer.remove_css_class("dn-toast-link");
                 revealer.set_reveal_child(false);
             }
         });
@@ -4126,7 +4684,7 @@ impl App {
         if let Some(client) = self.client.clone() {
             self.begin_busy();
             if !more && self.log_commits.is_empty() {
-                self.log_list.append(&ui::skeleton_row());
+                ui::append_commit_skeletons(&self.log_list, 3);
             }
             let sender2 = sender.clone();
             relm4::spawn(async move {
@@ -4139,7 +4697,7 @@ impl App {
         if let Some(client) = self.client.clone() {
             self.begin_busy();
             if self.notif_list.row_at_index(0).is_none() {
-                self.notif_list.append(&ui::skeleton_row());
+                ui::append_notification_skeletons(&self.notif_list, 2);
             }
             let filter = self.notif_filter;
             let sender2 = sender.clone();
@@ -4153,6 +4711,9 @@ impl App {
 
     fn load_remotes(&self, sender: &ComponentSender<App>) {
         if let Some(client) = self.client.clone() {
+            if self.inbox_list.row_at_index(0).is_none() {
+                ui::append_inbox_skeletons(&self.inbox_list, 4);
+            }
             let sender2 = sender.clone();
             relm4::spawn(async move {
                 sender2.input(AppMsg::RemotesLoaded(
@@ -4328,26 +4889,152 @@ fn pick_images(sender: &ComponentSender<App>) {
     filter.add_mime_type("image/jpeg");
     filter.add_mime_type("image/png");
     filter.add_mime_type("image/webp");
+    let filters = gio::ListStore::new::<gtk::FileFilter>();
+    filters.append(&filter);
+    dialog.set_filters(Some(&filters));
     dialog.set_default_filter(Some(&filter));
     let sender = sender.clone();
-    dialog.open_multiple(
-        None::<&gtk::Window>,
-        None::<&gio::Cancellable>,
-        move |result| {
-            let Ok(files) = result else {
-                return;
-            };
-            let mut uploads = Vec::new();
-            for i in 0..files.n_items() {
-                if let Some(file) = files.item(i).and_then(|o| o.downcast::<gio::File>().ok()) {
-                    if let Some(path) = file.path() {
-                        if let Some(upload) = ui::read_upload(&path) {
-                            uploads.push(upload);
-                        }
-                    }
+    let parent = relm4::main_application().active_window();
+    dialog.open_multiple(parent.as_ref(), None::<&gio::Cancellable>, move |result| {
+        let Ok(files) = result else {
+            return;
+        };
+        let mut uploads = Vec::new();
+        let mut skipped = 0;
+        for i in 0..files.n_items() {
+            if let Some(file) = files.item(i).and_then(|o| o.downcast::<gio::File>().ok()) {
+                if let Some(upload) = ui::read_upload_file(&file) {
+                    uploads.push(upload);
+                } else {
+                    skipped += 1;
                 }
             }
+        }
+        if skipped > 0 {
+            sender.input(AppMsg::Toast(
+                "Only JPEG, PNG, or WebP images up to 10 MB.".into(),
+            ));
+        }
+        if !uploads.is_empty() {
             sender.input(AppMsg::ImagesPicked(uploads));
-        },
-    );
+        }
+    });
+}
+
+const FEED_MAX: i32 = 620;
+const REMOTES_FEED_MAX: i32 = 940;
+const FLUID_FEED_MAX: i32 = 4096;
+
+fn fill_feed_list(list: &gtk::ListBox) {
+    list.set_hexpand(true);
+    list.set_vexpand(true);
+}
+
+fn feed_column_width(visible: &str, shell_compact: bool) -> i32 {
+    if shell_compact {
+        FLUID_FEED_MAX
+    } else if visible == "remotes" {
+        REMOTES_FEED_MAX
+    } else {
+        FEED_MAX
+    }
+}
+
+fn feed_column_fills(shell_compact: bool) -> bool {
+    shell_compact
+}
+
+fn feed_column_classes(visible: &str, shell_compact: bool) -> [&'static str; 2] {
+    if shell_compact {
+        ["dn-main", "fluid"]
+    } else if visible == "remotes" {
+        ["dn-main", "remotes"]
+    } else {
+        ["dn-main", "feed"]
+    }
+}
+
+fn width_hides_aside(aside_compact: bool, nav_compact: bool, shell_compact: bool) -> bool {
+    aside_compact || nav_compact || shell_compact
+}
+
+fn aside_is_visible(
+    signed_in: bool,
+    aside_compact: bool,
+    nav_compact: bool,
+    shell_compact: bool,
+    visible: &str,
+) -> bool {
+    signed_in
+        && !width_hides_aside(aside_compact, nav_compact, shell_compact)
+        && visible != "remotes"
+}
+
+fn nav_shows_search(aside_compact: bool, nav_compact: bool, shell_compact: bool) -> bool {
+    width_hides_aside(aside_compact, nav_compact, shell_compact) && !shell_compact
+}
+
+fn nav_is_collapsed(sidebar_collapsed: Option<bool>, nav_compact: bool) -> bool {
+    sidebar_collapsed.unwrap_or(nav_compact)
+}
+
+#[cfg(test)]
+fn commit_button_expands(sidebar_collapsed: Option<bool>, nav_compact: bool) -> bool {
+    !nav_is_collapsed(sidebar_collapsed, nav_compact)
+}
+
+#[cfg(test)]
+mod shell_tests {
+    use super::*;
+
+    #[test]
+    fn collapse_follows_the_breakpoint_until_the_user_pins_it() {
+        assert!(nav_is_collapsed(None, true));
+        assert!(!nav_is_collapsed(None, false));
+    }
+
+    #[test]
+    fn user_expand_stays_open_under_the_icon_rail_breakpoint() {
+        assert!(!nav_is_collapsed(Some(false), true));
+        assert!(nav_is_collapsed(Some(true), false));
+    }
+
+    #[test]
+    fn commit_button_fills_the_rail_only_when_labels_are_showing() {
+        assert!(commit_button_expands(None, false));
+        assert!(!commit_button_expands(Some(true), false));
+        assert!(commit_button_expands(Some(false), true));
+    }
+
+    #[test]
+    fn feed_stays_capped_until_the_sidebars_are_gone() {
+        assert_eq!(feed_column_width("log", false), 620);
+        assert_eq!(feed_column_width("profile", false), 620);
+        assert_eq!(feed_column_width("notifications", false), 620);
+        assert_eq!(feed_column_width("remotes", false), 940);
+        assert_eq!(feed_column_width("log", true), 4096);
+        assert_eq!(feed_column_width("remotes", true), 4096);
+        assert!(!feed_column_fills(false));
+        assert!(feed_column_fills(true));
+        assert_eq!(feed_column_classes("log", false), ["dn-main", "feed"]);
+        assert_eq!(
+            feed_column_classes("remotes", false),
+            ["dn-main", "remotes"]
+        );
+        assert_eq!(feed_column_classes("log", true), ["dn-main", "fluid"]);
+    }
+
+    #[test]
+    fn aside_stays_hidden_once_a_narrower_breakpoint_wins() {
+        assert!(aside_is_visible(true, false, false, false, "log"));
+        assert!(!aside_is_visible(true, true, false, false, "log"));
+        assert!(!aside_is_visible(true, false, true, false, "log"));
+        assert!(!aside_is_visible(true, false, false, true, "log"));
+        assert!(!aside_is_visible(true, false, false, false, "remotes"));
+        assert!(!aside_is_visible(false, false, false, false, "log"));
+        assert!(nav_shows_search(true, false, false));
+        assert!(nav_shows_search(false, true, false));
+        assert!(!nav_shows_search(false, false, true));
+        assert!(!nav_shows_search(false, false, false));
+    }
 }

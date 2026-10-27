@@ -26,7 +26,7 @@ Unsigned calls exist for public profiles and commits. Signed traffic is capped a
 
 Point the client at another origin with `DEVNULL_URL`. Default is `https://dev-null.sh`.
 
-`devnull-api` maps resources under `/api/v1`: logs, commits (create, star, replies, quotes, reports, pastéis, previews), users, search, notifications, remotes, settings, mutes/blocks, export, and account deletion.
+`devnull-api` maps resources under `/api/v1`: logs, starred commits, commits (create, star, replies, quotes, reports, pastéis, previews), users, search, notifications, remotes, settings, mutes/blocks, export, and account deletion.
 
 ## Sign-in
 

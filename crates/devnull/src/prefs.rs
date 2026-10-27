@@ -104,7 +104,6 @@ impl Prefs {
 /// GTK `@define-color` is global and `@media (prefers-color-scheme)` follows the
 /// OS, not libadwaita's `ColorScheme`. Inject dark tokens when the app is dark.
 const DARK_TOKENS: &str = r#"
-window { color-scheme: dark; }
 @define-color dn_shell #111112;
 @define-color dn_surface #18181a;
 @define-color dn_ink #ececec;

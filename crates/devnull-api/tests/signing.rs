@@ -163,6 +163,73 @@ fn commit_detail_page_reads_ancestors() {
 }
 
 #[test]
+fn commit_and_message_mentions_decode() {
+    let commit: devnull_api::Commit = serde_json::from_str(
+        r#"{
+            "id": "c1",
+            "body": "Thanks @ORIGINAL!",
+            "mentions": {"original": "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b"}
+        }"#,
+    )
+    .unwrap();
+    assert_eq!(
+        commit.mentions.as_ref().unwrap().get("original").unwrap(),
+        "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b"
+    );
+    let none: devnull_api::Commit =
+        serde_json::from_str(r#"{"id": "c2", "body": "plain", "mentions": null}"#).unwrap();
+    assert!(none.mentions.is_none());
+    let message: devnull_api::Message =
+        serde_json::from_str(r#"{"id": 1, "body": "Hi @nuno", "mentions": {"nuno": "u1"}}"#)
+            .unwrap();
+    assert_eq!(message.mentions.unwrap().get("nuno").unwrap(), "u1");
+    let empty: devnull_api::Commit =
+        serde_json::from_str(r#"{"id": "c3", "mentions": []}"#).unwrap();
+    assert!(empty.mentions.is_none());
+}
+
+#[test]
+fn notification_page_reads_groups_and_skips_broken_commits() {
+    let page = devnull_api::Notification::page_from_value(serde_json::json!({
+        "notifications": {
+            "data": [
+                {
+                    "id": "n1",
+                    "type": "followed",
+                    "actor": {"id": "u1", "username": "ada"},
+                    "actors": null,
+                    "commit": null
+                },
+                {
+                    "id": "n2",
+                    "type": "replied",
+                    "actor": {"id": "u2", "handle": "grace"},
+                    "commit": {
+                        "id": "c1",
+                        "body": "hello",
+                        "mentions": []
+                    }
+                },
+                {
+                    "id": "n3",
+                    "type": "starred",
+                    "actor": {"id": "u3", "username": "linus"},
+                    "commit": "not-an-object"
+                }
+            ]
+        }
+    }));
+    assert_eq!(page.data.len(), 3);
+    assert_eq!(page.data[0].kind(), "followed");
+    assert_eq!(
+        page.data[1].commit.as_ref().unwrap().body.as_deref(),
+        Some("hello")
+    );
+    assert_eq!(page.data[1].actor.as_ref().unwrap().username, "grace");
+    assert!(page.data[2].commit.is_none());
+}
+
+#[test]
 fn profile_reads_activity_achievements_and_follow_state() {
     let json = r#"{
         "data": {
@@ -195,7 +262,8 @@ fn profile_reads_activity_achievements_and_follow_state() {
                     {"rank": "operator", "level": 3, "min_xp": 250, "achieved": false}
                 ],
                 "badges": [
-                    {"id": "init", "name": "init", "unlocked": true, "progress": 1, "target": 1}
+                    {"id": "init", "name": "init", "unlocked": true, "progress": 1, "target": 1},
+                    {"id": "uptime", "name": "uptime", "unlocked": false, "progress": 2, "target": 7}
                 ]
             },
             "pasteis_received": 3
@@ -210,7 +278,16 @@ fn profile_reads_activity_achievements_and_follow_state() {
     assert_eq!(profile.activity.cells()[1].level, 4);
     let achievements = profile.achievements.unwrap();
     assert_eq!(achievements.label(), "Lv. 2 · user");
+    assert_eq!(achievements.xp_label(), "120 / 250 XP");
     assert_eq!(achievements.next_rank_label(), "130 XP to operator");
+    assert_eq!(achievements.unlocked_count(), 1);
+    assert_eq!(
+        achievements
+            .unlocked_badges()
+            .map(|badge| badge.id.as_str())
+            .collect::<Vec<_>>(),
+        ["init"]
+    );
     assert_eq!(profile.pasteis_received, Some(3));
 }
 
