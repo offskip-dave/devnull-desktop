@@ -51,7 +51,7 @@ pub fn trigger_at(before: &str) -> Option<(usize, String)> {
 }
 
 pub fn search(query: &str, limit: usize) -> Vec<Suggestion> {
-    let partial = query.to_ascii_lowercase();
+    let partial = query.trim().trim_matches(':').to_ascii_lowercase();
     if partial.is_empty() {
         return Vec::new();
     }
@@ -67,10 +67,26 @@ pub fn search(query: &str, limit: usize) -> Vec<Suggestion> {
             2
         }
     };
-    let mut hits: Vec<(&str, &str, u8)> = shortcodes()
-        .iter()
-        .filter(|(name, _)| name.contains(&partial))
-        .map(|(name, emoji)| (name.as_str(), emoji.as_str(), rank(name)))
+    let mut best: HashMap<&str, (&str, u8)> = HashMap::new();
+    for (name, emoji) in shortcodes() {
+        if !name.contains(&partial) {
+            continue;
+        }
+        let rank = rank(name);
+        match best.get(emoji.as_str()) {
+            Some((existing, existing_rank))
+                if rank > *existing_rank
+                    || (rank == *existing_rank
+                        && (name.len() > existing.len()
+                            || (name.len() == existing.len() && name.as_str() >= *existing))) => {}
+            _ => {
+                best.insert(emoji, (name, rank));
+            }
+        }
+    }
+    let mut hits: Vec<(&str, &str, u8)> = best
+        .into_iter()
+        .map(|(emoji, (name, rank))| (name, emoji, rank))
         .collect();
     hits.sort_by(|left, right| {
         left.2
@@ -160,7 +176,8 @@ mod tests {
     fn search_prefers_prefix_then_shortest() {
         let names: Vec<_> = search("smi", 8).into_iter().map(|s| s.name).collect();
         assert_eq!(&names[..3], ["smile", "smirk", "smiley"]);
-        assert!(names.iter().all(|name| name.starts_with("smi")));
+        let prefixed = names.iter().filter(|name| name.starts_with("smi")).count();
+        assert!(names[..prefixed].iter().all(|name| name.starts_with("smi")));
     }
 
     #[test]
@@ -188,6 +205,13 @@ mod tests {
             }]
         );
         assert!(search("no_such_shortcode", 8).is_empty());
+    }
+
+    #[test]
+    fn search_lists_each_emoji_once() {
+        let thumbs = search("thumbs", 80);
+        assert_eq!(thumbs.iter().filter(|item| item.emoji == "👍").count(), 1);
+        assert_eq!(search(":rock", 1)[0].emoji, "🪨");
     }
 
     #[test]

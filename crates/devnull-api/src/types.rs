@@ -1,9 +1,9 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize};
 
-use crate::date::deserialize_opt_datetime;
+use crate::date::{deserialize_opt_datetime, parse_date};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(untagged)]
@@ -34,8 +34,9 @@ impl Lane {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct User {
+    #[serde(default, deserialize_with = "deserialize_stringish")]
     pub id: String,
-    #[serde(alias = "handle")]
+    #[serde(default, alias = "handle")]
     pub username: String,
     #[serde(default)]
     pub name: Option<String>,
@@ -67,7 +68,11 @@ pub struct User {
     pub following_count: Option<i64>,
     #[serde(default)]
     pub lane: Option<Lane>,
-    #[serde(default, alias = "is_following")]
+    #[serde(
+        default,
+        alias = "is_following",
+        deserialize_with = "deserialize_opt_boolish"
+    )]
     pub is_followed: Option<bool>,
     #[serde(default)]
     pub follows_you: Option<bool>,
@@ -139,6 +144,25 @@ impl User {
 
     pub fn is_followed_by_me(&self) -> bool {
         self.is_followed.unwrap_or(false)
+    }
+
+    pub fn is_already_followed(&self, following: &HashSet<String>) -> bool {
+        self.is_followed_by_me() || following.contains(&self.username.trim().to_ascii_lowercase())
+    }
+
+    pub fn following_names(users: &[Self]) -> HashSet<String> {
+        users
+            .iter()
+            .map(|user| user.username.trim().to_ascii_lowercase())
+            .filter(|name| !name.is_empty())
+            .collect()
+    }
+
+    pub fn not_followed(users: Vec<Self>, following: &HashSet<String>) -> Vec<Self> {
+        users
+            .into_iter()
+            .filter(|user| !user.is_already_followed(following))
+            .collect()
     }
 }
 
@@ -231,12 +255,15 @@ impl CurrentUser {
 impl User {
     pub fn list_from_value(value: serde_json::Value) -> Vec<Self> {
         let data = value.get("data").cloned().unwrap_or(value.clone());
-        if let Some(users) = json_vec::<User>(&data, "users") {
-            if !users.is_empty() {
-                return users;
-            }
+        if let Some(users) = json_users(&data, "users").or_else(|| json_users(&value, "users")) {
+            return users;
         }
         for key in [
+            "suggestedUsers",
+            "suggested_users",
+            "suggested",
+            "following",
+            "followers",
             "liveFollowing",
             "live_following",
             "muted",
@@ -244,17 +271,55 @@ impl User {
             "mutes",
             "blocks",
         ] {
-            if let Some(users) = json_vec::<User>(&data, key).or_else(|| json_vec(&value, key)) {
+            if let Some(users) = json_users(&data, key).or_else(|| json_users(&value, key)) {
                 return users;
             }
         }
         if let Ok(page) = serde_json::from_value::<Page<User>>(value.clone()) {
-            return page.data;
+            if !page.data.is_empty() {
+                return page.data;
+            }
         }
-        if data.is_array() {
-            return serde_json::from_value(data).unwrap_or_default();
+        if let Some(users) = users_from_array(&data) {
+            return users;
         }
         Vec::new()
+    }
+
+    /// Suggested-user payloads from Inertia/`suggestedUsers`, not a following `users` list.
+    pub fn suggested_from_value(value: &serde_json::Value) -> Vec<Self> {
+        let data = value.get("data").unwrap_or(value);
+        let sources = [
+            Some(data),
+            Some(value),
+            value.get("props"),
+            data.get("props"),
+        ];
+        for source in sources.into_iter().flatten() {
+            for key in ["suggestedUsers", "suggested_users", "suggested"] {
+                if let Some(users) = json_users(source, key) {
+                    return users;
+                }
+            }
+        }
+        Vec::new()
+    }
+
+    /// Unique commit authors who are not already followed. Used when the suggested payload is empty.
+    pub fn unique_unfollowed_authors(commits: &[Commit], following: &HashSet<String>) -> Vec<Self> {
+        let mut seen = HashSet::new();
+        let mut users = Vec::new();
+        for commit in commits {
+            let Some(author) = commit.author.clone() else {
+                continue;
+            };
+            let name = author.username.trim().to_ascii_lowercase();
+            if name.is_empty() || !seen.insert(name) || author.is_already_followed(following) {
+                continue;
+            }
+            users.push(author);
+        }
+        users
     }
 }
 
@@ -500,13 +565,7 @@ pub struct SearchResults {
 impl SearchResults {
     pub fn from_value(value: serde_json::Value) -> Self {
         let data = value.get("data").cloned().unwrap_or(value.clone());
-        let users = json_vec::<User>(&data, "users").unwrap_or_else(|| {
-            if data.is_array() {
-                serde_json::from_value(data.clone()).unwrap_or_default()
-            } else {
-                Vec::new()
-            }
-        });
+        let users = User::list_from_value(value.clone());
         let commits = json_vec::<Commit>(&data, "commits").unwrap_or_default();
         Self { users, commits }
     }
@@ -546,6 +605,42 @@ fn json_vec<T: serde::de::DeserializeOwned>(
         .get(key)
         .cloned()
         .and_then(|v| serde_json::from_value(v).ok())
+}
+
+fn json_users(value: &serde_json::Value, key: &str) -> Option<Vec<User>> {
+    users_from_array(value.get(key)?)
+}
+
+fn users_from_array(value: &serde_json::Value) -> Option<Vec<User>> {
+    let users: Vec<User> = value
+        .as_array()?
+        .iter()
+        .filter_map(|item| serde_json::from_value::<User>(item.clone()).ok())
+        .filter(|user| !user.username.trim().is_empty())
+        .collect();
+    (!users.is_empty()).then_some(users)
+}
+
+fn deserialize_opt_boolish<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| match value {
+        serde_json::Value::Null => None,
+        serde_json::Value::Bool(flag) => Some(flag),
+        serde_json::Value::Number(number) => number
+            .as_i64()
+            .or_else(|| number.as_u64().map(|n| n as i64))
+            .or_else(|| number.as_f64().map(|n| n as i64))
+            .map(|n| n != 0),
+        serde_json::Value::String(text) => match text.trim().to_ascii_lowercase().as_str() {
+            "true" | "1" | "yes" => Some(true),
+            "false" | "0" | "no" | "" => Some(false),
+            _ => None,
+        },
+        _ => None,
+    }))
 }
 
 fn deserialize_mentions<'de, D>(
@@ -589,9 +684,47 @@ where
 fn deserialize_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
 where
     D: Deserializer<'de>,
-    T: Deserialize<'de>,
+    T: serde::de::DeserializeOwned,
 {
-    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(match value {
+        None | Some(serde_json::Value::Null) => Vec::new(),
+        Some(serde_json::Value::Array(items)) => items
+            .into_iter()
+            .filter_map(|item| serde_json::from_value(item).ok())
+            .collect(),
+        Some(_) => Vec::new(),
+    })
+}
+
+fn value_as_string(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(text) => Some(text.clone()),
+        serde_json::Value::Number(number) => Some(number.to_string()),
+        serde_json::Value::Bool(flag) => Some(flag.to_string()),
+        _ => None,
+    }
+}
+
+fn deserialize_stringish<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    value_as_string(&value).ok_or_else(|| serde::de::Error::custom("expected id"))
+}
+
+fn deserialize_i64ish<'de, D>(deserializer: D) -> Result<i64, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    value
+        .as_i64()
+        .or_else(|| value.as_u64().map(|n| n as i64))
+        .or_else(|| value.as_f64().map(|n| n as i64))
+        .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
+        .ok_or_else(|| serde::de::Error::custom("expected id"))
 }
 
 fn deserialize_opt_i64<'de, D>(deserializer: D) -> Result<Option<i64>, D::Error>
@@ -622,13 +755,27 @@ where
     }))
 }
 
-fn json_list<'a>(value: &'a serde_json::Value) -> Option<&'a Vec<serde_json::Value>> {
+fn json_list(value: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
     value.as_array().or_else(|| {
-        value
-            .get("data")
-            .and_then(serde_json::Value::as_array)
-            .or_else(|| value.get("notifications").and_then(json_list))
+        ["data", "conversations", "notifications", "messages"]
+            .iter()
+            .find_map(|key| value.get(*key).and_then(json_list))
     })
+}
+
+fn deserialize_opt_ok<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: serde::de::DeserializeOwned,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value.and_then(|value| {
+        if value.is_null() {
+            None
+        } else {
+            serde_json::from_value(value).ok()
+        }
+    }))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -698,7 +845,7 @@ pub struct Commit {
     pub replies_count: Option<i64>,
     #[serde(default)]
     pub link_preview: Option<LinkPreview>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_vec")]
     pub images: Vec<CommitImage>,
     #[serde(default, alias = "user")]
     pub author: Option<User>,
@@ -739,6 +886,15 @@ impl Commit {
             (Some(id), Some(me)) => id == me,
             _ => false,
         }
+    }
+
+    pub fn list_from_value(value: serde_json::Value) -> Vec<Self> {
+        json_list(&value)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|item| serde_json::from_value(item).ok())
+            .collect()
     }
 }
 
@@ -955,6 +1111,44 @@ impl Notification {
         self.read_at.is_none() || self.unread_count.unwrap_or(0) > 0
     }
 
+    pub fn people(&self) -> Vec<&User> {
+        let mut people = Vec::new();
+        if let Some(actor) = self.actor.as_ref() {
+            people.push(actor);
+        }
+        for actor in &self.actors {
+            if people.iter().all(|seen| seen.id != actor.id) {
+                people.push(actor);
+            }
+        }
+        people
+    }
+
+    pub fn actors_total(&self) -> i64 {
+        let n = self.people().len() as i64;
+        self.actors_count.unwrap_or(n).max(n).max(1)
+    }
+
+    pub fn other_actors(&self) -> i64 {
+        if matches!(self.kind(), "follow" | "followed" | "star" | "starred") {
+            self.actors_total().saturating_sub(1)
+        } else {
+            0
+        }
+    }
+
+    pub fn is_grouped(&self) -> bool {
+        self.event_count.unwrap_or(1) > 1
+    }
+
+    pub fn group_noun(&self) -> &'static str {
+        match self.kind() {
+            "follow" | "followed" => "followers",
+            "star" | "starred" => "stars",
+            _ => "updates",
+        }
+    }
+
     pub fn page_from_value(value: serde_json::Value) -> Page<Self> {
         let root = value.get("data").unwrap_or(&value);
         let items = json_list(&value)
@@ -1001,6 +1195,15 @@ pub fn unread_counts_from_value(value: &serde_json::Value) -> (Option<i64>, Opti
     (notifications, remotes)
 }
 
+fn json_datetime(value: &serde_json::Value, names: &[&str]) -> Option<DateTime<Utc>> {
+    names.iter().find_map(|name| {
+        value
+            .get(*name)
+            .and_then(|item| item.as_str())
+            .and_then(parse_date)
+    })
+}
+
 fn json_count(value: &serde_json::Value, names: &[&str]) -> Option<i64> {
     names.iter().find_map(|name| {
         value.get(*name).and_then(|item| {
@@ -1011,7 +1214,7 @@ fn json_count(value: &serde_json::Value, names: &[&str]) -> Option<i64> {
     })
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum NotificationFilter {
     #[default]
     All,
@@ -1034,6 +1237,19 @@ impl NotificationFilter {
         Self::Moderation,
     ];
 
+    pub const CATEGORIES: [Self; 6] = [
+        Self::Replies,
+        Self::Quotes,
+        Self::Stars,
+        Self::Mentions,
+        Self::Follows,
+        Self::Moderation,
+    ];
+
+    pub fn enabled_all() -> HashSet<Self> {
+        Self::CATEGORIES.into_iter().collect()
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::All => "all",
@@ -1050,6 +1266,51 @@ impl NotificationFilter {
         match self {
             Self::All => None,
             other => Some(other.as_str()),
+        }
+    }
+
+    pub fn query_param(selected: &HashSet<Self>) -> Option<String> {
+        let types: Vec<&str> = Self::CATEGORIES
+            .iter()
+            .filter(|kind| selected.contains(kind))
+            .map(|kind| kind.as_str())
+            .collect();
+        match types.len() {
+            0 => Some("none".into()),
+            n if n == Self::CATEGORIES.len() => None,
+            _ => Some(types.join(",")),
+        }
+    }
+
+    pub fn empty_fatal_for(selected: &HashSet<Self>) -> String {
+        let types: Vec<&str> = Self::CATEGORIES
+            .iter()
+            .filter(|kind| selected.contains(kind))
+            .map(|kind| kind.as_str())
+            .collect();
+        if types.len() == Self::CATEGORIES.len() {
+            "$ cat /dev/notifications".into()
+        } else {
+            let pattern = if types.is_empty() {
+                "^$".to_owned()
+            } else {
+                types.join("|")
+            };
+            format!("$ cat /dev/notifications | grep -E '{pattern}'")
+        }
+    }
+
+    pub fn empty_detail_for(selected: &HashSet<Self>) -> &'static str {
+        let types: Vec<Self> = Self::CATEGORIES
+            .iter()
+            .copied()
+            .filter(|kind| selected.contains(kind))
+            .collect();
+        match types.as_slice() {
+            [] => "All categories are turned off. Enable a category to see notifications.",
+            [one] => one.empty_detail(),
+            rest if rest.len() == Self::CATEGORIES.len() => Self::All.empty_detail(),
+            _ => "No notifications in the selected categories yet.",
         }
     }
 
@@ -1110,10 +1371,13 @@ pub struct Member {
     pub user: User,
     #[serde(default)]
     pub role: Option<String>,
+    #[serde(default)]
+    pub read_through_id: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MessageImage {
+    #[serde(default)]
     pub id: String,
     #[serde(default)]
     pub width: Option<i32>,
@@ -1121,11 +1385,13 @@ pub struct MessageImage {
     pub height: Option<i32>,
     #[serde(default)]
     pub description: Option<String>,
-    pub url: String,
+    #[serde(default)]
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Message {
+    #[serde(deserialize_with = "deserialize_i64ish")]
     pub id: i64,
     #[serde(default)]
     pub user_id: Option<String>,
@@ -1135,37 +1401,62 @@ pub struct Message {
     pub body: Option<String>,
     #[serde(default)]
     pub reply_to_id: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_opt_ok")]
+    pub reply_to: Option<MessageReply>,
     /// Captured `@username` → user id, lowercased keys. Only these mentions are linkified.
     #[serde(default, deserialize_with = "deserialize_mentions")]
     pub mentions: Option<HashMap<String, String>>,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "linkPreview",
+        deserialize_with = "deserialize_opt_ok"
+    )]
     pub link_preview: Option<LinkPreview>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_vec")]
     pub images: Vec<MessageImage>,
     #[serde(default)]
     pub event: Option<String>,
     #[serde(default)]
+    pub subject_id: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_opt_ok")]
+    pub subject: Option<User>,
+    #[serde(default, deserialize_with = "deserialize_opt_ok")]
     pub user: Option<User>,
     #[serde(default, deserialize_with = "deserialize_opt_datetime")]
     pub created_at: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct MessageReply {
+    #[serde(default, deserialize_with = "deserialize_i64ish")]
+    pub id: i64,
+    #[serde(default)]
+    pub user_id: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub images_count: i64,
+    #[serde(default, deserialize_with = "deserialize_opt_ok")]
+    pub user: Option<User>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ConversationSummary {
+    #[serde(deserialize_with = "deserialize_stringish")]
     pub id: String,
     #[serde(default)]
     pub kind: ConversationKind,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "user", deserialize_with = "deserialize_opt_ok")]
     pub partner: Option<User>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_vec")]
     pub members: Vec<Member>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_ok")]
     pub last_message: Option<Message>,
     #[serde(default, deserialize_with = "deserialize_opt_datetime")]
     pub last_message_at: Option<DateTime<Utc>>,
-    #[serde(default)]
+    #[serde(default, alias = "unread", alias = "unread_count")]
     pub ahead: i64,
     #[serde(default)]
     pub last_incoming_message_id: Option<i64>,
@@ -1178,22 +1469,214 @@ pub struct ConversationSummary {
 }
 
 impl ConversationSummary {
+    pub fn is_org(&self) -> bool {
+        self.kind == ConversationKind::Org || self.partner.is_none()
+    }
+
+    pub fn others<'a>(&'a self, me_id: Option<&str>) -> Vec<&'a User> {
+        self.members
+            .iter()
+            .map(|member| &member.user)
+            .filter(|user| me_id.is_none_or(|id| user.id != id))
+            .collect()
+    }
+
+    pub fn member_count(&self, me_id: Option<&str>) -> usize {
+        self.others(me_id).len().saturating_add(1)
+    }
+
     pub fn title(&self) -> String {
-        if self.kind == ConversationKind::Org {
-            self.name.clone().unwrap_or_else(|| "org".into())
+        self.title_for(None)
+    }
+
+    pub fn title_for(&self, me: Option<&User>) -> String {
+        if !self.is_org() {
+            return self
+                .partner
+                .as_ref()
+                .map(|user| user.display_name().to_owned())
+                .unwrap_or_else(|| "remote".into());
+        }
+        if let Some(name) = self
+            .name
+            .as_deref()
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+        {
+            return name.to_owned();
+        }
+        let others = self.others(me.map(|user| user.id.as_str()));
+        if others.is_empty() {
+            "Just you".into()
+        } else {
+            others
+                .into_iter()
+                .map(first_name)
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    }
+
+    pub fn handle_or_meta(&self, me_id: Option<&str>) -> String {
+        if self.is_org() {
+            format!("org · {}", self.member_count(me_id))
         } else {
             self.partner
                 .as_ref()
-                .map(|u| u.display_name().to_owned())
-                .unwrap_or_else(|| "remote".into())
+                .map(|user| format!("@{}", user.username))
+                .unwrap_or_default()
         }
     }
 
     pub fn preview(&self) -> String {
         self.last_message
             .as_ref()
-            .and_then(|m| m.body.clone())
+            .and_then(|message| message.body.clone())
             .unwrap_or_default()
+    }
+
+    pub fn preview_for(&self, me_id: Option<&str>) -> String {
+        let Some(message) = &self.last_message else {
+            return String::new();
+        };
+        if message
+            .event
+            .as_deref()
+            .is_some_and(|event| !event.is_empty())
+        {
+            return event_preview(message);
+        }
+        let body = message
+            .body
+            .as_deref()
+            .map(str::trim)
+            .filter(|body| !body.is_empty())
+            .unwrap_or("sent an image");
+        let mine = me_id.is_some() && message.user_id.as_deref() == me_id;
+        if mine {
+            format!("you: {body}")
+        } else if self.is_org() {
+            let who = message
+                .user
+                .as_ref()
+                .map(first_name)
+                .unwrap_or_else(|| "someone".into());
+            format!("{who}: {body}")
+        } else {
+            body.to_owned()
+        }
+    }
+
+    pub fn is_pinned(&self) -> bool {
+        self.pinned_at.is_some()
+    }
+
+    pub fn is_muted(&self) -> bool {
+        self.muted_until_at.is_some_and(|until| until > Utc::now())
+    }
+
+    pub fn matches_query(&self, query: &str, me: Option<&User>) -> bool {
+        let needle = query.trim().trim_start_matches('@').to_lowercase();
+        if needle.is_empty() {
+            return true;
+        }
+        let me_id = me.map(|user| user.id.as_str());
+        let mut hay = self.title_for(me);
+        hay.push(' ');
+        hay.push_str(&self.handle_or_meta(me_id));
+        if let Some(partner) = &self.partner {
+            hay.push(' ');
+            hay.push_str(partner.display_name());
+            hay.push(' ');
+            hay.push_str(&partner.username);
+        }
+        for member in &self.members {
+            hay.push(' ');
+            hay.push_str(member.user.display_name());
+            hay.push(' ');
+            hay.push_str(&member.user.username);
+        }
+        hay.to_lowercase().contains(&needle)
+    }
+
+    pub fn is_visible(&self) -> bool {
+        self.kind == ConversationKind::Org
+            || self
+                .partner
+                .as_ref()
+                .is_some_and(|user| !user.username.trim().is_empty())
+    }
+}
+
+fn first_name(user: &User) -> String {
+    user.name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+        .and_then(|name| name.split_whitespace().next())
+        .unwrap_or(user.username.as_str())
+        .to_owned()
+}
+
+pub fn event_preview(message: &Message) -> String {
+    event_line(
+        message.user.as_ref(),
+        message.subject.as_ref(),
+        message.event.as_deref(),
+        message.body.as_deref(),
+    )
+}
+
+pub fn event_line(
+    actor: Option<&User>,
+    subject: Option<&User>,
+    event: Option<&str>,
+    body: Option<&str>,
+) -> String {
+    let actor = event_handle(actor);
+    let subject = event_handle(subject);
+    let body = body.map(str::trim).filter(|text| !text.is_empty());
+    match event {
+        Some("created") => body
+            .map(|name| format!("{actor} created {name}"))
+            .unwrap_or_else(|| format!("{actor} created the org")),
+        Some("added") => format!("{actor} added {subject}"),
+        Some("removed") => format!("{actor} removed {subject}"),
+        Some("left") => format!("{actor} left"),
+        Some("renamed") => body
+            .map(|name| format!("{actor} renamed the org to {name}"))
+            .unwrap_or_else(|| format!("{actor} cleared the org's name")),
+        Some("promoted") => format!("{actor} made {subject} a maintainer"),
+        Some("demoted") => format!("{actor} made {subject} a contributor"),
+        Some("inherited") => format!("{actor} inherited maintainer"),
+        _ => body.unwrap_or_default().to_owned(),
+    }
+}
+
+fn event_handle(user: Option<&User>) -> String {
+    user.map(|user| user.username.trim())
+        .filter(|username| !username.is_empty())
+        .map(|username| format!("@{username}"))
+        .unwrap_or_else(|| "someone".into())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct RemoteCandidate {
+    pub user: User,
+    #[serde(default, deserialize_with = "deserialize_opt_ok")]
+    pub reason: Option<String>,
+}
+
+impl RemoteCandidate {
+    pub fn list_from_value(value: serde_json::Value) -> Vec<Self> {
+        let data = value.get("data").cloned().unwrap_or(value.clone());
+        json_vec::<Self>(&data, "candidates")
+            .or_else(|| json_vec(&value, "candidates"))
+            .unwrap_or_default()
+    }
+
+    pub fn pickable(&self) -> bool {
+        self.reason.as_deref().is_none_or(str::is_empty)
     }
 }
 
@@ -1209,6 +1692,38 @@ pub struct InboxPage {
     pub requests_count: i64,
 }
 
+impl InboxPage {
+    pub fn from_value(value: serde_json::Value) -> Self {
+        let root = value
+            .get("data")
+            .filter(|data| data.is_object() || data.is_array())
+            .unwrap_or(&value);
+        let items = json_list(&value)
+            .or_else(|| json_list(root))
+            .cloned()
+            .unwrap_or_default();
+        let data = items
+            .into_iter()
+            .filter_map(|item| serde_json::from_value::<ConversationSummary>(item).ok())
+            .filter(ConversationSummary::is_visible)
+            .collect();
+        Self {
+            data,
+            has_more: json_bool(root, "has_more")
+                .or_else(|| json_bool(root, "hasMore"))
+                .or_else(|| json_bool(&value, "has_more"))
+                .or_else(|| json_bool(&value, "hasMore"))
+                .unwrap_or(false),
+            unread_count: json_count(root, &["unread_count", "unreadCount", "unread"])
+                .or_else(|| json_count(&value, &["unread_count", "unreadCount", "unread"]))
+                .unwrap_or(0),
+            requests_count: json_count(root, &["requests_count", "requestsCount", "requests"])
+                .or_else(|| json_count(&value, &["requests_count", "requestsCount", "requests"]))
+                .unwrap_or(0),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct OrgInfo {
     pub id: String,
@@ -1218,7 +1733,7 @@ pub struct OrgInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ChatThread {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_vec")]
     pub messages: Vec<Message>,
     #[serde(default)]
     pub has_older: bool,
@@ -1228,12 +1743,77 @@ pub struct ChatThread {
     pub is_archived: bool,
     #[serde(default)]
     pub access: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_ok")]
     pub partner: Option<User>,
     #[serde(default)]
     pub org: Option<OrgInfo>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_vec")]
     pub members: Vec<Member>,
+    #[serde(default)]
+    pub partner_read_through_id: i64,
+    #[serde(default, deserialize_with = "deserialize_opt_datetime")]
+    pub partner_read_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub partner_typing: bool,
+    #[serde(default, deserialize_with = "deserialize_vec")]
+    pub typing: Vec<String>,
+}
+
+impl ChatThread {
+    pub fn from_value(value: serde_json::Value) -> Self {
+        let root = value
+            .get("data")
+            .filter(|data| data.is_object())
+            .or_else(|| value.get("thread").filter(|data| data.is_object()))
+            .unwrap_or(&value);
+        let messages = json_list(root)
+            .or_else(|| json_list(&value))
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|item| serde_json::from_value(item).ok())
+            .collect();
+        Self {
+            messages,
+            has_older: json_bool(root, "has_older")
+                .or_else(|| json_bool(root, "hasOlder"))
+                .unwrap_or(false),
+            read_through_id: json_count(root, &["read_through_id", "readThroughId"]).unwrap_or(0),
+            is_archived: json_bool(root, "is_archived").unwrap_or(false),
+            access: root
+                .get("access")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            partner: root
+                .get("partner")
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok()),
+            org: root
+                .get("org")
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok()),
+            members: json_vec(root, "members").unwrap_or_default(),
+            partner_read_through_id: json_count(
+                root,
+                &["partner_read_through_id", "partnerReadThroughId"],
+            )
+            .unwrap_or(0),
+            partner_read_at: json_datetime(root, &["partner_read_at", "partnerReadAt"]),
+            partner_typing: json_bool(root, "partner_typing").unwrap_or(false),
+            typing: root
+                .get("typing")
+                .and_then(serde_json::Value::as_array)
+                .map(|items| {
+                    items
+                        .iter()
+                        .filter_map(serde_json::Value::as_str)
+                        .filter(|name| !name.is_empty())
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1255,10 +1835,37 @@ impl ThreadRef {
         }
     }
 
+    pub fn from_created_org(value: &serde_json::Value) -> Option<Self> {
+        let org = value
+            .get("org")
+            .or_else(|| value.get("data").and_then(|data| data.get("org")))
+            .or_else(|| value.get("data"))
+            .unwrap_or(value);
+        let id = match org.get("id") {
+            Some(serde_json::Value::String(id)) if !id.is_empty() => id.clone(),
+            Some(serde_json::Value::Number(id)) => id.to_string(),
+            _ => return None,
+        };
+        let name = org
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned);
+        Some(Self::Org { id, name })
+    }
+
     pub fn title(&self) -> String {
         match self {
             Self::Direct { username } => format!("@{username}"),
             Self::Org { name, id } => name.clone().unwrap_or_else(|| id.clone()),
+        }
+    }
+
+    pub fn key(&self) -> String {
+        match self {
+            Self::Direct { username } => username.clone(),
+            Self::Org { id, .. } => format!("org:{id}"),
         }
     }
 }
@@ -1277,6 +1884,61 @@ impl InboxTab {
             Self::Fetched => "fetched",
             Self::Stashed => "stashed",
         }
+    }
+}
+
+#[cfg(test)]
+mod notification_filter_tests {
+    use super::*;
+
+    #[test]
+    fn query_param_omits_type_when_every_category_is_on() {
+        assert_eq!(
+            NotificationFilter::query_param(&NotificationFilter::enabled_all()),
+            None
+        );
+    }
+
+    #[test]
+    fn query_param_joins_included_categories() {
+        let selected = [NotificationFilter::Replies, NotificationFilter::Mentions]
+            .into_iter()
+            .collect();
+        assert_eq!(
+            NotificationFilter::query_param(&selected).as_deref(),
+            Some("replies,mentions")
+        );
+    }
+
+    #[test]
+    fn query_param_sends_none_when_every_category_is_off() {
+        assert_eq!(
+            NotificationFilter::query_param(&HashSet::new()).as_deref(),
+            Some("none")
+        );
+    }
+
+    #[test]
+    fn empty_copy_matches_the_web_header() {
+        assert_eq!(
+            NotificationFilter::empty_fatal_for(&NotificationFilter::enabled_all()),
+            "$ cat /dev/notifications"
+        );
+        assert_eq!(
+            NotificationFilter::empty_detail_for(&HashSet::new()),
+            "All categories are turned off. Enable a category to see notifications."
+        );
+        let mixed = [NotificationFilter::Replies, NotificationFilter::Quotes]
+            .into_iter()
+            .collect();
+        assert_eq!(
+            NotificationFilter::empty_fatal_for(&mixed),
+            "$ cat /dev/notifications | grep -E 'replies|quotes'"
+        );
+        assert_eq!(
+            NotificationFilter::empty_detail_for(&mixed),
+            "No notifications in the selected categories yet."
+        );
     }
 }
 
@@ -1308,6 +1970,202 @@ mod unread_count_tests {
     }
 
     #[test]
+    fn inbox_page_reads_web_conversations_and_null_members() {
+        let page = InboxPage::from_value(json!({
+            "conversations": [{
+                "id": "c1",
+                "kind": "direct",
+                "partner": { "id": "u1", "handle": "ada", "name": "Ada" },
+                "members": null,
+                "last_message": {
+                    "id": 9,
+                    "body": "hello",
+                    "mentions": [],
+                    "images": [{ "id": "img1" }]
+                },
+                "ahead": 2
+            }],
+            "has_more": false,
+            "unread": 3,
+            "requests": 1
+        }));
+        assert_eq!(page.data.len(), 1);
+        assert_eq!(page.data[0].title(), "Ada");
+        assert_eq!(page.data[0].preview(), "hello");
+        assert_eq!(page.data[0].ahead, 2);
+        assert!(page.data[0].members.is_empty());
+        assert_eq!(page.unread_count, 3);
+        assert_eq!(page.requests_count, 1);
+        assert!(!page.has_more);
+    }
+
+    #[test]
+    fn inbox_page_reads_wrapped_conversations() {
+        let page = InboxPage::from_value(json!({
+            "data": {
+                "conversations": [{
+                    "id": 42,
+                    "partner": { "id": "u1", "username": "grace" },
+                    "members": null,
+                    "unread": 4
+                }],
+                "unread_count": 5,
+                "hasMore": true
+            }
+        }));
+        assert_eq!(page.data.len(), 1);
+        assert_eq!(page.data[0].id, "42");
+        assert_eq!(page.data[0].title(), "grace");
+        assert_eq!(page.data[0].ahead, 4);
+        assert_eq!(page.unread_count, 5);
+        assert!(page.has_more);
+    }
+
+    #[test]
+    fn inbox_page_hides_direct_remotes_with_deleted_partners() {
+        let page = InboxPage::from_value(json!({
+            "conversations": [
+                { "id": "gone", "kind": "direct", "members": null },
+                {
+                    "id": "ok",
+                    "kind": "direct",
+                    "partner": { "id": "u1", "handle": "ada" }
+                },
+                { "id": "org", "kind": "org", "name": "core" }
+            ]
+        }));
+        assert_eq!(
+            page.data
+                .iter()
+                .map(|item| item.id.as_str())
+                .collect::<Vec<_>>(),
+            ["ok", "org"]
+        );
+    }
+
+    #[test]
+    fn related_commits_read_a_resource_collection() {
+        let commits = Commit::list_from_value(json!({
+            "data": [
+                { "id": "c1", "body": "first", "user": { "id": "u1", "handle": "ada" } },
+                { "broken": true },
+                { "id": "c2", "body": "second" }
+            ]
+        }));
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].author.as_ref().unwrap().username, "ada");
+        assert_eq!(commits[1].id, "c2");
+    }
+
+    #[test]
+    fn inbox_page_keeps_a_row_when_last_message_is_unreadable() {
+        let page = InboxPage::from_value(json!({
+            "conversations": [{
+                "id": "c1",
+                "partner": { "id": "u1", "handle": "ada" },
+                "last_message": { "broken": true }
+            }]
+        }));
+        assert_eq!(page.data.len(), 1);
+        assert!(page.data[0].last_message.is_none());
+        assert_eq!(page.data[0].title(), "ada");
+    }
+
+    #[test]
+    fn org_rows_use_member_names_and_counts() {
+        let page = InboxPage::from_value(json!({
+            "conversations": [{
+                "id": "org1",
+                "kind": "org",
+                "members": [
+                    { "user": { "id": "me", "handle": "nuno", "name": "Nuno Maduro" } },
+                    { "user": { "id": "u2", "handle": "ada", "name": "Ada Lovelace" } },
+                    { "user": { "id": "u3", "handle": "grace", "name": "Grace Hopper" } }
+                ],
+                "last_message": {
+                    "id": 4,
+                    "user_id": "u2",
+                    "body": "ship it",
+                    "user": { "id": "u2", "handle": "ada", "name": "Ada Lovelace" }
+                },
+                "last_message_at": "2026-10-01T12:00:00Z"
+            }]
+        }));
+        let me = User {
+            id: "me".into(),
+            username: "nuno".into(),
+            name: Some("Nuno Maduro".into()),
+            ..User::default()
+        };
+        let org = &page.data[0];
+        assert_eq!(org.title_for(Some(&me)), "Ada, Grace");
+        assert_eq!(org.handle_or_meta(Some("me")), "org · 3");
+        assert_eq!(org.preview_for(Some("me")), "Ada: ship it");
+        assert!(org.matches_query("ada", Some(&me)));
+        assert!(!org.matches_query("linus", Some(&me)));
+    }
+
+    #[test]
+    fn dm_preview_prefixes_your_own_push() {
+        let page = InboxPage::from_value(json!({
+            "conversations": [{
+                "id": "dm",
+                "kind": "direct",
+                "partner": { "id": "u2", "handle": "ada", "name": "Ada" },
+                "last_message": { "id": 1, "user_id": "me", "body": "hey" }
+            }]
+        }));
+        assert_eq!(page.data[0].preview_for(Some("me")), "you: hey");
+        assert_eq!(page.data[0].handle_or_meta(Some("me")), "@ada");
+    }
+
+    #[test]
+    fn remote_candidates_read_the_web_payload() {
+        let people = RemoteCandidate::list_from_value(json!({
+            "candidates": [
+                { "user": { "id": "u1", "handle": "ada", "name": "Ada" }, "reason": null },
+                { "user": { "id": "u2", "handle": "grace" }, "reason": "already in this org" }
+            ]
+        }));
+        assert_eq!(people.len(), 2);
+        assert!(people[0].pickable());
+        assert!(!people[1].pickable());
+        assert_eq!(people[0].user.username, "ada");
+    }
+
+    #[test]
+    fn created_org_reads_id_from_the_web_payload() {
+        let reference = ThreadRef::from_created_org(&json!({
+            "org": { "id": 9, "name": "core" }
+        }))
+        .unwrap();
+        assert_eq!(
+            reference,
+            ThreadRef::Org {
+                id: "9".into(),
+                name: Some("core".into())
+            }
+        );
+    }
+
+    #[test]
+    fn chat_thread_skips_broken_messages() {
+        let thread = ChatThread::from_value(json!({
+            "partner": { "id": "u1", "handle": "ada" },
+            "messages": [
+                { "id": 1, "body": "hi" },
+                { "broken": true },
+                { "id": "2", "body": "there" }
+            ],
+            "has_older": true
+        }));
+        assert_eq!(thread.messages.len(), 2);
+        assert_eq!(thread.messages[1].id, 2);
+        assert!(thread.has_older);
+        assert_eq!(thread.partner.unwrap().username, "ada");
+    }
+
+    #[test]
     fn treats_a_group_with_unread_items_as_unread() {
         let notice = Notification {
             read_at: Some(Utc::now()),
@@ -1315,6 +2173,43 @@ mod unread_count_tests {
             ..Default::default()
         };
         assert!(notice.is_unread());
+    }
+
+    #[test]
+    fn grouped_stars_name_the_others_from_the_preview_or_the_count() {
+        let grace = User {
+            id: "1".into(),
+            username: "grace".into(),
+            name: Some("Grace".into()),
+            ..Default::default()
+        };
+        let ada = User {
+            id: "2".into(),
+            username: "ada".into(),
+            name: Some("Ada".into()),
+            ..Default::default()
+        };
+        let grouped = Notification {
+            kind: Some("starred".into()),
+            actor: Some(grace.clone()),
+            actors: vec![grace.clone(), ada],
+            actors_count: Some(5),
+            event_count: Some(5),
+            ..Default::default()
+        };
+        assert_eq!(grouped.other_actors(), 4);
+        assert_eq!(grouped.people().len(), 2);
+        assert_eq!(grouped.actors_total(), 5);
+        assert!(grouped.is_grouped());
+        assert_eq!(grouped.group_noun(), "stars");
+        let missing_count = Notification {
+            kind: Some("starred".into()),
+            actor: Some(grace.clone()),
+            actors: vec![grace],
+            ..Default::default()
+        };
+        assert_eq!(missing_count.other_actors(), 0);
+        assert!(!missing_count.is_grouped());
     }
 
     #[test]
@@ -1420,6 +2315,117 @@ mod unread_count_tests {
         assert!(user.is_followed_by_me());
     }
 
+    #[test]
+    fn is_followed_reads_sql_exists_as_one() {
+        let user: User = serde_json::from_value(json!({
+            "id": "1",
+            "handle": "ada",
+            "is_followed": 1
+        }))
+        .unwrap();
+        assert!(user.is_followed_by_me());
+    }
+
+    #[test]
+    fn suggested_users_skip_people_already_followed() {
+        let users = User::list_from_value(json!({
+            "suggestedUsers": [
+                { "id": "1", "handle": "ada", "is_followed": 1 },
+                { "id": "2", "handle": "grace" },
+                { "id": "3", "username": "linus" }
+            ]
+        }));
+        assert_eq!(
+            users
+                .iter()
+                .map(|user| user.username.as_str())
+                .collect::<Vec<_>>(),
+            ["ada", "grace", "linus"]
+        );
+        let following = User::following_names(&[User {
+            username: "Linus".into(),
+            ..Default::default()
+        }]);
+        let shown = User::not_followed(users, &following);
+        assert_eq!(
+            shown
+                .iter()
+                .map(|user| user.username.as_str())
+                .collect::<Vec<_>>(),
+            ["grace"]
+        );
+    }
+
+    #[test]
+    fn suggested_from_value_does_not_treat_a_following_list_as_suggestions() {
+        let users = User::suggested_from_value(&json!({
+            "users": [{ "id": "1", "handle": "ada" }],
+            "suggestedUsers": [{ "id": "2", "handle": "grace" }]
+        }));
+        assert_eq!(
+            users
+                .iter()
+                .map(|user| user.username.as_str())
+                .collect::<Vec<_>>(),
+            ["grace"]
+        );
+        let following = User::list_from_value(json!({
+            "users": [{ "id": "1", "handle": "ada" }],
+            "suggestedUsers": [{ "id": "2", "handle": "grace" }]
+        }));
+        assert_eq!(
+            following
+                .iter()
+                .map(|user| user.username.as_str())
+                .collect::<Vec<_>>(),
+            ["ada"]
+        );
+    }
+
+    #[test]
+    fn unique_unfollowed_authors_skip_people_already_followed() {
+        let commits = [
+            Commit {
+                author: Some(User {
+                    username: "ada".into(),
+                    is_followed: Some(true),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            Commit {
+                author: Some(User {
+                    username: "grace".into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            Commit {
+                author: Some(User {
+                    username: "Grace".into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            Commit {
+                author: Some(User {
+                    username: "linus".into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ];
+        let following = HashSet::from(["linus".into()]);
+        let shown = User::unique_unfollowed_authors(&commits, &following);
+        assert_eq!(
+            shown
+                .iter()
+                .map(|user| user.username.as_str())
+                .collect::<Vec<_>>(),
+            ["grace"]
+        );
+    }
+
     fn badge(id: &str, unlocked: bool) -> Badge {
         Badge {
             id: id.into(),
@@ -1453,6 +2459,7 @@ mod unread_count_tests {
             ],
         };
         assert_eq!(achievements.label(), "Lv. 4 · maintainer");
+        assert_eq!(format!("{} XP", achievements.xp), "916 XP");
         assert_eq!(achievements.xp_label(), "916 / 1000 XP");
         assert_eq!(achievements.next_rank_label(), "84 XP to wheel");
         assert_eq!(achievements.unlocked_count(), 2);
@@ -1475,5 +2482,69 @@ mod unread_count_tests {
         assert_eq!(achievements.xp_label(), "9001 XP");
         assert_eq!(achievements.next_rank_label(), "Maximum rank (UID 0)");
         assert_eq!(achievements.unlocked_count(), 0);
+    }
+}
+
+#[cfg(test)]
+mod remotes_tests {
+    use super::*;
+
+    #[test]
+    fn thread_keys_match_the_web() {
+        assert_eq!(
+            ThreadRef::Direct {
+                username: "ada".into()
+            }
+            .key(),
+            "ada"
+        );
+        assert_eq!(
+            ThreadRef::Org {
+                id: "org-1".into(),
+                name: Some("core".into())
+            }
+            .key(),
+            "org:org-1"
+        );
+    }
+
+    #[test]
+    fn added_event_names_both_people() {
+        let message = Message {
+            event: Some("added".into()),
+            user: Some(User {
+                username: "ada".into(),
+                ..User::default()
+            }),
+            subject: Some(User {
+                username: "grace".into(),
+                ..User::default()
+            }),
+            ..Message::default()
+        };
+        assert_eq!(event_preview(&message), "@ada added @grace");
+        assert_eq!(
+            event_preview(&Message {
+                event: Some("added".into()),
+                ..Message::default()
+            }),
+            "someone added someone"
+        );
+    }
+
+    #[test]
+    fn thread_parses_pull_receipts() {
+        let thread = ChatThread::from_value(serde_json::json!({
+            "messages": [],
+            "partner_read_through_id": 12,
+            "partner_read_at": "2026-10-28T12:34:56Z",
+            "members": [{
+                "user": { "id": "1", "username": "ada" },
+                "read_through_id": 9
+            }]
+        }));
+        assert_eq!(thread.partner_read_through_id, 12);
+        assert!(thread.partner_read_at.is_some());
+        assert_eq!(thread.members[0].read_through_id, 9);
     }
 }

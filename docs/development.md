@@ -48,7 +48,7 @@ crates/devnull/src/
   app.rs       Relm4 component: navigation, messages, composers
   ui.rs        Widget builders
   style.css    Injected as global CSS
-  prefs.rs     Theme + local JSON
+  prefs.rs     Theme, hover, chat dock, pins, reactions, local JSON
   body.rs      Commit body rendering
   images.rs    Avatars and attachments
   emoji.rs     Composer emoji picker
@@ -80,17 +80,21 @@ Do not drop a stroke-only Lucide file into `actions/` and expect it to render co
 
 Keep the Linux UI aligned with the website. In particular:
 
-- Feed column 620px (Remotes 940px); nav 256 / 80; aside 320
-- Lane color only on the graph, avatar ring, and handle dot
+- Feed column 620px (Remotes 940px, fluid below 768px); nav 256 / 80; aside 320
+- Lane color only on the graph, avatar ring, and handle dot — except quoted remotes authors (website ReplyGhost) and notification actor rails / rings / icons
 - Commit Blue for primary actions
 - No card chrome on the timeline
 - No WebView for GitHub OAuth
+
+## GTK CSS
+
+The stylesheet is GTK CSS, not the web. These properties are ignored or invalid: `max-width`, `max-height`, `color-scheme`, `cursor`, `overflow`, `height`, `margin-start`, `margin-end`. Use widget APIs instead (`set_overflow`, size requests, `EventControllerMotion` for hover). Dark tokens are injected from `prefs.rs` because `@media (prefers-color-scheme)` follows the OS, not the app theme. `ListBoxRow :hover` is unreliable; log and notification rows use `.dn-pointed` from a motion controller.
 
 ## Local state
 
 | Path | Contents |
 | --- | --- |
-| `~/.config/sh.devnull.Client/prefs.json` | Theme, who-to-follow, last-visit markers |
+| `~/.config/sh.devnull.Client/prefs.json` | Theme, who-to-follow, highlight-on-hover, chat dock, pins, reactions, last-visit markers |
 | Secret Service item `app=sh.devnull.Client` | Ed25519 device key |
 
-Delete the prefs file to reset theme and visit markers. Revoke the device on the website to invalidate the key.
+Delete the prefs file to reset theme, the chat dock, pins, reactions, and visit markers. Revoke the device on the website to invalidate the key.

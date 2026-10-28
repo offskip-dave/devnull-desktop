@@ -1,7 +1,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use relm4::adw::prelude::*;
 use relm4::adw::{self};
@@ -12,9 +12,9 @@ use relm4::gtk::pango;
 use relm4::prelude::*;
 
 use devnull_api::{
-    ApiError, ChatThread, Client, Commit, CommitPage, CurrentUser, InboxPage, InboxTab, Lane,
-    LogKind, LogPage, Notification, NotificationFilter, Page, PastelAward, Profile, SearchResults,
-    ThreadRef, Upload, User,
+    ApiError, ChatThread, Client, Commit, CommitPage, ConversationSummary, CurrentUser, InboxPage,
+    InboxTab, Lane, LogKind, LogPage, Message, Notification, NotificationFilter, Page, PastelAward,
+    Profile, RemoteCandidate, SearchResults, ThreadRef, Upload, User,
 };
 use devnull_auth::{self as auth, Pkce, APP_ID};
 
@@ -72,6 +72,7 @@ pub enum AppMsg {
     SettingsTab(SettingsTab),
     SetTheme(Theme),
     SetWhoToFollow(bool),
+    SetHighlightOnHover(bool),
     SetTimezone(Option<String>),
     TimezoneSaved(Result<CurrentUser, ApiError>),
     SetRemotes(bool),
@@ -137,9 +138,11 @@ pub enum AppMsg {
     Translate(String),
     ToggleReplies(String),
     NestedRepliesLoaded(String, Result<Page<Commit>, ApiError>),
-    FilterNotifications(NotificationFilter),
+    ToggleNotificationFilter(NotificationFilter),
+    ShowAllNotificationFilters,
     OpenCommit(String),
     CommitLoaded(Result<CommitPage, ApiError>, Result<Page<Commit>, ApiError>),
+    RelatedLoaded(String, Vec<Commit>),
     OpenProfile(String),
     ProfileLoaded(
         Result<Box<Profile>, ApiError>,
@@ -161,7 +164,7 @@ pub enum AppMsg {
     OmniboxLoaded(u64, String, Result<SearchResults, ApiError>),
     RunSearch(String),
     SearchLoaded(Result<SearchResults, ApiError>),
-    SuggestedLoaded(Result<Vec<User>, ApiError>),
+    SuggestedLoaded(Result<Vec<User>, ApiError>, HashSet<String>),
     LiveFollowingLoaded(Result<Vec<User>, ApiError>),
     FollowUser(String, bool),
     UserFollowed(String, bool),
@@ -174,13 +177,51 @@ pub enum AppMsg {
     SubmitCommit,
     CommitCreated(Result<Commit, ApiError>),
     NotificationsLoaded(Result<Page<Notification>, ApiError>),
+    ToggleNotificationGroup(String),
+    LoadMoreNotificationGroup(String),
+    NotificationGroupLoaded(String, bool, Result<Page<Notification>, ApiError>),
     RemotesLoaded(Result<InboxPage, ApiError>),
+    InboxTab(InboxTab),
+    InboxQuery(String),
+    InboxSearchLoaded(u64, String, Result<InboxPage, ApiError>, Vec<User>),
+    ToggleChatDock,
+    ToggleDockExpand,
+    PickRemote,
+    PickOrg,
+    PeopleQuery(String),
+    PeopleLoaded(u64, Result<Vec<RemoteCandidate>, ApiError>),
+    CreateOrg {
+        name: String,
+        members: Vec<String>,
+    },
+    OrgCreated(Result<ThreadRef, ApiError>),
+    SetRemoteFrom(String),
+    SetPullReceipts(bool),
+    RemotePrefsSaved(Result<CurrentUser, ApiError>),
     UnreadPolled(Result<(i64, i64), ApiError>),
     OpenThread(ThreadRef),
-    ThreadLoaded(Result<ChatThread, ApiError>),
+    ThreadLoaded(u64, Result<ChatThread, ApiError>),
     AttachRemoteImages,
     PushRemote,
     RemotePushed(Result<devnull_api::Message, ApiError>),
+    PinRemote,
+    StashRemote,
+    MuteRemote,
+    LeaveOrg,
+    BlockRemote,
+    ConfirmLeaveOrg,
+    ConfirmBlockRemote,
+    CloseThread,
+    ThreadActionDone(Result<String, ApiError>),
+    PingMention,
+    PinThreadMessage(i64),
+    ReplyToRemote(Message),
+    CancelRemoteReply,
+    ReactToRemote {
+        id: i64,
+        emoji: String,
+    },
+    RecordVoice,
     Toast(String),
     Poll,
     OpenWeb(String),
@@ -211,14 +252,17 @@ pub struct App {
     profile_tab: ProfileFeed,
     profile_readme: Option<(String, Result<Option<String>, ApiError>)>,
     suggested: Vec<User>,
+    following: HashSet<String>,
     live_following: Vec<User>,
     muted: Vec<User>,
     blocked: Vec<User>,
     settings_tab: SettingsTab,
     draft_lane: Option<Option<Lane>>,
     prefs: Prefs,
+    hover_enabled: Rc<Cell<bool>>,
     open_commit: Option<Commit>,
     ancestors: Vec<Commit>,
+    related_commits: Vec<Commit>,
     thread_replies: Vec<Commit>,
     nested_replies: HashMap<String, Vec<Commit>>,
     expanded_replies: HashSet<String>,
@@ -230,7 +274,9 @@ pub struct App {
     inline_reply: gtk::TextView,
     inline_reply_box: gtk::Box,
     focus_reply: bool,
-    notif_filter: NotificationFilter,
+    notif_types: HashSet<NotificationFilter>,
+    notifications: Vec<Notification>,
+    notif_groups: HashMap<String, ui::NotifGroup>,
     busy: u32,
     thread_ref: Option<ThreadRef>,
     composer_images: Vec<Upload>,
@@ -283,6 +329,8 @@ pub struct App {
     notif_list: gtk::ListBox,
     inbox_list: gtk::ListBox,
     thread_list: gtk::ListBox,
+    thread_scroll: gtk::ScrolledWindow,
+    thread_follow: Rc<Cell<bool>>,
     composer: gtk::TextView,
     reply_composer: gtk::TextView,
     remote_composer: gtk::TextView,
@@ -303,6 +351,27 @@ pub struct App {
     compose_dialog: adw::Dialog,
     compose_host: gtk::Box,
     compose_open: bool,
+    inbox: Vec<ConversationSummary>,
+    inbox_tab: InboxTab,
+    inbox_requests: i64,
+    remote_draft_len: usize,
+    remote_reply: Option<Message>,
+    thread_typing: String,
+    last_typing_ping: Option<Instant>,
+    open_thread: Option<ChatThread>,
+    thread_gen: u64,
+    thread_header_stamp: String,
+    inbox_query: String,
+    inbox_hits: Option<Vec<ConversationSummary>>,
+    inbox_people: Vec<User>,
+    inbox_search_gen: u64,
+    remote_settings: gtk::MenuButton,
+    thread_header: gtk::Box,
+    chat_dock: ui::ChatDock,
+    chat_dock_expanded: bool,
+    people_picker: ui::PeoplePicker,
+    people_gen: u64,
+    bubble_width: ui::BubbleWidth,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -580,7 +649,7 @@ impl SimpleComponent for App {
                                 set_orientation: gtk::Orientation::Horizontal,
                                 set_spacing: 12,
                                 gtk::Image {
-                                    set_icon_name: Some("dn-bookmark-symbolic"),
+                                    set_icon_name: Some("dn-star-symbolic"),
                                     set_pixel_size: 20,
                                 },
                                 gtk::Label {
@@ -972,7 +1041,7 @@ impl SimpleComponent for App {
                                     gtk::Overlay {
                                         #[wrap(Some)]
                                         set_child = &gtk::ScrolledWindow {
-                                            set_min_content_height: 32,
+                                            set_min_content_height: 40,
                                             set_max_content_height: 180,
                                             set_vexpand: false,
                                             set_has_frame: false,
@@ -984,7 +1053,7 @@ impl SimpleComponent for App {
                                             set_label: model.composer_placeholder(),
                                             add_css_class: "dn-placeholder",
                                             set_halign: gtk::Align::Start,
-                                            set_valign: gtk::Align::Start,
+                                            set_valign: gtk::Align::Center,
                                             set_can_target: false,
                                             #[watch]
                                             set_visible: model.composer_len == 0 && !model.composer_preview,
@@ -1278,93 +1347,58 @@ impl SimpleComponent for App {
                             set_hexpand: true,
                             add_css_class: "dn-notif-page",
                             gtk::Box {
-                                set_orientation: gtk::Orientation::Horizontal,
-                                set_homogeneous: true,
-                                set_hexpand: true,
-                                add_css_class: "dn-tabs",
-                                add_css_class: "dn-notif-tabs",
-                                gtk::Button {
-                                    set_hexpand: true,
-                                    #[watch]
-                                    set_css_classes: &model.notif_tab_classes(NotificationFilter::All),
-                                    connect_clicked => AppMsg::FilterNotifications(NotificationFilter::All),
-                                    #[wrap(Some)]
-                                    set_child = &gtk::Label {
-                                        set_label: "All",
-                                        set_ellipsize: pango::EllipsizeMode::End,
-                                        set_width_chars: 1,
-                                    },
+                                set_orientation: gtk::Orientation::Vertical,
+                                set_spacing: 12,
+                                add_css_class: "dn-notif-header",
+                                gtk::Label {
+                                    set_label: "Notifications",
+                                    add_css_class: "dn-name",
+                                    set_xalign: 0.0,
                                 },
-                                gtk::Button {
+                                gtk::FlowBox {
+                                    set_selection_mode: gtk::SelectionMode::None,
+                                    set_homogeneous: false,
+                                    set_min_children_per_line: 1,
+                                    set_max_children_per_line: 8,
+                                    set_column_spacing: 8,
+                                    set_row_spacing: 8,
                                     set_hexpand: true,
-                                    #[watch]
-                                    set_css_classes: &model.notif_tab_classes(NotificationFilter::Replies),
-                                    connect_clicked => AppMsg::FilterNotifications(NotificationFilter::Replies),
-                                    #[wrap(Some)]
-                                    set_child = &gtk::Label {
+                                    add_css_class: "dn-notif-filters",
+                                    gtk::Button {
+                                        #[watch]
+                                        set_css_classes: &model.notif_filter_classes(NotificationFilter::Replies),
                                         set_label: "Replies",
-                                        set_ellipsize: pango::EllipsizeMode::End,
-                                        set_width_chars: 1,
+                                        connect_clicked => AppMsg::ToggleNotificationFilter(NotificationFilter::Replies),
                                     },
-                                },
-                                gtk::Button {
-                                    set_hexpand: true,
-                                    #[watch]
-                                    set_css_classes: &model.notif_tab_classes(NotificationFilter::Quotes),
-                                    connect_clicked => AppMsg::FilterNotifications(NotificationFilter::Quotes),
-                                    #[wrap(Some)]
-                                    set_child = &gtk::Label {
+                                    gtk::Button {
+                                        #[watch]
+                                        set_css_classes: &model.notif_filter_classes(NotificationFilter::Quotes),
                                         set_label: "Quotes",
-                                        set_ellipsize: pango::EllipsizeMode::End,
-                                        set_width_chars: 1,
+                                        connect_clicked => AppMsg::ToggleNotificationFilter(NotificationFilter::Quotes),
                                     },
-                                },
-                                gtk::Button {
-                                    set_hexpand: true,
-                                    #[watch]
-                                    set_css_classes: &model.notif_tab_classes(NotificationFilter::Stars),
-                                    connect_clicked => AppMsg::FilterNotifications(NotificationFilter::Stars),
-                                    #[wrap(Some)]
-                                    set_child = &gtk::Label {
+                                    gtk::Button {
+                                        #[watch]
+                                        set_css_classes: &model.notif_filter_classes(NotificationFilter::Stars),
                                         set_label: "Stars",
-                                        set_ellipsize: pango::EllipsizeMode::End,
-                                        set_width_chars: 1,
+                                        connect_clicked => AppMsg::ToggleNotificationFilter(NotificationFilter::Stars),
                                     },
-                                },
-                                gtk::Button {
-                                    set_hexpand: true,
-                                    #[watch]
-                                    set_css_classes: &model.notif_tab_classes(NotificationFilter::Mentions),
-                                    connect_clicked => AppMsg::FilterNotifications(NotificationFilter::Mentions),
-                                    #[wrap(Some)]
-                                    set_child = &gtk::Label {
+                                    gtk::Button {
+                                        #[watch]
+                                        set_css_classes: &model.notif_filter_classes(NotificationFilter::Mentions),
                                         set_label: "Mentions",
-                                        set_ellipsize: pango::EllipsizeMode::End,
-                                        set_width_chars: 1,
+                                        connect_clicked => AppMsg::ToggleNotificationFilter(NotificationFilter::Mentions),
                                     },
-                                },
-                                gtk::Button {
-                                    set_hexpand: true,
-                                    #[watch]
-                                    set_css_classes: &model.notif_tab_classes(NotificationFilter::Follows),
-                                    connect_clicked => AppMsg::FilterNotifications(NotificationFilter::Follows),
-                                    #[wrap(Some)]
-                                    set_child = &gtk::Label {
+                                    gtk::Button {
+                                        #[watch]
+                                        set_css_classes: &model.notif_filter_classes(NotificationFilter::Follows),
                                         set_label: "Follows",
-                                        set_ellipsize: pango::EllipsizeMode::End,
-                                        set_width_chars: 1,
+                                        connect_clicked => AppMsg::ToggleNotificationFilter(NotificationFilter::Follows),
                                     },
-                                },
-                                gtk::Button {
-                                    set_hexpand: true,
-                                    #[watch]
-                                    set_css_classes: &model.notif_tab_classes(NotificationFilter::Moderation),
-                                    connect_clicked => AppMsg::FilterNotifications(NotificationFilter::Moderation),
-                                    #[wrap(Some)]
-                                    set_child = &gtk::Label {
+                                    gtk::Button {
+                                        #[watch]
+                                        set_css_classes: &model.notif_filter_classes(NotificationFilter::Moderation),
                                         set_label: "Moderation",
-                                        set_ellipsize: pango::EllipsizeMode::End,
-                                        set_width_chars: 1,
+                                        connect_clicked => AppMsg::ToggleNotificationFilter(NotificationFilter::Moderation),
                                     },
                                 },
                             },
@@ -1383,57 +1417,307 @@ impl SimpleComponent for App {
                             set_hexpand: true,
                             set_vexpand: true,
                             add_css_class: "dn-remotes-page",
-                            adw::Clamp {
-                                set_maximum_size: 320,
-                                set_tightening_threshold: 320,
-                                set_unit: adw::LengthUnit::Px,
+                            gtk::Box {
+                                set_orientation: gtk::Orientation::Vertical,
                                 set_hexpand: false,
                                 set_vexpand: true,
-                                #[wrap(Some)]
-                                set_child = &gtk::Box {
-                                    set_orientation: gtk::Orientation::Vertical,
-                                    set_hexpand: true,
-                                    set_vexpand: true,
-                                    add_css_class: "dn-remotes-inbox",
+                                set_width_request: 320,
+                                add_css_class: "dn-remotes-inbox",
+                                #[watch]
+                                set_visible: model.remotes_inbox_visible(),
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Horizontal,
+                                    set_spacing: 2,
+                                    add_css_class: "dn-inbox-header",
                                     gtk::Label {
                                         set_label: "Remotes",
                                         add_css_class: "dn-title",
                                         set_xalign: 0.0,
+                                        set_hexpand: true,
                                         set_ellipsize: pango::EllipsizeMode::End,
                                         set_width_chars: 1,
-                                        set_margin_start: 16,
-                                        set_margin_end: 16,
-                                        set_margin_top: 16,
-                                        set_margin_bottom: 8,
                                     },
-                                    gtk::ScrolledWindow {
-                                        set_vexpand: true,
-                                        set_hexpand: true,
-                                        set_hscrollbar_policy: gtk::PolicyType::Never,
-                                        set_child: Some(&model.inbox_list),
+                                    gtk::Button {
+                                        #[watch]
+                                        set_css_classes: model.dock_toggle_classes(),
+                                        set_tooltip_text: Some("Keep chat open on every page"),
+                                        set_valign: gtk::Align::Center,
+                                        #[watch]
+                                        set_visible: !model.shell_compact,
+                                        connect_clicked => AppMsg::ToggleChatDock,
+                                        #[wrap(Some)]
+                                        set_child = &gtk::Box {
+                                            set_orientation: gtk::Orientation::Horizontal,
+                                            set_spacing: 4,
+                                            gtk::Image {
+                                                set_icon_name: Some("dn-panel-bottom-open-symbolic"),
+                                                set_pixel_size: 16,
+                                            },
+                                            gtk::Label {
+                                                #[watch]
+                                                set_label: if model.prefs.chat_docked { "Docked" } else { "Dock" },
+                                            },
+                                        },
+                                    },
+                                    #[local_ref]
+                                    remote_settings -> gtk::MenuButton {},
+                                    gtk::Button {
+                                        add_css_class: "flat",
+                                        add_css_class: "dn-icon-btn",
+                                        set_icon_name: "dn-users-round-symbolic",
+                                        set_tooltip_text: Some("New org"),
+                                        connect_clicked => AppMsg::PickOrg,
+                                    },
+                                    gtk::Button {
+                                        add_css_class: "flat",
+                                        add_css_class: "dn-icon-btn",
+                                        set_icon_name: "dn-square-pen-symbolic",
+                                        set_tooltip_text: Some("New remote"),
+                                        connect_clicked => AppMsg::PickRemote,
                                     },
                                 },
-                            },
-                            gtk::Separator {
-                                set_orientation: gtk::Orientation::Vertical,
+                                gtk::Box {
+                                    add_css_class: "dn-inbox-search",
+                                    gtk::Entry {
+                                        set_placeholder_text: Some("Search names or @handles"),
+                                        set_hexpand: true,
+                                        set_max_length: 100,
+                                        add_css_class: "dn-inbox-search-entry",
+                                        set_primary_icon_name: Some("dn-search-symbolic"),
+                                        connect_changed[sender] => move |entry| {
+                                            sender.input(AppMsg::InboxQuery(entry.text().to_string()));
+                                        },
+                                    },
+                                },
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Horizontal,
+                                    set_homogeneous: true,
+                                    set_hexpand: true,
+                                    add_css_class: "dn-tabs",
+                                    add_css_class: "dn-inbox-tabs",
+                                    gtk::Button {
+                                        set_label: "Open",
+                                        set_hexpand: true,
+                                        #[watch]
+                                        set_css_classes: model.inbox_tab_classes(InboxTab::Open),
+                                        connect_clicked => AppMsg::InboxTab(InboxTab::Open),
+                                    },
+                                    gtk::Button {
+                                        #[watch]
+                                        set_label: &model.fetched_tab_label(),
+                                        set_hexpand: true,
+                                        #[watch]
+                                        set_visible: model.remotes_requests(),
+                                        #[watch]
+                                        set_css_classes: model.inbox_tab_classes(InboxTab::Fetched),
+                                        connect_clicked => AppMsg::InboxTab(InboxTab::Fetched),
+                                    },
+                                    gtk::Button {
+                                        set_label: "Stashed",
+                                        set_hexpand: true,
+                                        #[watch]
+                                        set_css_classes: model.inbox_tab_classes(InboxTab::Stashed),
+                                        connect_clicked => AppMsg::InboxTab(InboxTab::Stashed),
+                                    },
+                                },
+                                gtk::ScrolledWindow {
+                                    set_vexpand: true,
+                                    set_hexpand: true,
+                                    set_hscrollbar_policy: gtk::PolicyType::Never,
+                                    set_child: Some(&model.inbox_list),
+                                },
                             },
                             gtk::Box {
                                 set_orientation: gtk::Orientation::Vertical,
                                 set_hexpand: true,
                                 set_vexpand: true,
                                 add_css_class: "dn-remotes-thread",
-                                gtk::ScrolledWindow {
+                                #[watch]
+                                set_visible: model.remotes_thread_visible(),
+                                #[name = "thread_width_probe"]
+                                gtk::DrawingArea {
+                                    set_hexpand: true,
+                                    set_content_height: 1,
+                                    set_can_target: false,
+                                    add_css_class: "dn-thread-width-probe",
+                                },
+                                #[local_ref]
+                                thread_header -> gtk::Box {
+                                    set_orientation: gtk::Orientation::Vertical,
+                                    add_css_class: "dn-thread-header",
+                                    #[watch]
+                                    set_visible: model.thread_ref.is_some(),
+                                },
+                                gtk::CenterBox {
+                                    set_orientation: gtk::Orientation::Vertical,
+                                    set_hexpand: true,
+                                    set_vexpand: true,
+                                    add_css_class: "dn-thread-empty",
+                                    #[watch]
+                                    set_visible: model.thread_ref.is_none(),
+                                    #[wrap(Some)]
+                                    set_center_widget = &gtk::Box {
+                                        set_orientation: gtk::Orientation::Vertical,
+                                        set_spacing: 12,
+                                        set_halign: gtk::Align::Center,
+                                        set_valign: gtk::Align::Center,
+                                        gtk::Label {
+                                            set_label: "no conversation checked out",
+                                            add_css_class: "dn-mono",
+                                            add_css_class: "dn-muted",
+                                            set_justify: gtk::Justification::Center,
+                                            set_xalign: 0.5,
+                                            set_halign: gtk::Align::Center,
+                                        },
+                                        gtk::Button {
+                                            add_css_class: "dn-outline-btn",
+                                            set_halign: gtk::Align::Center,
+                                            connect_clicked => AppMsg::PickRemote,
+                                            #[wrap(Some)]
+                                            set_child = &gtk::Box {
+                                                set_orientation: gtk::Orientation::Horizontal,
+                                                set_spacing: 8,
+                                                gtk::Image {
+                                                    set_icon_name: Some("dn-square-pen-symbolic"),
+                                                    set_pixel_size: 16,
+                                                },
+                                                gtk::Label {
+                                                    set_label: "New remote",
+                                                },
+                                            },
+                                        },
+                                    },
+                                },
+                                #[local_ref]
+                                thread_scroll -> gtk::ScrolledWindow {
                                     set_vexpand: true,
                                     set_hexpand: true,
                                     set_hscrollbar_policy: gtk::PolicyType::Never,
+                                    add_css_class: "dn-thread-scroll",
+                                    #[watch]
+                                    set_visible: model.thread_ref.is_some(),
                                     set_child: Some(&model.thread_list),
                                 },
                                 gtk::Box {
                                     set_orientation: gtk::Orientation::Vertical,
                                     add_css_class: "dn-composer",
-                                    gtk::ScrolledWindow {
-                                        set_min_content_height: 60,
-                                        set_child: Some(&model.remote_composer),
+                                    add_css_class: "dn-remote-composer",
+                                    #[watch]
+                                    set_visible: model.thread_ref.is_some(),
+                                    gtk::Label {
+                                        #[watch]
+                                        set_label: &model.thread_typing,
+                                        add_css_class: "dn-mono",
+                                        add_css_class: "dn-muted",
+                                        add_css_class: "dn-thread-typing",
+                                        set_xalign: 0.0,
+                                        set_ellipsize: pango::EllipsizeMode::End,
+                                        #[watch]
+                                        set_visible: !model.thread_typing.is_empty(),
+                                    },
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Horizontal,
+                                        set_spacing: 8,
+                                        add_css_class: "dn-remote-reply",
+                                        #[watch]
+                                        set_visible: model.remote_reply.is_some(),
+                                        gtk::Box {
+                                            set_orientation: gtk::Orientation::Vertical,
+                                            set_hexpand: true,
+                                            gtk::Label {
+                                                #[watch]
+                                                set_label: &model.remote_reply_author(),
+                                                add_css_class: "dn-name",
+                                                set_xalign: 0.0,
+                                                set_ellipsize: pango::EllipsizeMode::End,
+                                            },
+                                            gtk::Label {
+                                                #[watch]
+                                                set_label: &model.remote_reply_snippet(),
+                                                add_css_class: "dn-muted",
+                                                set_xalign: 0.0,
+                                                set_ellipsize: pango::EllipsizeMode::End,
+                                            },
+                                        },
+                                        gtk::Button {
+                                            add_css_class: "flat",
+                                            add_css_class: "dn-icon-btn",
+                                            set_icon_name: "dn-x-symbolic",
+                                            set_tooltip_text: Some("Cancel reply"),
+                                            set_valign: gtk::Align::Center,
+                                            connect_clicked => AppMsg::CancelRemoteReply,
+                                        },
+                                    },
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Horizontal,
+                                        set_spacing: 8,
+                                        set_valign: gtk::Align::End,
+                                        gtk::Button {
+                                            add_css_class: "flat",
+                                            add_css_class: "dn-icon-btn",
+                                            add_css_class: "dn-composer-icon",
+                                            set_icon_name: "dn-image-plus-symbolic",
+                                            set_tooltip_text: Some("Attach up to 3 images"),
+                                            set_valign: gtk::Align::Center,
+                                            #[watch]
+                                            set_sensitive: model.remote_images.len() < 3,
+                                            connect_clicked => AppMsg::AttachRemoteImages,
+                                        },
+                                        gtk::Button {
+                                            add_css_class: "flat",
+                                            add_css_class: "dn-icon-btn",
+                                            add_css_class: "dn-composer-icon",
+                                            set_icon_name: "dn-mic-symbolic",
+                                            set_tooltip_text: Some("Voice note"),
+                                            set_valign: gtk::Align::Center,
+                                            connect_clicked => AppMsg::RecordVoice,
+                                        },
+                                        gtk::Button {
+                                            add_css_class: "flat",
+                                            add_css_class: "dn-icon-btn",
+                                            add_css_class: "dn-composer-icon",
+                                            set_icon_name: "dn-megaphone-symbolic",
+                                            set_tooltip_text: Some("Ping everyone in the org"),
+                                            set_valign: gtk::Align::Center,
+                                            connect_clicked => AppMsg::PingMention,
+                                        },
+                                        gtk::Overlay {
+                                            add_css_class: "dn-remote-input",
+                                            set_hexpand: true,
+                                            set_valign: gtk::Align::Center,
+                                            #[wrap(Some)]
+                                            set_child = &gtk::ScrolledWindow {
+                                                set_hexpand: true,
+                                                set_min_content_height: 40,
+                                                set_max_content_height: 120,
+                                                set_propagate_natural_height: true,
+                                                set_hscrollbar_policy: gtk::PolicyType::Never,
+                                                set_vscrollbar_policy: gtk::PolicyType::Automatic,
+                                                set_child: Some(&model.remote_composer),
+                                            },
+                                            add_overlay = &gtk::Label {
+                                                #[watch]
+                                                set_label: &model.remote_placeholder(),
+                                                #[watch]
+                                                set_visible: model.remote_draft_len == 0,
+                                                add_css_class: "dn-remote-placeholder",
+                                                set_halign: gtk::Align::Fill,
+                                                set_valign: gtk::Align::Center,
+                                                set_xalign: 0.0,
+                                                set_can_target: false,
+                                            },
+                                        },
+                                        gtk::Button {
+                                            set_label: "Push",
+                                            add_css_class: "suggested-action",
+                                            add_css_class: "dn-push-btn",
+                                            set_valign: gtk::Align::Center,
+                                            set_vexpand: false,
+                                            set_size_request: (-1, 40),
+                                            #[watch]
+                                            set_sensitive: model.can_push_remote(),
+                                            connect_clicked => AppMsg::PushRemote,
+                                        },
                                     },
                                     #[local_ref]
                                     remote_image_previews -> gtk::Box {
@@ -1442,22 +1726,6 @@ impl SimpleComponent for App {
                                         add_css_class: "dn-attach-previews",
                                         #[watch]
                                         set_visible: !model.remote_images.is_empty(),
-                                    },
-                                    gtk::Box {
-                                        set_orientation: gtk::Orientation::Horizontal,
-                                        set_spacing: 8,
-                                        gtk::Button {
-                                            set_label: "Attach images",
-                                            add_css_class: "flat",
-                                            #[watch]
-                                            set_sensitive: model.remote_images.len() < 3,
-                                            connect_clicked => AppMsg::AttachRemoteImages,
-                                        },
-                                        gtk::Button {
-                                            set_label: "Push",
-                                            add_css_class: "suggested-action",
-                                            connect_clicked => AppMsg::PushRemote,
-                                        },
                                     },
                                 },
                             },
@@ -1759,6 +2027,11 @@ impl SimpleComponent for App {
 
         let remote_composer = gtk::TextView::new();
         remote_composer.set_wrap_mode(gtk::WrapMode::WordChar);
+        remote_composer.add_css_class("dn-composer-text");
+        remote_composer.set_top_margin(8);
+        remote_composer.set_bottom_margin(8);
+        remote_composer.set_left_margin(12);
+        remote_composer.set_right_margin(12);
 
         let emoji = ui::EmojiSuggest::new(sender.input_sender().clone());
         let emoji_open = emoji.open_flag();
@@ -1826,15 +2099,30 @@ impl SimpleComponent for App {
         fill_feed_list(&notif_list);
         let inbox_list = gtk::ListBox::new();
         inbox_list.set_selection_mode(gtk::SelectionMode::None);
+        inbox_list.set_activate_on_single_click(true);
         fill_feed_list(&inbox_list);
         let thread_list = gtk::ListBox::new();
         thread_list.set_selection_mode(gtk::SelectionMode::None);
+        thread_list.add_css_class("dn-thread-list");
         fill_feed_list(&thread_list);
+        let thread_scroll = gtk::ScrolledWindow::new();
+        thread_scroll.set_vexpand(true);
+        thread_scroll.set_hexpand(true);
+        thread_scroll.set_hscrollbar_policy(gtk::PolicyType::Never);
+        thread_scroll.add_css_class("dn-thread-scroll");
+        thread_scroll.set_child(Some(&thread_list));
+        let thread_follow = Rc::new(Cell::new(true));
+        ui::bind_follow_end(&thread_scroll, thread_follow.clone());
         let poll_ui = ui::PollComposer::new(sender.input_sender().clone());
         let schedule_ui = ui::ScheduleCard::new();
         let poll_editor = poll_ui.root.clone();
         let schedule_card = schedule_ui.root.clone();
         let (compose_dialog, compose_host) = ui::compose_dialog();
+        let prefs = Prefs::load();
+        let hover_enabled = Rc::new(Cell::new(prefs.highlight_on_hover));
+        let remote_settings = ui::remote_settings_button(sender.input_sender().clone());
+        let chat_dock = ui::ChatDock::new(sender.input_sender().clone());
+        let people_picker = ui::PeoplePicker::new(sender.input_sender().clone());
 
         let mut model = App {
             phase: Phase::Loading,
@@ -1849,14 +2137,16 @@ impl SimpleComponent for App {
             profile_tab: ProfileFeed::Commits,
             profile_readme: None,
             suggested: Vec::new(),
+            following: HashSet::new(),
             live_following: Vec::new(),
             muted: Vec::new(),
             blocked: Vec::new(),
             settings_tab: SettingsTab::Profile,
             draft_lane: None,
-            prefs: Prefs::load(),
+            prefs,
             open_commit: None,
             ancestors: Vec::new(),
+            related_commits: Vec::new(),
             thread_replies: Vec::new(),
             nested_replies: HashMap::new(),
             expanded_replies: HashSet::new(),
@@ -1868,7 +2158,9 @@ impl SimpleComponent for App {
             inline_reply: inline_reply.clone(),
             inline_reply_box: ui::inline_reply_box(&inline_reply, sender.input_sender().clone()),
             focus_reply: false,
-            notif_filter: NotificationFilter::All,
+            notif_types: NotificationFilter::enabled_all(),
+            notifications: Vec::new(),
+            notif_groups: HashMap::new(),
             busy: 0,
             thread_ref: None,
             composer_images: Vec::new(),
@@ -1913,6 +2205,7 @@ impl SimpleComponent for App {
             logo_menu: ui::logo_menu(sender.input_sender().clone()),
             user_menu: ui::UserMenu::new(sender.input_sender().clone()),
             header_user_menu: ui::UserMenu::for_header(sender.input_sender().clone()),
+            hover_enabled,
             log_list,
             reply_list,
             profile_list,
@@ -1920,6 +2213,8 @@ impl SimpleComponent for App {
             notif_list,
             inbox_list,
             thread_list,
+            thread_scroll,
+            thread_follow,
             composer,
             reply_composer,
             remote_composer,
@@ -1940,9 +2235,31 @@ impl SimpleComponent for App {
             compose_dialog,
             compose_host,
             compose_open: false,
+            inbox: Vec::new(),
+            inbox_tab: InboxTab::Open,
+            inbox_requests: 0,
+            remote_draft_len: 0,
+            remote_reply: None,
+            thread_typing: String::new(),
+            last_typing_ping: None,
+            open_thread: None,
+            thread_gen: 0,
+            thread_header_stamp: String::new(),
+            inbox_query: String::new(),
+            inbox_hits: None,
+            inbox_people: Vec::new(),
+            inbox_search_gen: 0,
+            remote_settings,
+            thread_header: gtk::Box::new(gtk::Orientation::Vertical, 0),
+            chat_dock,
+            chat_dock_expanded: false,
+            people_picker,
+            people_gen: 0,
+            bubble_width: ui::BubbleWidth::default(),
         };
 
         model.omnibox.window.set_transient_for(Some(&root));
+        model.people_picker.window.set_transient_for(Some(&root));
         let paste_entry = &model.paste_entry;
         let suggested_list = &model.suggested_list;
         let live_list = &model.live_list;
@@ -1958,7 +2275,11 @@ impl SimpleComponent for App {
         let nav_avatar = &model.nav_avatar;
         let header_avatar = &model.header_avatar;
         let wordmark_btn = &model.wordmark_btn;
+        let remote_settings = &model.remote_settings;
+        let thread_header = &model.thread_header;
+        let thread_scroll = &model.thread_scroll;
         let widgets = view_output!();
+        model.bubble_width.bind(&widgets.thread_width_probe);
         ui::pin_profile_hero(&model.profile_list, &model.profile_hero);
         ui::apply_pointer_cursors(&root);
         model.logo_menu.set_parent(&model.wordmark_btn);
@@ -2048,6 +2369,7 @@ impl SimpleComponent for App {
                 ("notifications", widgets.notif_scroll.clone()),
             ],
         );
+        widgets.shell_overlay.add_overlay(&model.chat_dock.root);
         widgets.shell_overlay.add_overlay(&model.aside_toast);
         ui::pin_log_composer(&model.log_list, &model.log_composer);
         model.compose_dialog.connect_closed({
@@ -2170,6 +2492,7 @@ impl SimpleComponent for App {
                 self.phase = Phase::SignedIn;
                 sender.input(AppMsg::Select(Nav::Latest));
                 sender.input(AppMsg::RefreshSuggested);
+                self.load_safety_quiet(&sender);
             }
             AppMsg::Restored(Err(err)) => {
                 self.phase = Phase::SignedOut;
@@ -2231,6 +2554,7 @@ impl SimpleComponent for App {
                 self.error = None;
                 sender.input(AppMsg::Select(Nav::Latest));
                 sender.input(AppMsg::RefreshSuggested);
+                self.load_safety_quiet(&sender);
             }
             AppMsg::Redeemed(Err(err)) => {
                 self.phase = Phase::SignedOut;
@@ -2243,6 +2567,10 @@ impl SimpleComponent for App {
                 self.client = None;
                 self.set_user(None);
                 self.live_following.clear();
+                self.following.clear();
+                self.suggested.clear();
+                self.notifications.clear();
+                self.notif_groups.clear();
                 ui::fill_live_following(&self.live_list, &[], sender.input_sender().clone());
                 self.phase = Phase::SignedOut;
                 self.visible = "sign_in";
@@ -2260,6 +2588,7 @@ impl SimpleComponent for App {
                     }
                     Nav::Remotes => {
                         self.visible = "remotes";
+                        self.close_open_thread(&sender);
                         self.load_remotes(&sender);
                     }
                     Nav::Starred => {
@@ -2298,6 +2627,17 @@ impl SimpleComponent for App {
                 self.prefs.save();
                 if show {
                     sender.input(AppMsg::RefreshSuggested);
+                }
+                self.render_settings(&sender);
+            }
+            AppMsg::SetHighlightOnHover(on) => {
+                self.prefs.highlight_on_hover = on;
+                self.prefs.save();
+                self.hover_enabled.set(on);
+                if !on {
+                    ui::clear_feed_hover(&self.log_list);
+                    ui::clear_feed_hover(&self.profile_list);
+                    ui::clear_feed_hover(&self.search_list);
                 }
                 self.render_settings(&sender);
             }
@@ -2499,9 +2839,18 @@ impl SimpleComponent for App {
             }
             AppMsg::AsideCompact(compact) => {
                 self.aside_compact = compact;
+                if self.visible == "remotes" {
+                    self.thread_header_stamp.clear();
+                    self.fill_open_thread_header(
+                        self.open_thread.as_ref(),
+                        sender.input_sender().clone(),
+                    );
+                }
             }
+            AppMsg::CloseThread => self.close_open_thread(&sender),
             AppMsg::ShellCompact(compact) => {
                 self.shell_compact = compact;
+                self.sync_chat_dock();
             }
             AppMsg::TogglePoll => {
                 if self.composer_poll || !self.composer_images.is_empty() {
@@ -2575,7 +2924,11 @@ impl SimpleComponent for App {
                 self.sync_composer_ring();
             }
             AppMsg::ReplyComposerChanged => self.sync_emoji(&self.reply_view().clone()),
-            AppMsg::RemoteComposerChanged => self.sync_emoji(&self.remote_composer.clone()),
+            AppMsg::RemoteComposerChanged => {
+                self.sync_emoji(&self.remote_composer.clone());
+                self.remote_draft_len = buffer_text(&self.remote_composer).trim().chars().count();
+                self.ping_remote_typing();
+            }
             AppMsg::EmojiMove(step) => self.emoji.move_selection(step),
             AppMsg::EmojiPick => {
                 if let Some(glyph) = self.emoji.active_emoji() {
@@ -2636,6 +2989,13 @@ impl SimpleComponent for App {
                     } else {
                         self.log_commits = page.data.clone();
                         self.log_first_seen = first_seen.clone();
+                    }
+                    if self.nav == Nav::Following {
+                        for commit in &page.data {
+                            if let Some(author) = &commit.author {
+                                self.remember_followed(&author.username);
+                            }
+                        }
                     }
                     self.set_live_following(self.live_following.clone(), &sender);
                     let ctx = self.feed_ctx(&sender);
@@ -2817,8 +3177,15 @@ impl SimpleComponent for App {
                     self.toast(&err.message);
                 }
             },
-            AppMsg::FilterNotifications(filter) => {
-                self.notif_filter = filter;
+            AppMsg::ToggleNotificationFilter(kind) => {
+                if !self.notif_types.remove(&kind) {
+                    self.notif_types.insert(kind);
+                }
+                ui::clear_list(&self.notif_list);
+                self.load_notifications(&sender);
+            }
+            AppMsg::ShowAllNotificationFilters => {
+                self.notif_types = NotificationFilter::enabled_all();
                 ui::clear_list(&self.notif_list);
                 self.load_notifications(&sender);
             }
@@ -2855,6 +3222,7 @@ impl SimpleComponent for App {
                     ..Default::default()
                 });
                 self.ancestors.clear();
+                self.related_commits.clear();
                 self.thread_replies.clear();
                 self.nested_replies.clear();
                 self.expanded_replies.clear();
@@ -2866,10 +3234,20 @@ impl SimpleComponent for App {
                 ui::append_commit_skeletons(&self.reply_list, 2);
                 if let Some(client) = self.client.clone() {
                     let sender2 = sender.clone();
+                    let related_client = client.clone();
+                    let related_id = id.clone();
+                    let related_sender = sender2.clone();
                     relm4::spawn(async move {
                         let commit = client.commit(&id).await;
                         let replies = client.replies(&id, None).await;
                         sender2.input(AppMsg::CommitLoaded(commit, replies));
+                    });
+                    relm4::spawn(async move {
+                        let related = related_client
+                            .related_commits(&related_id)
+                            .await
+                            .unwrap_or_default();
+                        related_sender.input(AppMsg::RelatedLoaded(related_id, related));
                     });
                 }
             }
@@ -2890,6 +3268,18 @@ impl SimpleComponent for App {
                 if self.focus_reply {
                     self.focus_reply = false;
                     self.reply_composer.grab_focus();
+                }
+            }
+            AppMsg::RelatedLoaded(id, commits) => {
+                if self
+                    .open_commit
+                    .as_ref()
+                    .is_some_and(|commit| commit.id == id)
+                {
+                    self.related_commits = commits;
+                    if self.visible == "commit" {
+                        self.render_thread(&sender);
+                    }
                 }
             }
             AppMsg::OpenProfile(username) => {
@@ -3028,7 +3418,9 @@ impl SimpleComponent for App {
             }
             AppMsg::ReportSubmitted(Err(err)) => self.fail(err),
             AppMsg::ShowShortcuts => {
-                ui::shortcuts_dialog().present(Some(&self.log_scroll));
+                let dialog = ui::shortcuts_dialog();
+                dialog.present(Some(&self.log_scroll));
+                ui::apply_pointer_cursors(&dialog);
             }
             AppMsg::ShortcutCompose => self.open_compose(),
             AppMsg::FocusComposer => {
@@ -3161,9 +3553,16 @@ impl SimpleComponent for App {
                 if let Some(client) = self.client.clone() {
                     ui::fill_suggestion_skeletons(&self.suggested_list);
                     let live_client = client.clone();
+                    let follow_client = client.clone();
+                    let me = self.user.as_ref().map(|user| user.username().to_owned());
+                    let known = self.following.clone();
                     let sender2 = sender.clone();
                     relm4::spawn(async move {
-                        sender2.input(AppMsg::SuggestedLoaded(client.suggested().await));
+                        let following = follow_client.following_set(me.as_deref(), known).await;
+                        sender2.input(AppMsg::SuggestedLoaded(
+                            client.suggested_excluding(&following).await,
+                            following,
+                        ));
                     });
                     let sender2 = sender.clone();
                     relm4::spawn(async move {
@@ -3173,7 +3572,8 @@ impl SimpleComponent for App {
                     });
                 }
             }
-            AppMsg::SuggestedLoaded(result) => {
+            AppMsg::SuggestedLoaded(result, following) => {
+                self.following.extend(following);
                 if let Ok(users) = result {
                     self.suggested = users;
                     self.render_suggestions(&sender);
@@ -3193,9 +3593,14 @@ impl SimpleComponent for App {
                     "{} @{username}",
                     if follow { "Following" } else { "Unfollowed" }
                 ));
+                let name = username.trim().to_ascii_lowercase();
                 if follow {
-                    self.suggested.retain(|user| user.username != username);
+                    self.following.insert(name);
+                    self.suggested
+                        .retain(|user| !user.username.eq_ignore_ascii_case(&username));
                     self.render_suggestions(&sender);
+                } else {
+                    self.following.remove(&name);
                 }
                 sender.input(AppMsg::RefreshSuggested);
                 if self.profile.as_ref().map(|p| p.username()) == Some(username.as_str())
@@ -3411,18 +3816,63 @@ impl SimpleComponent for App {
             }
             AppMsg::NotificationsLoaded(Ok(page)) => {
                 self.end_busy();
-                ui::clear_list(&self.notif_list);
-                if page.data.is_empty() {
-                    let fatal = self.notif_filter.empty_fatal();
-                    self.notif_list
-                        .append(&ui::empty_row(&fatal, self.notif_filter.empty_detail()));
-                } else {
-                    ui::append_notifications(
-                        &self.notif_list,
-                        &page.data,
-                        sender.input_sender().clone(),
-                    );
+                self.notifications = page.data;
+                self.notif_groups.clear();
+                self.render_notifications(&sender);
+            }
+            AppMsg::ToggleNotificationGroup(id) => {
+                let needs_fetch = {
+                    let entry = self.notif_groups.entry(id.clone()).or_default();
+                    if entry.open {
+                        entry.open = false;
+                        false
+                    } else {
+                        entry.open = true;
+                        let fetch = entry.items.is_empty() && !entry.loading;
+                        if fetch {
+                            entry.loading = true;
+                            entry.failed = false;
+                        }
+                        fetch
+                    }
+                };
+                self.render_notifications(&sender);
+                if needs_fetch {
+                    self.fetch_notification_group(id, false, &sender);
                 }
+            }
+            AppMsg::LoadMoreNotificationGroup(id) => {
+                let more = {
+                    let Some(entry) = self.notif_groups.get_mut(&id) else {
+                        return;
+                    };
+                    if entry.loading {
+                        return;
+                    }
+                    entry.loading = true;
+                    entry.failed = false;
+                    !entry.items.is_empty()
+                };
+                self.render_notifications(&sender);
+                self.fetch_notification_group(id, more, &sender);
+            }
+            AppMsg::NotificationGroupLoaded(id, more, result) => {
+                if let Some(entry) = self.notif_groups.get_mut(&id) {
+                    entry.loading = false;
+                    match result {
+                        Ok(page) => {
+                            entry.failed = false;
+                            entry.cursor = page.next_cursor();
+                            if more {
+                                entry.items.extend(page.data);
+                            } else {
+                                entry.items = page.data;
+                            }
+                        }
+                        Err(_) => entry.failed = true,
+                    }
+                }
+                self.render_notifications(&sender);
             }
             AppMsg::NotificationsLoaded(Err(err)) => {
                 self.end_busy();
@@ -3435,20 +3885,18 @@ impl SimpleComponent for App {
             }
             AppMsg::RemotesLoaded(Ok(page)) => {
                 self.unread_remotes = page.unread_count;
-                ui::clear_list(&self.inbox_list);
-                if page.data.is_empty() {
-                    self.inbox_list.append(&ui::empty_row(
-                        "fatal: no remotes",
-                        "Direct messages land here. Fetch someone from their profile.",
-                    ));
-                } else {
-                    for item in &page.data {
-                        self.inbox_list
-                            .append(&ui::inbox_row(item, sender.input_sender().clone()));
-                    }
+                self.inbox_requests = page.requests_count;
+                self.inbox = page.data;
+                if self.inbox_query.trim().is_empty() {
+                    self.inbox_hits = None;
+                    self.inbox_people.clear();
+                    self.render_inbox(&sender);
                 }
             }
             AppMsg::RemotesLoaded(Err(err)) => {
+                self.inbox.clear();
+                self.inbox_hits = None;
+                self.inbox_people.clear();
                 ui::clear_list(&self.inbox_list);
                 self.inbox_list.append(&ui::empty_row(
                     "fatal: could not load remotes",
@@ -3456,39 +3904,265 @@ impl SimpleComponent for App {
                 ));
                 self.fail(err);
             }
-            AppMsg::OpenThread(reference) => {
-                self.thread_ref = Some(reference.clone());
-                ui::clear_list(&self.thread_list);
-                ui::append_thread_skeletons(&self.thread_list);
+            AppMsg::InboxTab(tab) => {
+                if self.inbox_tab == tab {
+                    return;
+                }
+                self.inbox_tab = tab;
+                self.inbox_hits = None;
+                self.inbox_people.clear();
+                self.inbox.clear();
+                ui::clear_list(&self.inbox_list);
+                if self.inbox_query.trim().is_empty() {
+                    self.load_remotes(&sender);
+                } else {
+                    self.search_inbox(&sender);
+                }
+            }
+            AppMsg::InboxQuery(query) => {
+                self.inbox_query = query;
+                if self.inbox_query.trim().is_empty() {
+                    self.inbox_hits = None;
+                    self.inbox_people.clear();
+                    self.render_inbox(&sender);
+                } else {
+                    self.inbox_hits = None;
+                    self.render_inbox(&sender);
+                    self.search_inbox(&sender);
+                }
+            }
+            AppMsg::InboxSearchLoaded(gen, query, page, people) => {
+                if gen != self.inbox_search_gen || query != self.inbox_query {
+                    return;
+                }
+                if let Ok(page) = page {
+                    self.unread_remotes = page.unread_count;
+                    let ids: HashSet<_> = page
+                        .data
+                        .iter()
+                        .filter_map(|item| item.partner.as_ref().map(|user| user.id.clone()))
+                        .collect();
+                    self.inbox_people = people
+                        .into_iter()
+                        .filter(|user| !ids.contains(&user.id))
+                        .collect();
+                    self.inbox_hits = Some(page.data);
+                    self.render_inbox(&sender);
+                }
+            }
+            AppMsg::ToggleChatDock => {
+                self.prefs.chat_docked = !self.prefs.chat_docked;
+                if self.prefs.chat_docked {
+                    self.chat_dock_expanded = false;
+                }
+                self.prefs.save();
+                self.sync_chat_dock();
+            }
+            AppMsg::ToggleDockExpand => {
+                self.chat_dock_expanded = !self.chat_dock_expanded;
+                self.sync_chat_dock();
+            }
+            AppMsg::PickRemote => self.people_picker.open_remote(),
+            AppMsg::PickOrg => self.people_picker.open_org(),
+            AppMsg::PeopleQuery(query) => {
+                let trimmed = query.trim().trim_start_matches('@').to_string();
+                if trimmed.is_empty() {
+                    self.people_picker
+                        .set_status(Some("Type a name or @handle"));
+                    self.people_picker.clear_results();
+                    return;
+                }
+                self.people_picker.show_skeletons();
+                self.search_people(&sender, trimmed);
+            }
+            AppMsg::PeopleLoaded(gen, result) => {
+                if gen != self.people_gen {
+                    return;
+                }
+                match result {
+                    Ok(people) => {
+                        let me_id = self.user.as_ref().map(|user| user.user.id.as_str());
+                        self.people_picker.show_people(me_id, &people);
+                    }
+                    Err(err) => self.people_picker.set_status(Some(&err.message)),
+                }
+            }
+            AppMsg::CreateOrg { name, members } => {
                 if let Some(client) = self.client.clone() {
+                    self.begin_busy();
                     let sender2 = sender.clone();
                     relm4::spawn(async move {
-                        sender2.input(AppMsg::ThreadLoaded(client.thread(&reference).await));
+                        sender2.input(AppMsg::OrgCreated(client.create_org(&name, &members).await));
                     });
                 }
             }
-            AppMsg::ThreadLoaded(Ok(thread)) => {
-                ui::clear_list(&self.thread_list);
-                let me = self.user.as_ref().map(|u| u.user.id.clone());
-                for message in &thread.messages {
-                    self.thread_list.append(&ui::message_row(
-                        message,
-                        me.as_deref(),
-                        sender.input_sender().clone(),
-                    ));
-                }
-                if let (Some(last), Some(client), Some(reference)) = (
-                    thread.messages.last(),
-                    self.client.clone(),
-                    self.thread_ref.clone(),
-                ) {
-                    let through = last.id;
-                    relm4::spawn(async move {
-                        let _ = client.mark_read(&reference, through).await;
-                    });
+            AppMsg::OrgCreated(result) => {
+                self.end_busy();
+                match result {
+                    Ok(reference) => {
+                        self.people_picker.close();
+                        sender.input(AppMsg::OpenThread(reference));
+                        self.load_remotes(&sender);
+                    }
+                    Err(err) => self.toast(&err.message),
                 }
             }
-            AppMsg::ThreadLoaded(Err(err)) => self.fail(err),
+            AppMsg::SetRemoteFrom(from) => {
+                let pull_receipts = {
+                    let Some(remotes) = self.user.as_ref().and_then(|user| user.remotes.as_ref())
+                    else {
+                        return;
+                    };
+                    if remotes.from == from {
+                        return;
+                    }
+                    remotes.pull_receipts
+                };
+                self.save_remote_prefs(from, pull_receipts, &sender);
+            }
+            AppMsg::SetPullReceipts(pull_receipts) => {
+                let from = {
+                    let Some(remotes) = self.user.as_ref().and_then(|user| user.remotes.as_ref())
+                    else {
+                        return;
+                    };
+                    if remotes.pull_receipts == pull_receipts {
+                        return;
+                    }
+                    if remotes.everyone {
+                        remotes.from.clone()
+                    } else {
+                        "following".into()
+                    }
+                };
+                self.save_remote_prefs(from, pull_receipts, &sender);
+            }
+            AppMsg::RemotePrefsSaved(result) => {
+                self.end_busy();
+                match result {
+                    Ok(user) => {
+                        self.set_user(Some(user));
+                        self.toast("Remote settings saved.");
+                    }
+                    Err(err) => self.toast(&err.message),
+                }
+            }
+            AppMsg::OpenThread(reference) => {
+                if self.remotes_on() {
+                    self.nav = Nav::Remotes;
+                    self.visible = "remotes";
+                }
+                let switching = self.thread_ref.as_ref() != Some(&reference);
+                self.thread_ref = Some(reference.clone());
+                if switching {
+                    self.thread_follow.set(true);
+                    self.thread_typing.clear();
+                    self.open_thread = None;
+                    self.remote_reply = None;
+                    self.thread_header_stamp.clear();
+                    self.fill_open_thread_header(None, sender.input_sender().clone());
+                    ui::clear_list(&self.thread_list);
+                    ui::append_thread_skeletons(&self.thread_list);
+                }
+                self.render_inbox(&sender);
+                self.fetch_open_thread(&sender);
+            }
+            AppMsg::ThreadLoaded(gen, Ok(thread)) => {
+                if gen != self.thread_gen {
+                    return;
+                }
+                self.apply_open_thread(thread, &sender);
+            }
+            AppMsg::ThreadLoaded(gen, Err(err)) => {
+                if gen != self.thread_gen {
+                    return;
+                }
+                self.fail(err);
+            }
+            AppMsg::PinRemote => self.toggle_pin_remote(&sender),
+            AppMsg::StashRemote => self.stash_open_remote(&sender),
+            AppMsg::MuteRemote => self.mute_open_remote(&sender),
+            AppMsg::LeaveOrg => {
+                let title = self
+                    .thread_ref
+                    .as_ref()
+                    .map(ThreadRef::title)
+                    .unwrap_or_else(|| "this org".into());
+                ui::confirm_leave_org(&title, sender.input_sender().clone());
+            }
+            AppMsg::BlockRemote => {
+                let Some(ThreadRef::Direct { username }) = &self.thread_ref else {
+                    return;
+                };
+                ui::confirm_block_user(username, sender.input_sender().clone());
+            }
+            AppMsg::ConfirmLeaveOrg => self.leave_open_org(&sender),
+            AppMsg::ConfirmBlockRemote => self.block_open_remote(&sender),
+            AppMsg::ThreadActionDone(result) => {
+                self.end_busy();
+                match result {
+                    Ok(action) => {
+                        self.toast(&action);
+                        if action.starts_with("Stashed")
+                            || action.starts_with("Popped")
+                            || action.starts_with("Left")
+                            || action.starts_with("Blocked")
+                        {
+                            if action.starts_with("Left") || action.starts_with("Blocked") {
+                                self.thread_ref = None;
+                                self.open_thread = None;
+                                ui::clear_list(&self.thread_list);
+                            }
+                            self.load_remotes(&sender);
+                            if self.thread_ref.is_some() {
+                                self.fetch_open_thread(&sender);
+                            }
+                            self.fill_open_thread_header(
+                                self.open_thread.as_ref(),
+                                sender.input_sender().clone(),
+                            );
+                            self.render_inbox(&sender);
+                        } else if action.starts_with("Muted") || action.starts_with("Unmuted") {
+                            self.load_safety_quiet(&sender);
+                            self.fill_open_thread_header(
+                                self.open_thread.as_ref(),
+                                sender.input_sender().clone(),
+                            );
+                        }
+                    }
+                    Err(err) => self.toast(&err.message),
+                }
+            }
+            AppMsg::PingMention => {
+                let insert = self.ping_insert_text();
+                self.remote_composer.buffer().insert_at_cursor(&insert);
+                self.remote_composer.grab_focus();
+            }
+            AppMsg::PinThreadMessage(id) => self.pin_thread_message(id, &sender),
+            AppMsg::ReplyToRemote(mut message) => {
+                if message.user.is_none() {
+                    if let (Some(thread), Some(id)) =
+                        (self.open_thread.as_ref(), message.user_id.as_deref())
+                    {
+                        message.user =
+                            thread_people(thread, self.user.as_ref().map(|user| &user.user))
+                                .get(id)
+                                .cloned();
+                    }
+                }
+                self.remote_reply = Some(message);
+                self.remote_composer.grab_focus();
+            }
+            AppMsg::CancelRemoteReply => {
+                self.remote_reply = None;
+                self.remote_composer.grab_focus();
+            }
+            AppMsg::ReactToRemote { id, emoji } => {
+                self.toggle_message_reaction(id, &emoji, &sender);
+            }
+            AppMsg::RecordVoice => {
+                self.toast("Voice notes aren't on remotes yet.");
+            }
             AppMsg::AttachRemoteImages => {
                 if self.remote_images.len() >= 3 {
                     return;
@@ -3507,21 +4181,24 @@ impl SimpleComponent for App {
                 }
                 if let Some(client) = self.client.clone() {
                     let images = std::mem::take(&mut self.remote_images);
+                    let reply_to_id = self.remote_reply.as_ref().map(|message| message.id);
                     let sender2 = sender.clone();
                     let client_id = uuid::Uuid::new_v4().to_string();
                     relm4::spawn(async move {
                         sender2.input(AppMsg::RemotePushed(
-                            client.push(&reference, &body, &client_id, images).await,
+                            client
+                                .push(&reference, &body, &client_id, images, reply_to_id)
+                                .await,
                         ));
                     });
                 }
             }
             AppMsg::RemotePushed(Ok(_)) => {
                 self.remote_composer.buffer().set_text("");
+                self.remote_draft_len = 0;
+                self.remote_reply = None;
                 self.sync_image_previews(&sender);
-                if let Some(reference) = self.thread_ref.clone() {
-                    sender.input(AppMsg::OpenThread(reference));
-                }
+                self.fetch_open_thread(&sender);
             }
             AppMsg::RemotePushed(Err(err)) => self.fail(err),
             AppMsg::Toast(text) => self.toast(&text),
@@ -3534,9 +4211,7 @@ impl SimpleComponent for App {
                     Nav::Notifications => self.load_notifications(&sender),
                     Nav::Remotes => {
                         self.load_remotes(&sender);
-                        if let Some(reference) = self.thread_ref.clone() {
-                            sender.input(AppMsg::OpenThread(reference));
-                        }
+                        self.fetch_open_thread(&sender);
                     }
                     _ if self.tracks_new_posts() => {
                         if self.log_away {
@@ -3856,11 +4531,11 @@ impl App {
         }
     }
 
-    fn notif_tab_classes(&self, item: NotificationFilter) -> [&'static str; 3] {
-        if self.notif_filter == item {
-            ["flat", "dn-tab", "active"]
+    fn notif_filter_classes(&self, item: NotificationFilter) -> [&'static str; 2] {
+        if self.notif_types.contains(&item) {
+            ["dn-filter-pill", "active"]
         } else {
-            ["flat", "dn-tab", "inactive"]
+            ["dn-filter-pill", "inactive"]
         }
     }
 
@@ -3874,6 +4549,7 @@ impl App {
             expanded: self.expanded_replies.clone(),
             connected: false,
             join_staged: self.visible == "log" && self.nav.log().is_some() && self.user.is_some(),
+            hover: Some(self.hover_enabled.clone()),
         }
     }
 
@@ -4069,7 +4745,15 @@ impl App {
             self.unread_remotes = 0;
             self.counts_ready = false;
         }
+        if let Some(sender) = APP_SENDER.get() {
+            ui::fill_remote_settings(
+                &self.remote_settings,
+                self.user.as_ref().and_then(|user| user.remotes.as_ref()),
+                sender.clone(),
+            );
+        }
         self.refresh_me_avatars();
+        self.sync_chat_dock();
     }
 
     fn refresh_me_avatars(&self) {
@@ -4093,8 +4777,16 @@ impl App {
             &self.suggested_list,
             &self.suggested,
             self.user.as_ref().map(|u| u.username()),
+            &self.following,
             sender.input_sender().clone(),
         );
+    }
+
+    fn remember_followed(&mut self, username: &str) {
+        let name = username.trim().to_ascii_lowercase();
+        if !name.is_empty() {
+            self.following.insert(name);
+        }
     }
 
     fn sync_composer_ring(&self) {
@@ -4179,7 +4871,10 @@ impl App {
         let Some(commit) = &self.open_commit else {
             return;
         };
-        let ctx = self.feed_ctx(sender);
+        let ctx = ui::FeedCtx {
+            hover: None,
+            ..self.feed_ctx(sender)
+        };
         let threads = self.thread_state();
         ui::append_thread(
             &self.reply_list,
@@ -4189,6 +4884,7 @@ impl App {
             &threads,
             &ctx,
         );
+        ui::append_related(&self.reply_list, &self.related_commits, &ctx);
     }
 
     fn begin_busy(&mut self) {
@@ -4286,6 +4982,7 @@ impl App {
         if alert {
             self.counts_ready = true;
         }
+        self.sync_chat_dock();
     }
 
     fn poll_unread(&self, sender: &ComponentSender<App>) {
@@ -4321,12 +5018,19 @@ impl App {
                 }
             }
         }
+        let known = self.following.len();
+        for user in &users {
+            self.remember_followed(&user.username);
+        }
         self.live_following = users;
         ui::fill_live_following(
             &self.live_list,
             &self.live_following,
             sender.input_sender().clone(),
         );
+        if self.following.len() != known {
+            self.render_suggestions(sender);
+        }
     }
 
     fn harvest_live(&self) -> Vec<User> {
@@ -4468,6 +5172,7 @@ impl App {
                 tab: self.settings_tab,
                 theme: self.prefs.theme,
                 show_who_to_follow: self.prefs.show_who_to_follow,
+                highlight_on_hover: self.prefs.highlight_on_hover,
                 muted: &self.muted,
                 blocked: &self.blocked,
                 draft_lane: self.draft_lane.clone(),
@@ -4693,17 +5398,62 @@ impl App {
         }
     }
 
+    fn render_notifications(&self, sender: &ComponentSender<App>) {
+        ui::clear_list(&self.notif_list);
+        if self.notifications.is_empty() {
+            let fatal = NotificationFilter::empty_fatal_for(&self.notif_types);
+            let show_all = self.notif_types.len() != NotificationFilter::CATEGORIES.len();
+            self.notif_list.append(&ui::notification_empty(
+                &fatal,
+                NotificationFilter::empty_detail_for(&self.notif_types),
+                show_all,
+                sender.input_sender().clone(),
+            ));
+            return;
+        }
+        ui::append_notifications(
+            &self.notif_list,
+            &self.notifications,
+            &self.notif_groups,
+            sender.input_sender().clone(),
+        );
+    }
+
+    fn fetch_notification_group(&self, id: String, more: bool, sender: &ComponentSender<App>) {
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let types = self.notif_types.clone();
+        let cursor = if more {
+            self.notif_groups
+                .get(&id)
+                .and_then(|group| group.cursor.clone())
+        } else {
+            None
+        };
+        let sender2 = sender.clone();
+        relm4::spawn(async move {
+            sender2.input(AppMsg::NotificationGroupLoaded(
+                id.clone(),
+                more,
+                client
+                    .notification_group(&id, &types, cursor.as_deref())
+                    .await,
+            ));
+        });
+    }
+
     fn load_notifications(&mut self, sender: &ComponentSender<App>) {
         if let Some(client) = self.client.clone() {
             self.begin_busy();
             if self.notif_list.row_at_index(0).is_none() {
                 ui::append_notification_skeletons(&self.notif_list, 2);
             }
-            let filter = self.notif_filter;
+            let types = self.notif_types.clone();
             let sender2 = sender.clone();
             relm4::spawn(async move {
                 sender2.input(AppMsg::NotificationsLoaded(
-                    client.notifications(filter, None).await,
+                    client.notifications(&types, None).await,
                 ));
             });
         }
@@ -4715,11 +5465,679 @@ impl App {
                 ui::append_inbox_skeletons(&self.inbox_list, 4);
             }
             let sender2 = sender.clone();
+            let tab = self.inbox_tab;
             relm4::spawn(async move {
-                sender2.input(AppMsg::RemotesLoaded(
-                    client.remotes(InboxTab::Open, None).await,
-                ));
+                sender2.input(AppMsg::RemotesLoaded(client.remotes(tab, None, None).await));
             });
+        }
+    }
+
+    fn search_inbox(&mut self, sender: &ComponentSender<App>) {
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let query = self.inbox_query.trim().trim_start_matches('@').to_string();
+        if query.is_empty() {
+            return;
+        }
+        self.inbox_search_gen = self.inbox_search_gen.saturating_add(1);
+        let gen = self.inbox_search_gen;
+        let sender2 = sender.clone();
+        let tab = self.inbox_tab;
+        relm4::spawn(async move {
+            let page = client.remotes(tab, None, Some(&query)).await;
+            let people = match client.remote_candidates(&query, "remote").await {
+                Ok(candidates) => candidates
+                    .into_iter()
+                    .filter(RemoteCandidate::pickable)
+                    .map(|candidate| candidate.user)
+                    .collect(),
+                Err(_) => Vec::new(),
+            };
+            sender2.input(AppMsg::InboxSearchLoaded(gen, query, page, people));
+        });
+    }
+
+    fn search_people(&mut self, sender: &ComponentSender<App>, query: String) {
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        self.people_gen = self.people_gen.saturating_add(1);
+        let gen = self.people_gen;
+        let for_kind = self.people_picker.kind_for().to_owned();
+        let sender2 = sender.clone();
+        relm4::spawn(async move {
+            let mut people = client
+                .remote_candidates(&query, &for_kind)
+                .await
+                .unwrap_or_default();
+            if people.is_empty() {
+                if let Ok(results) = client.search(&query).await {
+                    people = results
+                        .users
+                        .into_iter()
+                        .map(|user| RemoteCandidate { user, reason: None })
+                        .collect();
+                }
+            }
+            sender2.input(AppMsg::PeopleLoaded(gen, Ok(people)));
+        });
+    }
+
+    fn save_remote_prefs(
+        &mut self,
+        from: String,
+        pull_receipts: bool,
+        sender: &ComponentSender<App>,
+    ) {
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        self.begin_busy();
+        let sender2 = sender.clone();
+        relm4::spawn(async move {
+            sender2.input(AppMsg::RemotePrefsSaved(
+                client.set_remote_preferences(&from, pull_receipts).await,
+            ));
+        });
+    }
+
+    fn conversation_for(&self, reference: &ThreadRef) -> Option<&ConversationSummary> {
+        self.inbox
+            .iter()
+            .chain(self.inbox_hits.iter().flatten())
+            .find(|item| ThreadRef::from_summary(item) == *reference)
+    }
+
+    fn header_stamp(&self, thread: Option<&ChatThread>) -> String {
+        let Some(reference) = self.thread_ref.as_ref() else {
+            return String::new();
+        };
+        let members = thread
+            .map(|thread| {
+                thread
+                    .members
+                    .iter()
+                    .map(|member| member.user.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .unwrap_or_default();
+        format!(
+            "{}:{}:{}:{}:{}:{}:{}",
+            reference.key(),
+            thread.map(|thread| thread.is_archived).unwrap_or(false),
+            self.is_remote_pinned(reference),
+            self.is_remote_muted(reference),
+            self.prefs.pinned_message_id(&reference.key()).unwrap_or(0),
+            members,
+            self.aside_compact
+        )
+    }
+
+    fn fill_open_thread_header(&self, thread: Option<&ChatThread>, sender: relm4::Sender<AppMsg>) {
+        let Some(reference) = self.thread_ref.as_ref() else {
+            return;
+        };
+        let key = reference.key();
+        let item = self.conversation_for(reference);
+        let archived = thread
+            .map(|thread| thread.is_archived)
+            .or_else(|| item.map(|item| item.is_archived))
+            .unwrap_or(false);
+        let pinned = self.is_remote_pinned(reference);
+        let muted = self.is_remote_muted(reference);
+        let pinned_id = self.prefs.pinned_message_id(&key);
+        let pinned_message = pinned_id.and_then(|id| {
+            thread
+                .or(self.open_thread.as_ref())
+                .and_then(|thread| thread.messages.iter().find(|message| message.id == id))
+                .cloned()
+        });
+        ui::fill_thread_header(
+            &self.thread_header,
+            ui::ThreadHeaderState {
+                reference,
+                item,
+                thread,
+                me: self.user.as_ref().map(|user| &user.user),
+                archived,
+                pinned,
+                muted,
+                pinned_message: pinned_message.as_ref(),
+                show_back: self.aside_compact,
+            },
+            sender,
+        );
+    }
+
+    fn render_inbox(&self, sender: &ComponentSender<App>) {
+        let me = self.user.as_ref().map(|user| &user.user);
+        let active = self.thread_ref.as_ref();
+        let input = sender.input_sender().clone();
+        let conversations = self.visible_inbox();
+        ui::clear_list(&self.inbox_list);
+        ui::clear_list(&self.chat_dock.list);
+        if conversations.is_empty() && self.inbox_people.is_empty() {
+            let (title, body) = if !self.inbox_query.trim().is_empty() {
+                ("fatal: nothing matches", "Try another name or @handle.")
+            } else {
+                match self.inbox_tab {
+                    InboxTab::Fetched => ("no requests fetched", "Incoming remotes land here."),
+                    InboxTab::Stashed => (
+                        "nothing stashed",
+                        "Stashed remotes wait here until someone writes.",
+                    ),
+                    InboxTab::Open => (
+                        "fatal: no remotes",
+                        "Direct messages land here. Fetch someone from their profile.",
+                    ),
+                }
+            };
+            self.inbox_list.append(&ui::empty_row(title, body));
+            self.chat_dock.list.append(&ui::empty_row(
+                "no conversations yet",
+                "Start a remote from the compose button.",
+            ));
+        } else {
+            for item in &conversations {
+                let pinned = self.is_remote_pinned(&ThreadRef::from_summary(item));
+                self.inbox_list.append(&ui::inbox_row(
+                    item,
+                    me,
+                    active,
+                    false,
+                    pinned,
+                    input.clone(),
+                ));
+                self.chat_dock.list.append(&ui::inbox_row(
+                    item,
+                    me,
+                    active,
+                    true,
+                    pinned,
+                    input.clone(),
+                ));
+            }
+            for user in &self.inbox_people {
+                self.inbox_list
+                    .append(&ui::inbox_people_row(user, input.clone()));
+            }
+        }
+        self.sync_chat_dock();
+    }
+
+    fn visible_inbox(&self) -> Vec<&ConversationSummary> {
+        let me = self.user.as_ref().map(|user| &user.user);
+        if let Some(hits) = &self.inbox_hits {
+            let mut items: Vec<&ConversationSummary> = hits.iter().collect();
+            items.sort_by(|left, right| {
+                self.is_remote_pinned(&ThreadRef::from_summary(right))
+                    .cmp(&self.is_remote_pinned(&ThreadRef::from_summary(left)))
+            });
+            return items;
+        }
+        let mut items: Vec<&ConversationSummary> = self
+            .inbox
+            .iter()
+            .filter(|item| item.matches_query(&self.inbox_query, me))
+            .collect();
+        items.sort_by(|left, right| {
+            self.is_remote_pinned(&ThreadRef::from_summary(right))
+                .cmp(&self.is_remote_pinned(&ThreadRef::from_summary(left)))
+        });
+        items
+    }
+
+    fn sync_chat_dock(&self) {
+        let docked = self.prefs.chat_docked
+            && self.remotes_on()
+            && !self.shell_compact
+            && self.phase == Phase::SignedIn;
+        self.chat_dock
+            .sync(docked, self.chat_dock_expanded, self.unread_remotes);
+    }
+
+    fn can_push_remote(&self) -> bool {
+        self.remote_draft_len > 0 || !self.remote_images.is_empty()
+    }
+
+    fn remotes_inbox_visible(&self) -> bool {
+        remotes_inbox_visible(self.aside_compact, self.thread_ref.is_some())
+    }
+
+    fn remotes_thread_visible(&self) -> bool {
+        remotes_thread_visible(self.aside_compact, self.thread_ref.is_some())
+    }
+
+    fn remote_placeholder(&self) -> String {
+        match &self.thread_ref {
+            Some(ThreadRef::Direct { username }) => format!("Message @{username}"),
+            Some(ThreadRef::Org { name, .. }) => {
+                let label = name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .or_else(|| {
+                        self.open_thread
+                            .as_ref()
+                            .and_then(|thread| thread.org.as_ref())
+                            .and_then(|org| org.name.as_deref())
+                            .map(str::trim)
+                            .filter(|name| !name.is_empty())
+                    })
+                    .unwrap_or("the org");
+                format!("Message {label}")
+            }
+            None => String::new(),
+        }
+    }
+
+    fn remote_reply_author(&self) -> String {
+        self.remote_reply
+            .as_ref()
+            .and_then(|message| message.user.as_ref())
+            .map(User::display_name)
+            .unwrap_or("someone")
+            .to_owned()
+    }
+
+    fn remote_reply_snippet(&self) -> String {
+        let Some(message) = &self.remote_reply else {
+            return String::new();
+        };
+        message
+            .body
+            .as_deref()
+            .map(str::trim)
+            .filter(|text| !text.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(|| {
+                if message.images.len() > 1 {
+                    format!("{} images", message.images.len())
+                } else if !message.images.is_empty() {
+                    "Image".into()
+                } else {
+                    String::new()
+                }
+            })
+    }
+
+    fn ping_insert_text(&self) -> String {
+        let me = self.user.as_ref().map(|user| user.user.id.as_str());
+        if let Some(ThreadRef::Org { .. }) = &self.thread_ref {
+            if let Some(thread) = &self.open_thread {
+                let mentions: Vec<String> = thread
+                    .members
+                    .iter()
+                    .filter(|member| me != Some(member.user.id.as_str()))
+                    .map(|member| format!("@{}", member.user.username))
+                    .collect();
+                if !mentions.is_empty() {
+                    return format!("{} ", mentions.join(" "));
+                }
+            }
+        }
+        if let Some(ThreadRef::Direct { username }) = &self.thread_ref {
+            return format!("@{username} ");
+        }
+        "@".into()
+    }
+
+    fn thread_chrome(&self, thread: &ChatThread) -> ui::ThreadChrome {
+        let key = self
+            .thread_ref
+            .as_ref()
+            .map(ThreadRef::key)
+            .unwrap_or_default();
+        let pinned_message = self.prefs.pinned_message_id(&key);
+        let mut reactions = HashMap::new();
+        for message in &thread.messages {
+            let emojis = self.prefs.reactions_for(&key, message.id);
+            if !emojis.is_empty() {
+                reactions.insert(message.id, emojis);
+            }
+        }
+        ui::ThreadChrome {
+            pinned_message,
+            reactions,
+            people: thread_people(thread, self.user.as_ref().map(|user| &user.user)),
+            bubbles: self.bubble_width.clone(),
+        }
+    }
+
+    fn pin_thread_message(&mut self, id: i64, sender: &ComponentSender<App>) {
+        let Some(reference) = self.thread_ref.clone() else {
+            return;
+        };
+        let pinned = self.prefs.toggle_message_pin(&reference.key(), id);
+        self.toast(if pinned {
+            "Pinned message."
+        } else {
+            "Unpinned message."
+        });
+        self.thread_header_stamp.clear();
+        self.fill_open_thread_header(self.open_thread.as_ref(), sender.input_sender().clone());
+    }
+
+    fn toggle_message_reaction(&mut self, id: i64, emoji: &str, sender: &ComponentSender<App>) {
+        let Some(reference) = self.thread_ref.clone() else {
+            return;
+        };
+        self.prefs.toggle_reaction(&reference.key(), id, emoji);
+        let emojis = self.prefs.reactions_for(&reference.key(), id);
+        ui::refresh_message_reactions(
+            &self.thread_list,
+            id,
+            &emojis,
+            sender.input_sender().clone(),
+        );
+    }
+
+    fn is_remote_pinned(&self, reference: &ThreadRef) -> bool {
+        self.prefs.is_remote_pinned(&reference.key())
+            || self
+                .conversation_for(reference)
+                .is_some_and(ConversationSummary::is_pinned)
+    }
+
+    fn is_remote_muted(&self, reference: &ThreadRef) -> bool {
+        match reference {
+            ThreadRef::Direct { username } => self
+                .muted
+                .iter()
+                .any(|user| user.username.eq_ignore_ascii_case(username)),
+            ThreadRef::Org { .. } => self
+                .conversation_for(reference)
+                .is_some_and(ConversationSummary::is_muted),
+        }
+    }
+
+    fn close_open_thread(&mut self, sender: &ComponentSender<App>) {
+        self.thread_gen = self.thread_gen.wrapping_add(1);
+        self.thread_ref = None;
+        self.open_thread = None;
+        self.remote_reply = None;
+        self.thread_typing.clear();
+        self.thread_header_stamp.clear();
+        ui::clear_list(&self.thread_list);
+        ui::clear_box(&self.thread_header);
+        self.render_inbox(sender);
+    }
+
+    fn fetch_open_thread(&mut self, sender: &ComponentSender<App>) {
+        let Some(reference) = self.thread_ref.clone() else {
+            return;
+        };
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        self.thread_gen = self.thread_gen.wrapping_add(1);
+        let gen = self.thread_gen;
+        let sender2 = sender.clone();
+        relm4::spawn(async move {
+            sender2.input(AppMsg::ThreadLoaded(gen, client.thread(&reference).await));
+        });
+    }
+
+    fn apply_open_thread(&mut self, thread: ChatThread, sender: &ComponentSender<App>) {
+        let me = self.user.as_ref().map(|user| user.user.id.clone());
+        let is_org = matches!(self.thread_ref, Some(ThreadRef::Org { .. }));
+        let pulls = ui::ThreadPulls::from_thread(&thread, me.as_deref());
+        let chrome = self.thread_chrome(&thread);
+        let previous = self
+            .open_thread
+            .as_ref()
+            .map(|thread| thread.messages.clone());
+        let opened = previous.is_none();
+        let patched = previous.as_ref().is_some_and(|old| {
+            ui::sync_thread_messages(
+                &self.thread_list,
+                old,
+                &thread.messages,
+                me.as_deref(),
+                is_org,
+                &pulls,
+                &chrome,
+                sender.input_sender().clone(),
+            )
+        });
+        if !patched {
+            ui::clear_list(&self.thread_list);
+            if thread.messages.is_empty() {
+                if let Some(reference) = &self.thread_ref {
+                    self.thread_list
+                        .append(&ui::thread_empty_history(reference));
+                }
+            } else {
+                ui::append_thread_messages(
+                    &self.thread_list,
+                    &thread.messages,
+                    me.as_deref(),
+                    is_org,
+                    &pulls,
+                    &chrome,
+                    sender.input_sender().clone(),
+                );
+            }
+        }
+        self.thread_typing = typing_copy(&thread, self.thread_ref.as_ref());
+        let stamp = self.header_stamp(Some(&thread));
+        if stamp != self.thread_header_stamp {
+            self.fill_open_thread_header(Some(&thread), sender.input_sender().clone());
+            self.thread_header_stamp = stamp;
+        }
+        if let (Some(last), Some(client), Some(reference)) = (
+            thread.messages.last(),
+            self.client.clone(),
+            self.thread_ref.clone(),
+        ) {
+            let through = last.id;
+            relm4::spawn(async move {
+                let _ = client.mark_read(&reference, through).await;
+            });
+        }
+        self.open_thread = Some(thread);
+        if opened {
+            self.thread_follow.set(true);
+        }
+        if self.thread_follow.get() {
+            ui::scroll_to_end(&self.thread_scroll);
+            let scroll = self.thread_scroll.clone();
+            let follow = self.thread_follow.clone();
+            glib::idle_add_local_once(move || {
+                if follow.get() {
+                    ui::scroll_to_end(&scroll);
+                }
+            });
+        }
+    }
+
+    fn toggle_pin_remote(&mut self, sender: &ComponentSender<App>) {
+        let Some(reference) = self.thread_ref.clone() else {
+            return;
+        };
+        let key = reference.key();
+        let latest = self.open_thread.as_ref().and_then(|thread| {
+            thread
+                .messages
+                .iter()
+                .rev()
+                .find(|message| {
+                    !message
+                        .event
+                        .as_deref()
+                        .is_some_and(|event| !event.is_empty())
+                })
+                .or(thread.messages.last())
+                .map(|message| message.id)
+        });
+        let pinned = self.prefs.toggle_remote_pin(&key, latest);
+        self.toast(if pinned { "Pinned." } else { "Unpinned." });
+        self.thread_header_stamp.clear();
+        self.fill_open_thread_header(self.open_thread.as_ref(), sender.input_sender().clone());
+        self.render_inbox(sender);
+    }
+
+    fn stash_open_remote(&mut self, sender: &ComponentSender<App>) {
+        let Some(reference) = self.thread_ref.clone() else {
+            return;
+        };
+        let archived = self
+            .open_thread
+            .as_ref()
+            .map(|thread| thread.is_archived)
+            .or_else(|| {
+                self.conversation_for(&reference)
+                    .map(|item| item.is_archived)
+            })
+            .unwrap_or(false);
+        let next = !archived;
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        self.begin_busy();
+        let title = reference.title();
+        let sender2 = sender.clone();
+        relm4::spawn(async move {
+            sender2.input(AppMsg::ThreadActionDone(
+                client.set_archived(&reference, next).await.map(|()| {
+                    if next {
+                        format!("Stashed {title}. It pops back when someone writes.")
+                    } else {
+                        format!("Popped {title} back into Open.")
+                    }
+                }),
+            ));
+        });
+    }
+
+    fn mute_open_remote(&mut self, sender: &ComponentSender<App>) {
+        let Some(ThreadRef::Direct { username }) = self.thread_ref.clone() else {
+            return;
+        };
+        let muted = self.is_remote_muted(&ThreadRef::Direct {
+            username: username.clone(),
+        });
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        self.begin_busy();
+        let sender2 = sender.clone();
+        relm4::spawn(async move {
+            sender2.input(AppMsg::ThreadActionDone(if muted {
+                client.unmute(&username).await.map(|()| "Unmuted.".into())
+            } else {
+                client
+                    .mute(&username)
+                    .await
+                    .map(|()| "Muted. You won't see their commits or hear from them.".into())
+            }));
+        });
+    }
+
+    fn leave_open_org(&mut self, sender: &ComponentSender<App>) {
+        let Some(ThreadRef::Org { id, .. }) = self.thread_ref.clone() else {
+            return;
+        };
+        let Some(username) = self.user.as_ref().map(|user| user.username().to_owned()) else {
+            return;
+        };
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        self.begin_busy();
+        let sender2 = sender.clone();
+        relm4::spawn(async move {
+            sender2.input(AppMsg::ThreadActionDone(
+                client
+                    .leave_org(&id, &username)
+                    .await
+                    .map(|()| "Left the org.".into()),
+            ));
+        });
+    }
+
+    fn block_open_remote(&mut self, sender: &ComponentSender<App>) {
+        let Some(ThreadRef::Direct { username }) = self.thread_ref.clone() else {
+            return;
+        };
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        self.begin_busy();
+        let sender2 = sender.clone();
+        relm4::spawn(async move {
+            sender2.input(AppMsg::ThreadActionDone(
+                client.block(&username).await.map(|()| "Blocked.".into()),
+            ));
+        });
+    }
+
+    fn load_safety_quiet(&self, sender: &ComponentSender<App>) {
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let sender2 = sender.clone();
+        relm4::spawn(async move {
+            sender2.input(AppMsg::SafetyLoaded(
+                client.mutes().await,
+                client.blocks().await,
+            ));
+        });
+    }
+
+    fn remotes_requests(&self) -> bool {
+        self.user
+            .as_ref()
+            .and_then(|user| user.remotes.as_ref())
+            .is_some_and(|remotes| remotes.requests)
+    }
+
+    fn fetched_tab_label(&self) -> String {
+        if self.inbox_requests > 0 {
+            format!("Fetched {}", self.inbox_requests)
+        } else {
+            "Fetched".into()
+        }
+    }
+
+    fn inbox_tab_classes(&self, tab: InboxTab) -> &'static [&'static str] {
+        if self.inbox_tab == tab {
+            &["flat", "dn-tab", "dn-inbox-tab", "active"]
+        } else {
+            &["flat", "dn-tab", "dn-inbox-tab", "inactive"]
+        }
+    }
+
+    fn ping_remote_typing(&mut self) {
+        if self.remote_draft_len == 0 {
+            return;
+        }
+        let now = Instant::now();
+        if self
+            .last_typing_ping
+            .is_some_and(|at| now.duration_since(at) < Duration::from_secs(3))
+        {
+            return;
+        }
+        let Some(reference) = self.thread_ref.clone() else {
+            return;
+        };
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        self.last_typing_ping = Some(now);
+        relm4::spawn(async move {
+            let _ = client.ping_typing(&reference).await;
+        });
+    }
+
+    fn dock_toggle_classes(&self) -> &'static [&'static str] {
+        if self.prefs.chat_docked {
+            &["dn-dock-toggle", "docked"]
+        } else {
+            &["dn-dock-toggle"]
         }
     }
 
@@ -4761,6 +6179,23 @@ async fn redeem(code: String, verifier: String) -> Result<(CurrentUser, Client),
     let client = Client::signed(key)?;
     let user = client.redeem(&code, &verifier).await?;
     Ok((user, client))
+}
+
+fn typing_copy(thread: &ChatThread, reference: Option<&ThreadRef>) -> String {
+    if !thread.typing.is_empty() {
+        return match thread.typing.as_slice() {
+            [one] => format!("@{one} is typing…"),
+            [one, two] => format!("@{one} and @{two} are typing…"),
+            rest => format!("{} people are typing…", rest.len()),
+        };
+    }
+    if thread.partner_typing {
+        if let Some(ThreadRef::Direct { username }) = reference {
+            return format!("@{username} is typing…");
+        }
+        return "typing…".into();
+    }
+    String::new()
 }
 
 fn buffer_text(view: &gtk::TextView) -> String {
@@ -4820,11 +6255,9 @@ fn bind_composer_keys(
             match kind {
                 ComposerBind::Log => sender.input(AppMsg::SubmitCommit),
                 ComposerBind::Reply => sender.input(AppMsg::SubmitReply),
-                ComposerBind::Remote => {}
+                ComposerBind::Remote => sender.input(AppMsg::PushRemote),
             }
-            if !matches!(kind, ComposerBind::Remote) {
-                return glib::Propagation::Stop;
-            }
+            return glib::Propagation::Stop;
         }
         if ctrl
             && shift
@@ -4851,6 +6284,10 @@ fn bind_composer_keys(
                 sender.input(AppMsg::EmojiDismiss);
                 return glib::Propagation::Stop;
             }
+        }
+        if matches!(kind, ComposerBind::Remote) && key == gtk::gdk::Key::Escape {
+            sender.input(AppMsg::CancelRemoteReply);
+            return glib::Propagation::Stop;
         }
         glib::Propagation::Proceed
     });
@@ -4925,6 +6362,38 @@ const FEED_MAX: i32 = 620;
 const REMOTES_FEED_MAX: i32 = 940;
 const FLUID_FEED_MAX: i32 = 4096;
 
+fn thread_people(thread: &ChatThread, me: Option<&User>) -> HashMap<String, User> {
+    let mut people = HashMap::new();
+    if let Some(me) = me {
+        if !me.id.is_empty() {
+            people.insert(me.id.clone(), me.clone());
+        }
+    }
+    if let Some(partner) = &thread.partner {
+        if !partner.id.is_empty() {
+            people.insert(partner.id.clone(), partner.clone());
+        }
+    }
+    for member in &thread.members {
+        if !member.user.id.is_empty() {
+            people.insert(member.user.id.clone(), member.user.clone());
+        }
+    }
+    for message in &thread.messages {
+        if let Some(user) = &message.user {
+            if !user.id.is_empty() {
+                people.insert(user.id.clone(), user.clone());
+            }
+        }
+        if let Some(subject) = &message.subject {
+            if !subject.id.is_empty() {
+                people.insert(subject.id.clone(), subject.clone());
+            }
+        }
+    }
+    people
+}
+
 fn fill_feed_list(list: &gtk::ListBox) {
     list.set_hexpand(true);
     list.set_vexpand(true);
@@ -4956,6 +6425,14 @@ fn feed_column_classes(visible: &str, shell_compact: bool) -> [&'static str; 2] 
 
 fn width_hides_aside(aside_compact: bool, nav_compact: bool, shell_compact: bool) -> bool {
     aside_compact || nav_compact || shell_compact
+}
+
+fn remotes_inbox_visible(aside_compact: bool, thread_open: bool) -> bool {
+    !aside_compact || !thread_open
+}
+
+fn remotes_thread_visible(aside_compact: bool, thread_open: bool) -> bool {
+    thread_open || !aside_compact
 }
 
 fn aside_is_visible(
@@ -5036,5 +6513,17 @@ mod shell_tests {
         assert!(nav_shows_search(false, true, false));
         assert!(!nav_shows_search(false, false, true));
         assert!(!nav_shows_search(false, false, false));
+    }
+
+    #[test]
+    fn remotes_hides_the_org_pane_before_the_nav_rail() {
+        assert!(remotes_inbox_visible(false, true));
+        assert!(remotes_inbox_visible(false, false));
+        assert!(remotes_inbox_visible(true, false));
+        assert!(!remotes_inbox_visible(true, true));
+        assert!(remotes_thread_visible(false, false));
+        assert!(remotes_thread_visible(false, true));
+        assert!(remotes_thread_visible(true, true));
+        assert!(!remotes_thread_visible(true, false));
     }
 }

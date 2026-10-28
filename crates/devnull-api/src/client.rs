@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -241,9 +242,8 @@ impl Client {
             None,
             JSON_NAMESPACE,
         ) {
-            match self.execute(request).await {
-                Ok(bytes) => return readme_from_bytes(&bytes),
-                Err(_) => {}
+            if let Ok(bytes) = self.execute(request).await {
+                return readme_from_bytes(&bytes);
             }
         }
         self.fetch_github_readme(github_login).await
@@ -309,36 +309,124 @@ impl Client {
     }
 
     pub async fn suggested(&self) -> Result<Vec<User>, ApiError> {
-        if let Ok(bytes) = self
-            .execute(self.signed_request(Method::GET, "suggested", &[], None, JSON_NAMESPACE)?)
-            .await
-        {
-            if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) {
-                let users: Vec<User> = SearchResults::from_value(value)
-                    .users
-                    .into_iter()
-                    .filter(|user| !user.is_followed_by_me())
-                    .collect();
-                if !users.is_empty() {
-                    return Ok(users);
+        let following = self.following_set(None, HashSet::new()).await;
+        self.suggested_excluding(&following).await
+    }
+
+    pub async fn suggested_excluding(
+        &self,
+        following: &HashSet<String>,
+    ) -> Result<Vec<User>, ApiError> {
+        let mut users = User::not_followed(self.users_from_suggested_paths().await, following);
+        if users.is_empty() {
+            users = self.suggested_from_logs(following).await;
+        }
+        Ok(users)
+    }
+
+    async fn users_from_suggested_paths(&self) -> Vec<User> {
+        for path in ["suggested", "suggested-users", "me/suggested"] {
+            let Ok(request) = self.signed_request(Method::GET, path, &[], None, JSON_NAMESPACE)
+            else {
+                continue;
+            };
+            let Ok(bytes) = self.execute(request).await else {
+                continue;
+            };
+            let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+                continue;
+            };
+            let mut users = User::suggested_from_value(&value);
+            if users.is_empty() {
+                users = User::list_from_value(value);
+            }
+            if !users.is_empty() {
+                return users;
+            }
+        }
+        Vec::new()
+    }
+
+    async fn suggested_from_logs(&self, following: &HashSet<String>) -> Vec<User> {
+        let mut commits = Vec::new();
+        for kind in [LogKind::Trending, LogKind::Latest] {
+            if let Ok(page) = self.log(kind, None).await {
+                commits.extend(page.data);
+            }
+        }
+        User::unique_unfollowed_authors(&commits, following)
+            .into_iter()
+            .take(12)
+            .collect()
+    }
+
+    pub async fn following(&self) -> Result<Vec<User>, ApiError> {
+        self.following_of(None).await
+    }
+
+    pub async fn following_of(&self, username: Option<&str>) -> Result<Vec<User>, ApiError> {
+        let named = username
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(|name| format!("users/{name}/following"));
+        let mut last_ok = Vec::new();
+        for path in following_paths(named.as_deref()) {
+            match self.following_from(&path).await {
+                Ok(users) if !users.is_empty() => return Ok(users),
+                Ok(users) => last_ok = users,
+                Err(_) => continue,
+            }
+        }
+        Ok(last_ok)
+    }
+
+    pub async fn following_set(
+        &self,
+        username: Option<&str>,
+        mut known: HashSet<String>,
+    ) -> HashSet<String> {
+        known.extend(User::following_names(
+            &self.following_of(username).await.unwrap_or_default(),
+        ));
+        if let Ok(page) = self.log(LogKind::Following, None).await {
+            for commit in page.data {
+                if let Some(author) = commit.author {
+                    let name = author.username.trim().to_ascii_lowercase();
+                    if !name.is_empty() {
+                        known.insert(name);
+                    }
                 }
             }
         }
-        let page = self.log(LogKind::Trending, None).await?;
-        let mut seen = std::collections::HashSet::new();
+        known
+    }
+
+    async fn following_from(&self, path: &str) -> Result<Vec<User>, ApiError> {
         let mut out = Vec::new();
-        for commit in page.data {
-            let Some(author) = commit.author else {
-                continue;
-            };
-            if author.is_followed_by_me() {
-                continue;
-            }
-            if seen.insert(author.username.clone()) {
-                out.push(author);
-            }
-            if out.len() >= 3 {
+        let mut cursor: Option<String> = None;
+        for _ in 0..20 {
+            let bytes = self
+                .execute(self.signed_request(
+                    Method::GET,
+                    path,
+                    &[("cursor", cursor.as_deref())],
+                    None,
+                    JSON_NAMESPACE,
+                )?)
+                .await?;
+            let value: serde_json::Value =
+                serde_json::from_slice(&bytes).map_err(|_| ApiError::decode())?;
+            let next = serde_json::from_value::<Page<User>>(value.clone())
+                .ok()
+                .and_then(|page| page.next_cursor());
+            let users = User::list_from_value(value);
+            if users.is_empty() {
                 break;
+            }
+            out.extend(users);
+            match next {
+                Some(next) if cursor.as_ref() != Some(&next) => cursor = Some(next),
+                _ => break,
             }
         }
         Ok(out)
@@ -364,6 +452,11 @@ impl Client {
             }
         }
         Ok(Vec::new())
+    }
+
+    pub async fn related_commits(&self, id: &str) -> Result<Vec<Commit>, ApiError> {
+        let value: serde_json::Value = self.get(&format!("commits/{id}/related"), &[]).await?;
+        Ok(Commit::list_from_value(value))
     }
 
     pub async fn starred(&self, cursor: Option<&str>) -> Result<LogPage, ApiError> {
@@ -422,8 +515,18 @@ impl Client {
         self.user_collection("me/blocks").await
     }
 
+    pub async fn mute(&self, username: &str) -> Result<(), ApiError> {
+        self.send_empty(Method::POST, &format!("users/{username}/mute"))
+            .await
+    }
+
     pub async fn unmute(&self, username: &str) -> Result<(), ApiError> {
         self.send_empty(Method::DELETE, &format!("users/{username}/mute"))
+            .await
+    }
+
+    pub async fn block(&self, username: &str) -> Result<(), ApiError> {
+        self.send_empty(Method::POST, &format!("users/{username}/block"))
             .await
     }
 
@@ -467,13 +570,30 @@ impl Client {
 
     pub async fn notifications(
         &self,
-        filter: NotificationFilter,
+        types: &std::collections::HashSet<NotificationFilter>,
         cursor: Option<&str>,
     ) -> Result<Page<Notification>, ApiError> {
+        let type_q = NotificationFilter::query_param(types);
         let value: serde_json::Value = self
             .get(
                 "notifications",
-                &[("type", filter.query()), ("cursor", cursor)],
+                &[("type", type_q.as_deref()), ("cursor", cursor)],
+            )
+            .await?;
+        Ok(Notification::page_from_value(value))
+    }
+
+    pub async fn notification_group(
+        &self,
+        id: &str,
+        types: &std::collections::HashSet<NotificationFilter>,
+        cursor: Option<&str>,
+    ) -> Result<Page<Notification>, ApiError> {
+        let type_q = NotificationFilter::query_param(types);
+        let value: serde_json::Value = self
+            .get(
+                &format!("notifications/{id}/group"),
+                &[("type", type_q.as_deref()), ("cursor", cursor)],
             )
             .await?;
         Ok(Notification::page_from_value(value))
@@ -483,10 +603,58 @@ impl Client {
         &self,
         tab: InboxTab,
         before_id: Option<&str>,
+        query: Option<&str>,
     ) -> Result<InboxPage, ApiError> {
-        self.get(
-            "remotes",
-            &[("tab", Some(tab.as_str())), ("before", before_id)],
+        let query = query.map(str::trim).filter(|text| !text.is_empty());
+        let value: serde_json::Value = self
+            .get(
+                "remotes",
+                &[
+                    ("tab", Some(tab.as_str())),
+                    ("before", before_id),
+                    ("q", query),
+                ],
+            )
+            .await?;
+        Ok(InboxPage::from_value(value))
+    }
+
+    pub async fn remote_candidates(
+        &self,
+        query: &str,
+        for_kind: &str,
+    ) -> Result<Vec<RemoteCandidate>, ApiError> {
+        let value: serde_json::Value = self
+            .get(
+                "remotes/candidates",
+                &[("q", Some(query)), ("for", Some(for_kind))],
+            )
+            .await?;
+        Ok(RemoteCandidate::list_from_value(value))
+    }
+
+    pub async fn create_org(&self, name: &str, members: &[String]) -> Result<ThreadRef, ApiError> {
+        let value: serde_json::Value = self
+            .send_json(
+                Method::POST,
+                "remotes/orgs",
+                &[],
+                &serde_json::json!({ "name": name, "members": members }),
+            )
+            .await?;
+        ThreadRef::from_created_org(&value).ok_or_else(ApiError::decode)
+    }
+
+    pub async fn set_remote_preferences(
+        &self,
+        from: &str,
+        pull_receipts: bool,
+    ) -> Result<CurrentUser, ApiError> {
+        self.send_json(
+            Method::PUT,
+            "me/remote-preferences",
+            &[],
+            &serde_json::json!({ "from": from, "pull_receipts": pull_receipts }),
         )
         .await
     }
@@ -499,7 +667,7 @@ impl Client {
             serde_json::from_slice(&bytes).map_err(|_| ApiError::decode())?;
         let (notifications, mut remotes) = unread_counts_from_value(&value);
         if remotes_enabled {
-            if let Ok(page) = self.remotes(InboxTab::Open, None).await {
+            if let Ok(page) = self.remotes(InboxTab::Open, None, None).await {
                 remotes = Some(page.unread_count);
             }
         } else {
@@ -509,15 +677,12 @@ impl Client {
     }
 
     pub async fn thread(&self, reference: &ThreadRef) -> Result<ChatThread, ApiError> {
-        match reference {
-            ThreadRef::Direct { username } => {
-                self.get(&format!("remotes/@{username}/messages"), &[])
-                    .await
-            }
-            ThreadRef::Org { id, .. } => {
-                self.get(&format!("remotes/orgs/{id}/messages"), &[]).await
-            }
-        }
+        let path = match reference {
+            ThreadRef::Direct { username } => format!("remotes/@{username}/messages"),
+            ThreadRef::Org { id, .. } => format!("remotes/orgs/{id}/messages"),
+        };
+        let value: serde_json::Value = self.get(&path, &[]).await?;
+        Ok(ChatThread::from_value(value))
     }
 
     pub async fn push(
@@ -526,8 +691,12 @@ impl Client {
         body: &str,
         client_id: &str,
         images: Vec<Upload>,
+        reply_to_id: Option<i64>,
     ) -> Result<Message, ApiError> {
-        let payload = serde_json::json!({ "body": body, "client_id": client_id });
+        let mut payload = serde_json::json!({ "body": body, "client_id": client_id });
+        if let Some(id) = reply_to_id {
+            payload["reply_to_id"] = serde_json::json!(id);
+        }
         let path = match reference {
             ThreadRef::Direct { username } => format!("remotes/@{username}/messages"),
             ThreadRef::Org { id, .. } => format!("remotes/orgs/{id}/messages"),
@@ -540,6 +709,15 @@ impl Client {
         }
     }
 
+    pub async fn ping_typing(&self, reference: &ThreadRef) -> Result<(), ApiError> {
+        let path = match reference {
+            ThreadRef::Direct { username } => format!("remotes/@{username}/typing"),
+            ThreadRef::Org { id, .. } => format!("remotes/orgs/{id}/typing"),
+        };
+        self.send_json_empty(Method::PUT, &path, &serde_json::json!({}))
+            .await
+    }
+
     pub async fn mark_read(&self, reference: &ThreadRef, through: i64) -> Result<(), ApiError> {
         let path = match reference {
             ThreadRef::Direct { username } => format!("remotes/@{username}/read"),
@@ -549,6 +727,34 @@ impl Client {
             Method::PUT,
             &path,
             &serde_json::json!({ "through": through }),
+        )
+        .await
+    }
+
+    pub async fn set_archived(
+        &self,
+        reference: &ThreadRef,
+        archived: bool,
+    ) -> Result<(), ApiError> {
+        let path = match reference {
+            ThreadRef::Direct { username } => format!("remotes/@{username}/archive"),
+            ThreadRef::Org { id, .. } => format!("remotes/orgs/{id}/archive"),
+        };
+        self.send_empty(
+            if archived {
+                Method::POST
+            } else {
+                Method::DELETE
+            },
+            &path,
+        )
+        .await
+    }
+
+    pub async fn leave_org(&self, org_id: &str, username: &str) -> Result<(), ApiError> {
+        self.send_empty(
+            Method::DELETE,
+            &format!("remotes/orgs/{org_id}/members/{username}"),
         )
         .await
     }
@@ -830,6 +1036,16 @@ fn decode_maybe_wrapped<T: DeserializeOwned>(bytes: Vec<u8>) -> Result<T, ApiErr
 
 /// Copy envelope fields such as `unread_notifications_count` onto the inner object
 /// when Laravel puts them beside `data` via `JsonResource::additional`.
+fn following_paths(named: Option<&str>) -> Vec<String> {
+    let mut paths = Vec::new();
+    if let Some(path) = named {
+        paths.push(path.to_owned());
+    }
+    paths.push("me/following".into());
+    paths.push("following".into());
+    paths
+}
+
 fn merge_envelope(envelope: &serde_json::Value, inner: &serde_json::Value) -> serde_json::Value {
     let mut merged = inner.clone();
     let Some(object) = merged.as_object_mut() else {
@@ -887,5 +1103,14 @@ mod tests {
     fn empty_readme_is_missing() {
         let bytes = serde_json::to_vec(&serde_json::json!({ "data": null })).unwrap();
         assert_eq!(readme_from_bytes(&bytes).unwrap(), None);
+    }
+
+    #[test]
+    fn following_list_prefers_the_native_user_path() {
+        assert_eq!(
+            following_paths(Some("users/ada/following")),
+            ["users/ada/following", "me/following", "following"]
+        );
+        assert_eq!(following_paths(None), ["me/following", "following"]);
     }
 }

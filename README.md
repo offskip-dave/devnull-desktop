@@ -9,10 +9,10 @@ It talks to the same signed JSON API as the [Mac app](https://github.com/dev-nul
 - Sign in with GitHub in the system browser (`devnull://linux/auth`)
 - Following, Latest, Trending, and Starred logs
 - Composer: text, images, polls, scheduling, preview, and emoji
-- Commit threads: replies, quotes, stars, pastéis, share, report
-- Profiles: activity, achievements, follow, share, Go live, GitHub edit/sync
-- Notifications with filters
-- Remotes inbox (1:1 and org threads)
+- Commit threads: replies, quotes, related commits, stars, pastéis, share, report
+- Profiles: activity graph, achievements, XP, follow, share, Go live, GitHub edit/sync
+- Notifications with filters, grouped stars, and mention avatars
+- Remotes: Open / Stashed inbox, search, dock, settings, new org / new remote
 - Search (`Ctrl+K` or `/`)
 - Settings: Profile, Appearance, Terminal, Safety, Devices
 - Keyboard shortcuts (`?`)
@@ -23,7 +23,7 @@ The first commit on an account still has to be made on the web. Following and fo
 
 | Page | Covers |
 | --- | --- |
-| [Architecture](docs/architecture.md) | Crates, signed API, auth, UI layout |
+| [Architecture](docs/architecture.md) | Crates, signed API, auth, layout, notifications, remotes |
 | [Development](docs/development.md) | Build, test, icons, local prefs |
 | [Packaging](docs/packaging.md) | Flatpak, desktop file, `devnull://` |
 

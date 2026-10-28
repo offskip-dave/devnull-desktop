@@ -36,8 +36,18 @@ pub struct Prefs {
     pub theme: Theme,
     #[serde(default = "default_true")]
     pub show_who_to_follow: bool,
+    #[serde(default = "default_true")]
+    pub highlight_on_hover: bool,
     #[serde(default)]
     pub last_visits: HashMap<String, String>,
+    #[serde(default)]
+    pub chat_docked: bool,
+    #[serde(default)]
+    pub pinned_remotes: Vec<String>,
+    #[serde(default)]
+    pub pinned_messages: HashMap<String, i64>,
+    #[serde(default)]
+    pub message_reactions: HashMap<String, Vec<String>>,
 }
 
 fn default_true() -> bool {
@@ -49,7 +59,12 @@ impl Default for Prefs {
         Self {
             theme: Theme::System,
             show_who_to_follow: true,
+            highlight_on_hover: true,
             last_visits: HashMap::new(),
+            chat_docked: false,
+            pinned_remotes: Vec::new(),
+            pinned_messages: HashMap::new(),
+            message_reactions: HashMap::new(),
         }
     }
 }
@@ -93,6 +108,70 @@ impl Prefs {
     pub fn remember_visit(&mut self, user_id: &str, log: &str, at: String) {
         self.last_visits.insert(Self::visit_key(user_id, log), at);
         self.persist();
+    }
+
+    pub fn is_remote_pinned(&self, key: &str) -> bool {
+        self.pinned_remotes.iter().any(|known| known == key)
+    }
+
+    pub fn toggle_remote_pin(&mut self, key: &str, message_id: Option<i64>) -> bool {
+        if let Some(index) = self.pinned_remotes.iter().position(|known| known == key) {
+            self.pinned_remotes.remove(index);
+            self.pinned_messages.remove(key);
+            self.save();
+            false
+        } else {
+            self.pinned_remotes.push(key.to_owned());
+            if let Some(id) = message_id {
+                self.pinned_messages.insert(key.to_owned(), id);
+            }
+            self.save();
+            true
+        }
+    }
+
+    pub fn pinned_message_id(&self, key: &str) -> Option<i64> {
+        self.pinned_messages.get(key).copied()
+    }
+
+    pub fn toggle_message_pin(&mut self, key: &str, id: i64) -> bool {
+        if self.pinned_messages.get(key) == Some(&id) {
+            self.pinned_messages.remove(key);
+            self.save();
+            false
+        } else {
+            self.pinned_messages.insert(key.to_owned(), id);
+            self.save();
+            true
+        }
+    }
+
+    fn reaction_key(thread: &str, id: i64) -> String {
+        format!("{thread}:{id}")
+    }
+
+    pub fn reactions_for(&self, thread: &str, id: i64) -> Vec<String> {
+        self.message_reactions
+            .get(&Self::reaction_key(thread, id))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub fn toggle_reaction(&mut self, thread: &str, id: i64, emoji: &str) -> bool {
+        let key = Self::reaction_key(thread, id);
+        let list = self.message_reactions.entry(key.clone()).or_default();
+        if let Some(index) = list.iter().position(|known| known == emoji) {
+            list.remove(index);
+            if list.is_empty() {
+                self.message_reactions.remove(&key);
+            }
+            self.save();
+            false
+        } else {
+            list.push(emoji.to_owned());
+            self.save();
+            true
+        }
     }
 
     pub fn apply(&self) {
@@ -159,4 +238,17 @@ fn path() -> std::path::PathBuf {
 
 fn glib_config_dir() -> std::path::PathBuf {
     relm4::gtk::glib::user_config_dir().join("sh.devnull.Client")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn highlight_on_hover_defaults_on() {
+        let prefs: Prefs = serde_json::from_str("{}").unwrap();
+        assert!(prefs.highlight_on_hover);
+        assert!(prefs.show_who_to_follow);
+        assert!(!prefs.chat_docked);
+    }
 }

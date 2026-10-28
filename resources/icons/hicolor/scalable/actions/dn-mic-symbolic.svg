@@ -1,0 +1,5 @@
+<!-- @license lucide-static v0.544.0 - ISC; converted to filled symbolic paths for GTK -->
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24">
+  <path fill="#2e3436" d="M12 1.5 C 10.067 1.5 8.5 3.067 8.5 5 v 6 c 0 1.933 1.567 3.5 3.5 3.5 1.933 0 3.5 -1.567 3.5 -3.5 V 5 C 15.5 3.067 13.933 1.5 12 1.5 Z"/>
+  <path fill="#2e3436" d="M 5.5 10 a 1 1 0 0 0 -1 1 v 1 a 7.5 7.5 0 0 0 6.5 7.434 V 22 h -2 a 1 1 0 0 0 0 2 h 6 a 1 1 0 0 0 0 -2 h -2 v -2.566 A 7.5 7.5 0 0 0 19.5 12 v -1 a 1 1 0 0 0 -2 0 v 1 a 5.5 5.5 0 0 1 -11 0 v -1 a 1 1 0 0 0 -1 -1 z"/>
+</svg>

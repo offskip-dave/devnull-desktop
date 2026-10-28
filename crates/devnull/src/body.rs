@@ -30,6 +30,16 @@ pub fn body_widget(
     mentions: Option<&HashMap<String, String>>,
     sender: Option<&Sender<AppMsg>>,
 ) -> gtk::Widget {
+    body_from(text, text, class, mentions, sender)
+}
+
+fn body_from(
+    display: &str,
+    source: &str,
+    class: &str,
+    mentions: Option<&HashMap<String, String>>,
+    sender: Option<&Sender<AppMsg>>,
+) -> gtk::Widget {
     let sender = sender.cloned();
     let wrap = gtk::Box::new(gtk::Orientation::Vertical, 8);
     for class in class.split_whitespace() {
@@ -44,9 +54,11 @@ pub fn body_widget(
         wrap.append(&prose_label(prose, sender.as_ref()));
         prose.clear();
     };
-    for segment in segments(text) {
+    let copy_blocks = block_sources(source);
+    let mut block_i = 0;
+    for segment in segments(display) {
         match segment {
-            Segment::Text(text) => prose.push_str(&markdown_markup(&text, mentions)),
+            Segment::Text(text) => prose.push_str(&prose_markup(&text, mentions)),
             Segment::Code(code) => {
                 let chip = if is_dark() { "#232326" } else { "#eef0f2" };
                 prose.push_str(&format!(
@@ -57,7 +69,12 @@ pub fn body_widget(
             }
             Segment::Block { language, code } => {
                 flush(&mut prose, &wrap);
-                wrap.append(&code_block(language.as_deref(), &code));
+                let copy = copy_blocks
+                    .get(block_i)
+                    .map(String::as_str)
+                    .unwrap_or(&code);
+                block_i += 1;
+                wrap.append(&code_block(language.as_deref(), &code, copy));
             }
         }
     }
@@ -67,6 +84,196 @@ pub fn body_widget(
 
 pub fn body_markup(text: &str) -> String {
     render_markup(text, None)
+}
+
+/// Lists show a longer body folded to its first characters and lines. Keep in sync with
+/// `App\Models\Commit` and `App\Services\CommitBodies`.
+pub const PREVIEW_LENGTH: usize = 280;
+pub const PREVIEW_LINES: usize = 8;
+
+pub fn folded_body_widget(
+    text: &str,
+    class: &str,
+    mentions: Option<&HashMap<String, String>>,
+    sender: Option<&Sender<AppMsg>>,
+) -> gtk::Widget {
+    let Some(preview) = excerpt(text) else {
+        return body_widget(text, class, mentions, sender);
+    };
+    let wrap = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    wrap.set_hexpand(true);
+    wrap.append(&body_from(&preview, text, class, mentions, sender));
+    let more = gtk::Button::with_label("Show more");
+    more.add_css_class("flat");
+    more.add_css_class("dn-show-more");
+    more.set_halign(gtk::Align::Start);
+    more.set_has_frame(false);
+    more.set_cursor_from_name(Some("pointer"));
+    more.set_can_focus(true);
+    let class = class.to_owned();
+    let full = text.to_owned();
+    let mentions = mentions.cloned();
+    let sender = sender.cloned();
+    more.connect_clicked(move |btn| {
+        let Some(wrap) = btn.parent().and_then(|p| p.downcast::<gtk::Box>().ok()) else {
+            return;
+        };
+        while let Some(child) = wrap.first_child() {
+            wrap.remove(&child);
+        }
+        wrap.append(&body_widget(
+            &full,
+            &class,
+            mentions.as_ref(),
+            sender.as_ref(),
+        ));
+    });
+    wrap.append(&more);
+    wrap.upcast()
+}
+
+pub fn clamped_body_widget(
+    text: &str,
+    class: &str,
+    mentions: Option<&HashMap<String, String>>,
+    sender: Option<&Sender<AppMsg>>,
+    max_height: i32,
+) -> gtk::Widget {
+    let preview = excerpt(text).unwrap_or_else(|| text.to_owned());
+    let scroll = gtk::ScrolledWindow::new();
+    scroll.add_css_class("dn-body-clamp");
+    scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Never);
+    scroll.set_max_content_height(max_height);
+    scroll.set_propagate_natural_height(true);
+    scroll.set_hexpand(true);
+    scroll.set_overflow(gtk::Overflow::Hidden);
+    scroll.set_child(Some(&body_widget(&preview, class, mentions, sender)));
+    scroll.upcast()
+}
+
+/// The start of a body too long to show whole in a list, or `None` when it fits.
+pub fn excerpt(body: &str) -> Option<String> {
+    let body = body.replace("\r\n", "\n").replace('\r', "\n");
+    let mut limit = preview_limit(&body)?;
+    let mut excerpt = String::new();
+    for (index, part) in split_code_spans(&body).into_iter().enumerate() {
+        let length = char_len(&part);
+        if length <= limit {
+            excerpt.push_str(&part);
+            limit -= length;
+            continue;
+        }
+        let is_first = excerpt.trim().is_empty();
+        excerpt.push_str(&if index % 2 == 0 {
+            cut_prose(&part, limit, is_first)
+        } else if is_first {
+            cut_code(&part, limit)
+        } else {
+            String::new()
+        });
+        break;
+    }
+    let excerpt = excerpt.trim_end().to_owned();
+    Some(if excerpt.ends_with("```") {
+        format!("{excerpt}\n…")
+    } else {
+        format!("{excerpt}…")
+    })
+}
+
+fn preview_limit(body: &str) -> Option<usize> {
+    let mut lines = body.split('\n');
+    let mut first = Vec::new();
+    for _ in 0..PREVIEW_LINES {
+        match lines.next() {
+            Some(line) => first.push(line),
+            None => break,
+        }
+    }
+    if lines.next().is_some() {
+        return Some(PREVIEW_LENGTH.min(char_len(&first.join("\n"))));
+    }
+    let len = char_len(body);
+    (len > PREVIEW_LENGTH).then_some(PREVIEW_LENGTH)
+}
+
+fn split_code_spans(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    let mut parts = Vec::new();
+    let mut prose = String::new();
+    while i < chars.len() {
+        if let Some(end) = take_code_span(&chars, i) {
+            parts.push(std::mem::take(&mut prose));
+            parts.push(chars[i..end].iter().collect());
+            i = end;
+            continue;
+        }
+        prose.push(chars[i]);
+        i += 1;
+    }
+    parts.push(prose);
+    parts
+}
+
+fn take_code_span(chars: &[char], i: usize) -> Option<usize> {
+    take_fence(chars, i)
+        .map(|(_, end)| end)
+        .or_else(|| take_inline(chars, i).map(|(_, end)| end))
+}
+
+fn cut_prose(prose: &str, limit: usize, is_first: bool) -> String {
+    let cut = char_take(prose, limit);
+    if prose.chars().nth(limit).is_some_and(char::is_whitespace) {
+        return cut;
+    }
+    if let Some((idx, _)) = cut.char_indices().rev().find(|(_, c)| c.is_whitespace()) {
+        return cut[..idx].to_owned();
+    }
+    if is_first {
+        cut
+    } else {
+        String::new()
+    }
+}
+
+fn cut_code(code: &str, limit: usize) -> String {
+    if !code.starts_with("```") {
+        return format!("{}`", char_take(code, limit.saturating_sub(1).max(1)));
+    }
+    let mut lines = code.split('\n');
+    let Some(header) = lines.next() else {
+        return char_take(code, limit);
+    };
+    let fence: String = header.chars().take_while(|c| *c == '`').collect();
+    let mut kept = vec![header.to_owned()];
+    let mut rest = limit.saturating_sub(char_len(header) + char_len(&fence) + 1);
+    let inner: Vec<&str> = lines.collect();
+    let body_lines = inner.split_last().map(|(_, body)| body).unwrap_or(&[]);
+    for line in body_lines.iter().copied() {
+        if char_len(line) + 1 > rest {
+            if kept.len() == 1 {
+                kept.push(char_take(line, rest.saturating_sub(1).max(1)));
+            }
+            break;
+        }
+        kept.push(line.to_owned());
+        rest = rest.saturating_sub(char_len(line) + 1);
+    }
+    kept.push(fence);
+    kept.join("\n")
+}
+
+fn char_len(text: &str) -> usize {
+    text.chars().count()
+}
+
+fn char_take(text: &str, n: usize) -> String {
+    text.chars().take(n).collect()
+}
+
+fn prose_markup(text: &str, mentions: Option<&HashMap<String, String>>) -> String {
+    markdown_markup(&crate::emoji::emojify(text), mentions)
 }
 
 fn render_markup(text: &str, mentions: Option<&HashMap<String, String>>) -> String {
@@ -79,7 +286,7 @@ fn render_markup(text: &str, mentions: Option<&HashMap<String, String>>) -> Stri
             }
         }
         match segment {
-            Segment::Text(text) => out.push_str(&markdown_markup(&text, mentions)),
+            Segment::Text(text) => out.push_str(&prose_markup(&text, mentions)),
             Segment::Code(code) => {
                 out.push_str("<tt>");
                 out.push_str(&escape(&code));
@@ -170,19 +377,25 @@ struct MentionSpan {
 }
 
 fn with_mentions(text: &str, mentions: Option<&HashMap<String, String>>) -> String {
-    let Some(mentions) = mentions.filter(|map| !map.is_empty()) else {
+    let captured = mentions.filter(|map| !map.is_empty());
+    let spans = mention_spans(text);
+    if spans.is_empty() {
         return with_wordmarks(&with_colors(&escape(text)));
-    };
+    }
     let mut out = String::new();
     let mut last = 0;
-    for mention in mention_spans(text) {
+    for mention in spans {
         out.push_str(&with_wordmarks(&with_colors(&escape(
             &text[last..mention.start],
         ))));
         let token = &text[mention.start..mention.end];
-        if captured_mention(mentions, &mention.username).is_some() {
+        let known = match captured {
+            Some(map) => captured_mention(map, &mention.username).is_some(),
+            None => true,
+        };
+        if known {
             out.push_str(&format!(
-                "<a href=\"mention:{}\">{}</a>",
+                "<a href=\"mention:{}\"><span underline=\"none\">{}</span></a>",
                 escape(&mention.username),
                 escape(token)
             ));
@@ -260,20 +473,15 @@ fn take_github_username(s: &str) -> Option<&str> {
     let mut n = 1;
     while i < bytes.len() && n < 39 {
         let b = bytes[i];
-        if b.is_ascii_alphanumeric() {
-            i += 1;
-            n += 1;
-        } else if b == b'-'
-            && n + 1 <= 39
+        let hyphen = b == b'-'
             && bytes
                 .get(i + 1)
-                .is_some_and(|next| next.is_ascii_alphanumeric())
-        {
-            i += 1;
-            n += 1;
-        } else {
+                .is_some_and(|next| next.is_ascii_alphanumeric());
+        if !b.is_ascii_alphanumeric() && !hyphen {
             break;
         }
+        i += 1;
+        n += 1;
     }
     Some(&s[..i])
 }
@@ -287,13 +495,12 @@ fn mention_right_ok(text: &str, end: usize) -> bool {
     if next.is_ascii_alphanumeric() || matches!(next, '_' | '@' | '/' | '-') {
         return false;
     }
-    if next == '.' {
-        if chars
+    if next == '.'
+        && chars
             .next()
             .is_some_and(|after| after.is_ascii_alphanumeric())
-        {
-            return false;
-        }
+    {
+        return false;
     }
     true
 }
@@ -580,9 +787,15 @@ fn trim_block_edges(mut raw: Vec<Segment>) -> Vec<Segment> {
     raw
 }
 
+struct ListState {
+    ordered: bool,
+    next: u64,
+}
+
 fn markdown_markup(text: &str, mentions: Option<&HashMap<String, String>>) -> String {
     let mut out = String::new();
     let mut in_link = false;
+    let mut lists = Vec::new();
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
     let parser = Parser::new_ext(text, options);
@@ -592,6 +805,13 @@ fn markdown_markup(text: &str, mentions: Option<&HashMap<String, String>>) -> St
             Event::End(TagEnd::Emphasis) => out.push_str("</i>"),
             Event::Start(Tag::Strong) => out.push_str("<b>"),
             Event::End(TagEnd::Strong) => out.push_str("</b>"),
+            Event::Start(Tag::Strikethrough) => out.push_str("<s>"),
+            Event::End(TagEnd::Strikethrough) => out.push_str("</s>"),
+            Event::Start(Tag::Heading { .. }) => out.push_str("<b>"),
+            Event::End(TagEnd::Heading(_)) => {
+                out.push_str("</b>");
+                push_break(&mut out, lists.is_empty());
+            }
             Event::Start(Tag::CodeBlock(_)) => out.push_str("<tt>"),
             Event::End(TagEnd::CodeBlock) => out.push_str("</tt>"),
             Event::Code(code) => {
@@ -603,7 +823,7 @@ fn markdown_markup(text: &str, mentions: Option<&HashMap<String, String>>) -> St
                 if in_link {
                     out.push_str(&with_wordmarks(&with_colors(&escape(&t))));
                 } else {
-                    out.push_str(&with_mentions(&t, mentions));
+                    out.push_str(&with_urls(&t, mentions));
                 }
             }
             Event::SoftBreak | Event::HardBreak => out.push('\n'),
@@ -611,17 +831,317 @@ fn markdown_markup(text: &str, mentions: Option<&HashMap<String, String>>) -> St
                 in_link = true;
                 out.push_str("<a href=\"");
                 out.push_str(&escape(&dest_url));
-                out.push_str("\">");
+                out.push_str("\"><span underline=\"none\">");
             }
             Event::End(TagEnd::Link) => {
                 in_link = false;
-                out.push_str("</a>");
+                out.push_str("</span></a>");
             }
-            Event::Rule => out.push('\n'),
+            Event::Start(Tag::List(start)) => {
+                lists.push(ListState {
+                    ordered: start.is_some(),
+                    next: start.unwrap_or(1),
+                });
+                if !out.is_empty() && !out.ends_with('\n') {
+                    out.push('\n');
+                }
+            }
+            Event::End(TagEnd::List(_)) => {
+                lists.pop();
+                if !out.ends_with('\n') {
+                    out.push('\n');
+                }
+            }
+            Event::Start(Tag::Item) => {
+                let indent = "  ".repeat(lists.len().saturating_sub(1));
+                if let Some(list) = lists.last_mut() {
+                    if list.ordered {
+                        out.push_str(&format!("{indent}{}. ", list.next));
+                        list.next += 1;
+                    } else {
+                        out.push_str(&format!("{indent}• "));
+                    }
+                }
+            }
+            Event::End(TagEnd::Item) => {
+                if !out.ends_with('\n') {
+                    out.push('\n');
+                }
+            }
+            Event::End(TagEnd::Paragraph) => push_break(&mut out, lists.is_empty()),
+            Event::Rule => out.push_str("\n\n"),
             _ => {}
         }
     }
+    out.trim_end_matches('\n').to_owned()
+}
+
+fn push_break(out: &mut String, blank_line: bool) {
+    if !out.ends_with('\n') {
+        out.push('\n');
+    }
+    if blank_line {
+        out.push('\n');
+    }
+}
+
+/// Keep in sync with `app/Services/Urls.php` and `linkified-text.tsx`.
+const TOP_LEVEL_DOMAINS: &[&str] = &[
+    "com", "org", "net", "edu", "gov", "mil", "info", "biz", "io", "dev", "app", "co", "ai", "me",
+    "xyz", "tech", "gg", "tv", "fm", "ly", "to", "is", "blog", "cloud", "site", "online", "design",
+    "studio", "tools", "software", "codes", "wiki", "news", "website", "club", "ninja", "rocks",
+    "academy", "guide", "social", "digital", "agency", "fyi", "lol", "live", "uk", "de", "fr",
+    "nl", "es", "it", "pt", "br", "ca", "au", "jp", "ch", "se", "no", "dk", "fi", "be", "at", "ie",
+    "nz", "us", "eu", "cz", "sk", "hu", "ro", "bg", "gr", "hr", "si", "ee", "lv", "lt", "ru", "ua",
+    "tr", "il", "za", "mx", "ar", "kr", "cn", "tw", "hk", "sg", "vn", "th",
+];
+
+struct UrlSpan {
+    start: usize,
+    end: usize,
+    href: String,
+}
+
+fn with_urls(text: &str, mentions: Option<&HashMap<String, String>>) -> String {
+    let spans = url_spans(text);
+    if spans.is_empty() {
+        return with_mentions(text, mentions);
+    }
+    let mut out = String::new();
+    let mut last = 0;
+    for span in spans {
+        out.push_str(&with_mentions(&text[last..span.start], mentions));
+        let token = &text[span.start..span.end];
+        out.push_str(&format!(
+            "<a href=\"{}\"><span underline=\"none\">{}</span></a>",
+            escape(&span.href),
+            escape(&shorten_url_label(token))
+        ));
+        last = span.end;
+    }
+    out.push_str(&with_mentions(&text[last..], mentions));
     out
+}
+
+fn url_spans(text: &str) -> Vec<UrlSpan> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < text.len() {
+        if let Some(span) = take_scheme_url(text, i).or_else(|| take_bare_url(text, i)) {
+            i = span.end;
+            out.push(span);
+            continue;
+        }
+        i += text[i..].chars().next().map(char::len_utf8).unwrap_or(1);
+    }
+    out
+}
+
+fn take_scheme_url(text: &str, i: usize) -> Option<UrlSpan> {
+    if i > 0 {
+        let prev = text[..i].chars().next_back()?;
+        if prev.is_ascii_alphanumeric() {
+            return None;
+        }
+    }
+    let rest = &text[i..];
+    let prefix = if ascii_prefix(rest, "https://") {
+        8
+    } else if ascii_prefix(rest, "http://") {
+        7
+    } else {
+        return None;
+    };
+    let mut j = prefix;
+    while j < rest.len() {
+        let c = rest[j..].chars().next()?;
+        if c.is_whitespace() || matches!(c, '<' | '>') {
+            break;
+        }
+        j += c.len_utf8();
+    }
+    if j == prefix {
+        return None;
+    }
+    let trimmed = without_trailing_punct(&rest[..j]);
+    if trimmed.len() == prefix || trimmed.ends_with("://") || trimmed.chars().count() > 2048 {
+        return None;
+    }
+    Some(UrlSpan {
+        start: i,
+        end: i + trimmed.len(),
+        href: trimmed.to_owned(),
+    })
+}
+
+fn take_bare_url(text: &str, i: usize) -> Option<UrlSpan> {
+    if !url_left_ok(text, i) {
+        return None;
+    }
+    let rest = &text[i..];
+    let bytes = rest.as_bytes();
+    if !bytes.first().is_some_and(u8::is_ascii_alphanumeric) {
+        return None;
+    }
+    let mut j = 0;
+    let mut last_dot = None;
+    while j < bytes.len() {
+        if !bytes[j].is_ascii_alphanumeric() {
+            return None;
+        }
+        let mut last_alnum = j;
+        j += 1;
+        while j < bytes.len() && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'-') {
+            if bytes[j].is_ascii_alphanumeric() {
+                last_alnum = j;
+            }
+            j += 1;
+        }
+        j = last_alnum + 1;
+        if j < bytes.len()
+            && bytes[j] == b'.'
+            && bytes.get(j + 1).is_some_and(|b| b.is_ascii_alphanumeric())
+        {
+            last_dot = Some(j);
+            j += 1;
+            continue;
+        }
+        break;
+    }
+    let dot = last_dot?;
+    let tld = &rest[dot + 1..j];
+    if tld.is_empty() || !is_allowed_tld(tld) {
+        return None;
+    }
+    if let Some(next) = rest[j..].chars().next() {
+        if next.is_ascii_alphanumeric() || matches!(next, '_' | '(' | '-') {
+            return None;
+        }
+        if next == '.'
+            && rest[j + 1..]
+                .chars()
+                .next()
+                .is_some_and(|after| after.is_ascii_alphanumeric())
+        {
+            return None;
+        }
+    }
+    if let Some(next) = rest[j..].chars().next() {
+        if matches!(next, '/' | '?' | '#') {
+            j += next.len_utf8();
+            while j < rest.len() {
+                let c = rest[j..].chars().next()?;
+                if c.is_whitespace() || matches!(c, '<' | '>') {
+                    break;
+                }
+                j += c.len_utf8();
+            }
+        }
+    }
+    let trimmed = without_trailing_punct(&rest[..j]);
+    if trimmed.is_empty() || trimmed.chars().count() > 2048 {
+        return None;
+    }
+    Some(UrlSpan {
+        start: i,
+        end: i + trimmed.len(),
+        href: format!("https://{trimmed}"),
+    })
+}
+
+fn url_left_ok(text: &str, i: usize) -> bool {
+    let Some(prev) = text[..i].chars().next_back() else {
+        return true;
+    };
+    !(prev.is_alphabetic() || prev.is_numeric() || matches!(prev, '_' | '.' | '/' | '@' | '-'))
+}
+
+fn is_allowed_tld(tld: &str) -> bool {
+    if TOP_LEVEL_DOMAINS.contains(&tld) {
+        return true;
+    }
+    if !tld.bytes().all(|b| b.is_ascii_uppercase()) {
+        return false;
+    }
+    let lower = tld.to_ascii_lowercase();
+    TOP_LEVEL_DOMAINS.contains(&lower.as_str())
+}
+
+fn without_trailing_punct(url: &str) -> &str {
+    let mut end = url.len();
+    loop {
+        let previous = end;
+        while end > 0 {
+            let ch = url[..end].chars().next_back().unwrap();
+            if matches!(ch, '.' | ',' | ';' | ':' | '!' | '?' | '\'' | '"') {
+                end -= ch.len_utf8();
+            } else {
+                break;
+            }
+        }
+        if end > 0 && url[..end].ends_with(')') {
+            let opens = bytecount(&url.as_bytes()[..end], b'(');
+            let closes = bytecount(&url.as_bytes()[..end], b')');
+            if opens < closes {
+                end -= 1;
+            }
+        }
+        if end > 0 && url[..end].ends_with(']') {
+            let opens = bytecount(&url.as_bytes()[..end], b'[');
+            let closes = bytecount(&url.as_bytes()[..end], b']');
+            if opens < closes {
+                end -= 1;
+            }
+        }
+        if end == previous {
+            break;
+        }
+    }
+    &url[..end]
+}
+
+fn bytecount(bytes: &[u8], needle: u8) -> usize {
+    bytes.iter().filter(|b| **b == needle).count()
+}
+
+fn ascii_prefix(s: &str, prefix: &str) -> bool {
+    s.get(..prefix.len())
+        .is_some_and(|head| head.eq_ignore_ascii_case(prefix))
+}
+
+fn shorten_url_label(url: &str) -> String {
+    let mut rest = url;
+    if ascii_prefix(rest, "https://") {
+        rest = &rest[8..];
+    } else if ascii_prefix(rest, "http://") {
+        rest = &rest[7..];
+    }
+    if ascii_prefix(rest, "www.") {
+        let after = &rest[4..];
+        let host_end = after.find(['/', '?', '#']).unwrap_or(after.len());
+        if after[..host_end].contains('.') {
+            rest = after;
+        }
+    }
+    let host_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let host = &rest[..host_end];
+    let path = &rest[host_end..];
+    let path_chars: Vec<char> = path.chars().collect();
+    if path_chars.len() <= 20 {
+        return rest.to_owned();
+    }
+    let mut kept: String = path_chars.iter().take(19).collect();
+    if kept.ends_with('%') {
+        kept.pop();
+    } else if kept.len() >= 2 {
+        let bytes = kept.as_bytes();
+        let n = bytes.len();
+        if bytes[n - 2] == b'%' && bytes[n - 1].is_ascii_hexdigit() {
+            kept.pop();
+            kept.pop();
+        }
+    }
+    format!("{host}{kept}…")
 }
 
 fn prose_label(markup: &str, sender: Option<&Sender<AppMsg>>) -> gtk::Label {
@@ -648,7 +1168,34 @@ fn prose_label(markup: &str, sender: Option<&Sender<AppMsg>>) -> gtk::Label {
     label
 }
 
-fn code_block(language: Option<&str>, code: &str) -> gtk::Widget {
+fn block_sources(text: &str) -> Vec<String> {
+    segments(text)
+        .into_iter()
+        .filter_map(|segment| match segment {
+            Segment::Block { code, .. } => Some(code),
+            _ => None,
+        })
+        .collect()
+}
+
+#[cfg(test)]
+fn copy_source_for_block(preview: &str, source: &str, index: usize) -> Option<String> {
+    let displayed = segments(preview)
+        .into_iter()
+        .filter_map(|segment| match segment {
+            Segment::Block { code, .. } => Some(code),
+            _ => None,
+        })
+        .nth(index)?;
+    Some(
+        block_sources(source)
+            .into_iter()
+            .nth(index)
+            .unwrap_or(displayed),
+    )
+}
+
+fn code_block(language: Option<&str>, code: &str, source: &str) -> gtk::Widget {
     let wrap = gtk::Box::new(gtk::Orientation::Vertical, 0);
     wrap.add_css_class("dn-code");
     wrap.set_overflow(gtk::Overflow::Hidden);
@@ -666,7 +1213,7 @@ fn code_block(language: Option<&str>, code: &str) -> gtk::Widget {
     copy.set_tooltip_text(Some("Copy"));
     copy.add_css_class("flat");
     copy.add_css_class("dn-code-copy");
-    let copied = code.to_owned();
+    let copied = source.to_owned();
     copy.connect_clicked(move |_| {
         let _ = ui::copy_text(&copied);
     });
@@ -772,6 +1319,45 @@ mod tests {
     }
 
     #[test]
+    fn markdown_keeps_paragraphs_and_inline_styles() {
+        let marked = body_markup("hello\n\n**world** and *now*\n\n~~gone~~");
+        assert!(marked.contains("hello\n\n"));
+        assert!(marked.contains("<b>world</b>"));
+        assert!(marked.contains("<i>now</i>"));
+        assert!(marked.contains("<s>gone</s>"));
+    }
+
+    #[test]
+    fn markdown_lists_show_markers() {
+        let bullets = body_markup("- one\n- two");
+        assert!(bullets.contains("• one"));
+        assert!(bullets.contains("• two"));
+        let numbered = body_markup("1. alpha\n2. beta");
+        assert!(numbered.contains("1. alpha"));
+        assert!(numbered.contains("2. beta"));
+    }
+
+    #[test]
+    fn markdown_links_urls_in_prose() {
+        let marked = body_markup("See https://example.com/docs and nativephp.com.");
+        assert!(marked.contains("href=\"https://example.com/docs\""));
+        assert!(marked.contains("href=\"https://nativephp.com\""));
+        assert!(marked.contains(">example.com/docs</span></a>"));
+        assert!(!marked.contains("href=\"https://nativephp.com.\""));
+    }
+
+    #[test]
+    fn markdown_does_not_slice_through_emoji() {
+        let marked = body_markup("hello 👋 https://dev-null.sh");
+        assert!(marked.contains("👋"));
+        assert!(marked.contains("href=\"https://dev-null.sh\""));
+        assert_eq!(
+            shorten_url_label("👋example.com/docs"),
+            "👋example.com/docs"
+        );
+    }
+
+    #[test]
     fn unclosed_fence_stays_prose() {
         let segs = segments("```php\n$x = 1;");
         assert!(matches!(&segs[..], [Segment::Text(t)] if t.contains("```php")));
@@ -862,13 +1448,19 @@ mod tests {
         let mentions = HashMap::from([("original".into(), id.into())]);
         let marked = with_mentions("Thanks @ORIGINAL and @futuredev.", Some(&mentions));
         assert!(marked.contains("href=\"mention:original\""));
-        assert!(marked.contains(">@ORIGINAL</a>"));
+        assert!(marked.contains("underline=\"none\">@ORIGINAL</span></a>"));
         assert!(marked.contains("@futuredev"));
         assert_eq!(marked.matches("href=\"mention:").count(), 1);
-        assert_eq!(
-            with_mentions("Thanks @original!", None),
-            "Thanks @original!"
-        );
+    }
+
+    #[test]
+    fn links_usernames_when_mentions_were_not_captured() {
+        let marked = with_mentions("Thanks @ORIGINAL and @futuredev.", None);
+        assert!(marked.contains("href=\"mention:original\""));
+        assert!(marked.contains("underline=\"none\">@ORIGINAL</span></a>"));
+        assert!(marked.contains("href=\"mention:futuredev\""));
+        assert!(marked.contains("underline=\"none\">@futuredev</span></a>"));
+        assert_eq!(marked.matches("href=\"mention:").count(), 2);
     }
 
     #[test]
@@ -886,5 +1478,169 @@ mod tests {
         assert!(!marked.contains("mention:override"));
         assert!(!marked.contains("mention:deprecated"));
         assert!(marked.contains("@Override"));
+    }
+
+    #[test]
+    fn short_bodies_have_no_excerpt() {
+        assert_eq!(excerpt("It was DNS."), None);
+        assert_eq!(excerpt(&"a".repeat(280)), None);
+        assert_eq!(excerpt(&"🚀".repeat(280)), None);
+        assert_eq!(
+            excerpt(
+                &(1..=8)
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn cuts_a_long_body_at_the_last_whitespace_that_fits() {
+        assert_eq!(
+            excerpt(&format!("{}overflowing words", "word ".repeat(56))),
+            Some(format!("{}…", "word ".repeat(56).trim_end()))
+        );
+        assert_eq!(
+            excerpt(&format!("{} more", "a".repeat(280))),
+            Some(format!("{}…", "a".repeat(280)))
+        );
+        assert_eq!(
+            excerpt(
+                &(1..=12)
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+            Some(format!(
+                "{}…",
+                (1..=8)
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ))
+        );
+        assert_eq!(
+            excerpt(&"é ".repeat(141)),
+            Some(format!("{}…", "é ".repeat(140).trim_end()))
+        );
+    }
+
+    #[test]
+    fn cuts_a_word_too_long_only_when_nothing_comes_before_it() {
+        assert_eq!(
+            excerpt(&format!("https://example.com/{}", "a".repeat(300))),
+            Some(format!("https://example.com/{}…", "a".repeat(260)))
+        );
+        assert_eq!(
+            excerpt(&format!("`make`{}", "a".repeat(300))),
+            Some("`make`…".into())
+        );
+    }
+
+    #[test]
+    fn ends_the_excerpt_before_code_that_does_not_fit() {
+        assert_eq!(
+            excerpt(&format!(
+                "Look at this:\n```php\n{}```",
+                "echo 1;\n".repeat(40)
+            )),
+            Some("Look at this:…".into())
+        );
+        let block = format!(
+            "One\nTwo\n```\n{}\n```",
+            (1..=10)
+                .map(|n| n.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        assert_eq!(excerpt(&block), Some("One\nTwo…".into()));
+        assert_eq!(
+            excerpt(&format!("{} `composer install`", "a".repeat(270))),
+            Some(format!("{}…", "a".repeat(270)))
+        );
+    }
+
+    #[test]
+    fn keeps_the_first_lines_of_a_code_block_the_body_starts_with() {
+        let echo = |n: u32| format!("echo {n};");
+        let body = format!(
+            "```php\n{}\n```\nNeat.",
+            (1..=12).map(echo).collect::<Vec<_>>().join("\n")
+        );
+        let preview = format!(
+            "```php\n{}\n```\n…",
+            (1..=6).map(echo).collect::<Vec<_>>().join("\n")
+        );
+        assert_eq!(excerpt(&body), Some(preview));
+        assert_eq!(
+            excerpt(&format!(
+                "```\n{}\n{}\n```",
+                "a".repeat(200),
+                "b".repeat(200)
+            )),
+            Some(format!("```\n{}\n```\n…", "a".repeat(200)))
+        );
+        assert_eq!(
+            excerpt(&format!("```\n{}\n```", "a".repeat(400))),
+            Some(format!("```\n{}\n```\n…", "a".repeat(272)))
+        );
+        assert_eq!(
+            excerpt(&format!("````\n{}````", "line\n".repeat(20))),
+            Some(format!("````\n{}\n````\n…", "line\n".repeat(6).trim_end()))
+        );
+        assert_eq!(
+            excerpt(&format!("```\r\n{}```", "line\r\n".repeat(60))),
+            Some(format!("```\n{}\n```\n…", "line\n".repeat(6).trim_end()))
+        );
+        assert_eq!(
+            excerpt(&format!(
+                "```\nshort\n```\nhttps://example.com/{}",
+                "a".repeat(300)
+            )),
+            Some("```\nshort\n```\n…".into())
+        );
+        assert_eq!(
+            excerpt(&format!("  \n```\n{}```", "line\n".repeat(20))),
+            Some(format!(
+                "  \n```\n{}\n```\n…",
+                "line\n".repeat(5).trim_end()
+            ))
+        );
+    }
+
+    #[test]
+    fn cuts_inline_code_short_when_the_body_starts_with_it() {
+        assert_eq!(
+            excerpt(&format!("`{}` done", "a".repeat(300))),
+            Some(format!("`{}`…", "a".repeat(278)))
+        );
+    }
+
+    #[test]
+    fn copies_the_whole_code_block_from_a_folded_preview() {
+        let echo = |n: u32| format!("echo {n};");
+        let inner = (1..=12).map(echo).collect::<Vec<_>>().join("\n");
+        let body = format!("```php\n{inner}\n```\nNeat.");
+        let preview = excerpt(&body).expect("long code folds");
+        let shown = copy_source_for_block(&preview, &preview, 0).expect("preview block");
+        assert!(shown.lines().count() < 12);
+        assert_eq!(
+            copy_source_for_block(&preview, &body, 0).as_deref(),
+            Some(inner.as_str())
+        );
+    }
+
+    #[test]
+    fn splits_the_excerpt_of_a_folded_body_into_the_same_markup() {
+        let short = "run `make`";
+        assert_eq!(excerpt(short), None);
+        let long = format!("run `make` {}", "again ".repeat(60));
+        let preview = excerpt(&long).expect("long body folds");
+        let segs = segments(&preview);
+        assert!(matches!(&segs[0], Segment::Text(t) if t == "run "));
+        assert!(matches!(&segs[1], Segment::Code(c) if c == "make"));
+        assert!(matches!(&segs[2], Segment::Text(t) if t.ends_with('…')));
     }
 }

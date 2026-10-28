@@ -44,7 +44,7 @@ async fn fetch(url: &str) -> Option<glib::Bytes> {
         return None;
     }
     let bytes = response.bytes().await.ok()?;
-    if bytes.is_empty() || bytes.len() > 8 * 1024 * 1024 {
+    if bytes.is_empty() || bytes.len() > 10 * 1024 * 1024 {
         return None;
     }
     let owned = glib::Bytes::from_owned(bytes.to_vec());
@@ -112,23 +112,39 @@ fn fetch_then(url: Option<&str>, done: impl FnOnce(glib::Bytes) + Send + 'static
         return;
     }
     relm4::spawn(async move {
-        if let Some(bytes) = fetch(&url).await {
-            done(bytes);
-        }
+        let Some(bytes) = fetch(&url).await else {
+            return;
+        };
+        // `g_idle_add` uses the calling thread's default context. Tokio workers
+        // never poll one, so the picture would never show. Invoke the GTK loop.
+        glib::MainContext::default().invoke(move || done(bytes));
     });
 }
 
 pub fn bind_avatar(avatar: &adw::Avatar, url: Option<&str>) {
     let weak = glib::SendWeakRef::from(avatar.downgrade());
     fetch_then(url, move |bytes| {
-        glib::idle_add_once(move || {
-            let Some(avatar) = weak.upgrade() else {
-                return;
-            };
-            if let Some(texture) = texture_from_bytes(&bytes) {
-                avatar.set_custom_image(Some(&texture));
-            }
-        });
+        let Some(avatar) = weak.upgrade() else {
+            return;
+        };
+        if let Some(texture) = texture_from_bytes(&bytes) {
+            avatar.set_custom_image(Some(&texture));
+        }
+    });
+}
+
+pub fn fetch_into(url: &str, done: impl FnOnce(Option<glib::Bytes>) + Send + 'static) {
+    let Some(url) = absolute_url(url) else {
+        glib::MainContext::default().invoke(move || done(None));
+        return;
+    };
+    if let Some(bytes) = cached(&url) {
+        done(Some(bytes));
+        return;
+    }
+    relm4::spawn(async move {
+        let bytes = fetch(&url).await;
+        glib::MainContext::default().invoke(move || done(bytes));
     });
 }
 
@@ -144,18 +160,18 @@ pub fn bind_fitted_picture(
     let pic = glib::SendWeakRef::from(picture.downgrade());
     let frame = frame.map(|frame| glib::SendWeakRef::from(frame.downgrade()));
     fetch_then(url, move |bytes| {
-        glib::idle_add_once(move || {
-            let Some(picture) = pic.upgrade() else {
-                return;
-            };
-            let Some(texture) = texture_from_bytes(&bytes) else {
-                return;
-            };
-            picture.set_paintable(Some(&texture));
-            if let Some(frame) = frame.and_then(|frame| frame.upgrade()) {
-                frame.set_ratio(capped_ratio(texture.width(), texture.height()));
-            }
-        });
+        let Some(picture) = pic.upgrade() else {
+            return;
+        };
+        let Some(texture) = texture_from_bytes(&bytes) else {
+            return;
+        };
+        picture.set_paintable(Some(&texture));
+        if let Some(frame) = frame.and_then(|frame| frame.upgrade()) {
+            let ratio = capped_ratio(texture.width(), texture.height());
+            frame.set_ratio(ratio);
+            frame.set_size_request(-1, reserved_height(texture.width(), texture.height()));
+        }
     });
 }
 
@@ -171,5 +187,40 @@ pub fn capped_ratio(width: i32, height: i32) -> f32 {
         MAX_W / MAX_H
     } else {
         width / height
+    }
+}
+
+/// Height the gallery holds before the file arrives, matching the web's 560×512 cap.
+pub fn reserved_height(width: i32, height: i32) -> i32 {
+    const MAX_W: f32 = 560.0;
+    const MAX_H: i32 = 512;
+    ((MAX_W / capped_ratio(width, height)).round() as i32).clamp(72, MAX_H)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn holds_space_at_the_web_cap() {
+        assert_eq!(reserved_height(1450, 894), 345);
+        assert_eq!(reserved_height(1080, 2400), 512);
+        assert_eq!(reserved_height(0, 0), 315);
+    }
+
+    #[test]
+    fn decodes_lossy_webp() {
+        let image = image::RgbImage::from_pixel(4, 3, image::Rgb([32, 64, 128]));
+        let mut webp = Vec::new();
+        image
+            .write_to(
+                &mut std::io::Cursor::new(&mut webp),
+                image::ImageFormat::WebP,
+            )
+            .unwrap();
+        let loaded = image::load_from_memory(&webp).unwrap();
+        assert_eq!(loaded.width(), 4);
+        assert_eq!(loaded.height(), 3);
+        assert!(texture_from_bytes(&glib::Bytes::from_owned(webp)).is_some());
     }
 }
