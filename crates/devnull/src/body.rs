@@ -20,6 +20,7 @@ pub enum Segment {
     Code(String),
     Block {
         language: Option<String>,
+        filename: Option<String>,
         code: String,
     },
 }
@@ -41,7 +42,7 @@ fn body_from(
     sender: Option<&Sender<AppMsg>>,
 ) -> gtk::Widget {
     let sender = sender.cloned();
-    let wrap = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    let wrap = gtk::Box::new(gtk::Orientation::Vertical, 4);
     for class in class.split_whitespace() {
         wrap.add_css_class(class);
     }
@@ -67,14 +68,23 @@ fn body_from(
                 prose.push_str(&escape(&code));
                 prose.push_str(" </span>");
             }
-            Segment::Block { language, code } => {
+            Segment::Block {
+                language,
+                filename,
+                code,
+            } => {
                 flush(&mut prose, &wrap);
                 let copy = copy_blocks
                     .get(block_i)
                     .map(String::as_str)
                     .unwrap_or(&code);
                 block_i += 1;
-                wrap.append(&code_block(language.as_deref(), &code, copy));
+                wrap.append(&code_block(
+                    language.as_deref(),
+                    filename.as_deref(),
+                    &code,
+                    copy,
+                ));
             }
         }
     }
@@ -292,7 +302,7 @@ fn render_markup(text: &str, mentions: Option<&HashMap<String, String>>) -> Stri
                 out.push_str(&escape(&code));
                 out.push_str("</tt>");
             }
-            Segment::Block { language, code } => {
+            Segment::Block { language, code, .. } => {
                 out.push_str(&highlight_pango(&code, language.as_deref()));
             }
         }
@@ -722,12 +732,16 @@ fn take_fence(chars: &[char], i: usize) -> Option<(Segment, usize)> {
             if is_closing_fence(line, ticks) {
                 let body: String = chars[body_start..line_start].iter().collect();
                 let code = body.strip_suffix('\n').unwrap_or(&body).to_owned();
-                let language = header
-                    .split(|c: char| c.is_whitespace())
-                    .find(|word| !word.is_empty())
-                    .map(ToOwned::to_owned);
+                let (language, filename) = fence_language_and_filename(&header);
                 let end = if j < chars.len() { j + 1 } else { j };
-                return Some((Segment::Block { language, code }, end));
+                return Some((
+                    Segment::Block {
+                        language,
+                        filename,
+                        code,
+                    },
+                    end,
+                ));
             }
             if j == chars.len() {
                 break;
@@ -741,12 +755,94 @@ fn take_fence(chars: &[char], i: usize) -> Option<(Segment, usize)> {
     None
 }
 
-fn is_closing_fence(line: &[char], _open_ticks: usize) -> bool {
+fn is_closing_fence(line: &[char], open_ticks: usize) -> bool {
     let mut ticks = 0;
     while ticks < line.len() && line[ticks] == '`' {
         ticks += 1;
     }
-    ticks >= 3 && line[ticks..].iter().all(|c| *c == ' ' || *c == '\t')
+    ticks >= open_ticks && line[ticks..].iter().all(|c| *c == ' ' || *c == '\t')
+}
+
+/// Language is the first space/tab-separated word. `title="…"` labels the block; `filename="…"` is the alias.
+fn fence_language_and_filename(header: &str) -> (Option<String>, Option<String>) {
+    let header = header.trim_matches([' ', '\t']);
+    if header.is_empty() {
+        return (None, None);
+    }
+    let Some(split) = header.find([' ', '\t']) else {
+        return (Some(header.to_owned()), None);
+    };
+    let language = header[..split].to_owned();
+    let meta = header[split..].trim_start_matches([' ', '\t']);
+    (
+        if language.is_empty() {
+            None
+        } else {
+            Some(language)
+        },
+        fence_filename(meta),
+    )
+}
+
+fn fence_filename(meta: &str) -> Option<String> {
+    let mut title = None;
+    let mut filename = None;
+    let mut i = 0;
+    while i < meta.len() {
+        let rest = &meta[i..];
+        let skipped = rest
+            .bytes()
+            .take_while(|b| *b == b' ' || *b == b'\t')
+            .count();
+        i += skipped;
+        if i >= meta.len() {
+            break;
+        }
+        let rest = &meta[i..];
+        if rest.starts_with('{') {
+            match rest.find('}') {
+                Some(end) => {
+                    i += end + 1;
+                    continue;
+                }
+                None => break,
+            }
+        }
+        if let Some((key, value, consumed)) = take_fence_attr(rest) {
+            if !value.is_empty() {
+                if key.eq_ignore_ascii_case("title") {
+                    title.get_or_insert_with(|| value.to_owned());
+                } else if key.eq_ignore_ascii_case("filename") {
+                    filename.get_or_insert_with(|| value.to_owned());
+                }
+            }
+            i += consumed;
+            continue;
+        }
+        i += rest.find([' ', '\t']).unwrap_or(rest.len()).max(1);
+    }
+    title.or(filename)
+}
+
+fn take_fence_attr(s: &str) -> Option<(&str, &str, usize)> {
+    let bytes = s.as_bytes();
+    if !bytes.first()?.is_ascii_alphabetic() {
+        return None;
+    }
+    let mut i = 1;
+    while i < bytes.len()
+        && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] == b'-')
+    {
+        i += 1;
+    }
+    if bytes.get(i).copied() != Some(b'=') || bytes.get(i + 1).copied() != Some(b'"') {
+        return None;
+    }
+    let key = &s[..i];
+    let value_at = i + 2;
+    let close = s.get(value_at..)?.find('"')?;
+    let value = &s[value_at..value_at + close];
+    Some((key, value, value_at + close + 1))
 }
 
 fn take_inline(chars: &[char], i: usize) -> Option<(String, usize)> {
@@ -1195,18 +1291,30 @@ fn copy_source_for_block(preview: &str, source: &str, index: usize) -> Option<St
     )
 }
 
-fn code_block(language: Option<&str>, code: &str, source: &str) -> gtk::Widget {
+fn code_block(
+    language: Option<&str>,
+    filename: Option<&str>,
+    code: &str,
+    source: &str,
+) -> gtk::Widget {
     let wrap = gtk::Box::new(gtk::Orientation::Vertical, 0);
     wrap.add_css_class("dn-code");
     wrap.set_overflow(gtk::Overflow::Hidden);
     wrap.set_hexpand(true);
     let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     header.add_css_class("dn-code-header");
-    let lang = gtk::Label::new(language);
+    let label = filename.filter(|value| !value.is_empty()).or(language);
+    let lang = gtk::Label::new(label);
     lang.add_css_class("dn-mono");
     lang.add_css_class("dn-muted");
     lang.set_xalign(0.0);
     lang.set_hexpand(true);
+    lang.set_ellipsize(pango::EllipsizeMode::End);
+    lang.set_single_line_mode(true);
+    lang.set_width_chars(1);
+    if let Some(filename) = filename.filter(|value| !value.is_empty()) {
+        lang.set_tooltip_text(Some(filename));
+    }
     header.append(&lang);
     let copy = gtk::Button::new();
     copy.set_icon_name("dn-copy-symbolic");
@@ -1313,7 +1421,7 @@ mod tests {
         assert!(matches!(&segs[1], Segment::Code(c) if c == "make"));
         assert!(matches!(&segs[2], Segment::Text(t) if t == " then"));
         assert!(
-            matches!(&segs[3], Segment::Block { language, code } if language.as_deref() == Some("rust") && code == "let x = 1;")
+            matches!(&segs[3], Segment::Block { language, filename, code } if language.as_deref() == Some("rust") && filename.is_none() && code == "let x = 1;")
         );
         assert!(matches!(&segs[4], Segment::Text(t) if t == "done"));
     }
@@ -1361,6 +1469,85 @@ mod tests {
     fn unclosed_fence_stays_prose() {
         let segs = segments("```php\n$x = 1;");
         assert!(matches!(&segs[..], [Segment::Text(t)] if t.contains("```php")));
+    }
+
+    #[test]
+    fn keeps_a_shorter_fence_inside_a_code_block() {
+        let segs = segments("before\n````markdown\n```\nfence inside fence\n```\n````\nafter");
+        assert!(matches!(&segs[0], Segment::Text(t) if t == "before"));
+        assert!(matches!(
+            &segs[1],
+            Segment::Block { language, filename, code }
+                if language.as_deref() == Some("markdown")
+                    && filename.is_none()
+                    && code == "```\nfence inside fence\n```"
+        ));
+        assert!(matches!(&segs[2], Segment::Text(t) if t == "after"));
+        let longer_close = segments("````\ncode\n`````\nprose");
+        assert!(matches!(
+            &longer_close[0],
+            Segment::Block { code, .. } if code == "code"
+        ));
+        assert!(matches!(&longer_close[1], Segment::Text(t) if t == "prose"));
+    }
+
+    #[test]
+    fn labels_a_code_block_from_its_title() {
+        let titled = segments("``` php\ttitle=\"app/Models/User.php\" \t\n$name;\n```");
+        assert!(matches!(
+            &titled[0],
+            Segment::Block { language, filename, code }
+                if language.as_deref() == Some("php")
+                    && filename.as_deref() == Some("app/Models/User.php")
+                    && code == "$name;"
+        ));
+        let alias = segments("```php filename=\"app/Models/User.php\"\n$name;\n```");
+        assert!(matches!(
+            &alias[0],
+            Segment::Block { filename, .. } if filename.as_deref() == Some("app/Models/User.php")
+        ));
+        let both = segments("```php filename=\"a.php\" title=\"b.php\"\n$name;\n```");
+        assert!(matches!(
+            &both[0],
+            Segment::Block { filename, .. } if filename.as_deref() == Some("b.php")
+        ));
+        let empty_title = segments("```php title=\"\" filename=\"a.php\"\n$name;\n```");
+        assert!(matches!(
+            &empty_title[0],
+            Segment::Block { filename, .. } if filename.as_deref() == Some("a.php")
+        ));
+        let first_title = segments("```php title=\"a.php\" title=\"b.php\"\n$name;\n```");
+        assert!(matches!(
+            &first_title[0],
+            Segment::Block { filename, .. } if filename.as_deref() == Some("a.php")
+        ));
+        let spaced = segments("```php title=\"My Model.php\"\n$name;\n```");
+        assert!(matches!(
+            &spaced[0],
+            Segment::Block { filename, .. } if filename.as_deref() == Some("My Model.php")
+        ));
+        let extras =
+            segments("```php {1, 3} showLineNumbers title=\"app.php\" tab=\"Pest 4\"\n$name;\n```");
+        assert!(matches!(
+            &extras[0],
+            Segment::Block { language, filename, .. }
+                if language.as_deref() == Some("php") && filename.as_deref() == Some("app.php")
+        ));
+        for fence in [
+            "```php app/Models/User.php",
+            "```php {1,3}",
+            "```php tab=Pest",
+            "```php title=\"\"",
+            "```php title=\"app.php",
+            "```php caption=\"see title=\"app.php\"",
+            "```php {1 title=\"app.php\"}",
+        ] {
+            let segs = segments(&format!("{fence}\n$name;\n```"));
+            assert!(
+                matches!(&segs[0], Segment::Block { language, filename, .. } if language.as_deref() == Some("php") && filename.is_none()),
+                "{fence}"
+            );
+        }
     }
 
     #[test]

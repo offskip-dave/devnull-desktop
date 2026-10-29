@@ -143,9 +143,22 @@ impl Client {
             .and_then(|body| body.link_preview))
     }
 
-    pub async fn replies(&self, id: &str, cursor: Option<&str>) -> Result<Page<Commit>, ApiError> {
-        self.get(&format!("commits/{id}/replies"), &[("cursor", cursor)])
-            .await
+    pub async fn replies(
+        &self,
+        id: &str,
+        cursor: Option<&str>,
+        limit: Option<u32>,
+    ) -> Result<Page<Commit>, ApiError> {
+        let limit = limit.map(|n| n.to_string());
+        self.get(
+            &format!("commits/{id}/replies"),
+            &[
+                ("cursor", cursor),
+                ("limit", limit.as_deref()),
+                ("newest", Some("1")),
+            ],
+        )
+        .await
     }
 
     pub async fn award_pastel(&self, id: &str) -> Result<PastelAward, ApiError> {

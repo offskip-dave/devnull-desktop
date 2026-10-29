@@ -835,6 +835,9 @@ pub struct Commit {
     pub body: Option<String>,
     #[serde(default)]
     pub parent_id: Option<String>,
+    /// Next commit in an author continuation, when the API sends one.
+    #[serde(default)]
+    pub continuation_id: Option<String>,
     #[serde(default)]
     pub html_url: Option<String>,
     #[serde(default, deserialize_with = "deserialize_opt_datetime")]

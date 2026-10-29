@@ -78,8 +78,11 @@ window.dn-window {
   padding: 8px 0 32px;
 }
 
-.dn-sidebar.collapsed .dn-nav-btn,
-.dn-sidebar.collapsed .dn-user-menu {
+.dn-sidebar.collapsed .dn-nav-btn {
+  padding: 10px;
+}
+
+.dn-sidebar.collapsed menubutton.dn-user-menu > button {
   padding: 10px;
 }
 
@@ -90,7 +93,8 @@ window.dn-window {
   background-color: @dn_surface;
 }
 
-.dn-mobile-header-btn {
+.dn-mobile-header-btn,
+menubutton.dn-mobile-header-btn > button {
   min-width: 36px;
   min-height: 36px;
   padding: 0;
@@ -220,15 +224,17 @@ window.dn-window {
   color: @dn_ink;
 }
 
-.dn-body {
+.dn-body,
+.dn-body label {
   font-size: 15px;
-  line-height: 1.5;
+  line-height: 1.3;
   color: @dn_ink;
 }
 
-.dn-body-focus {
+.dn-body-focus,
+.dn-body-focus label {
   font-size: 17px;
-  line-height: 1.375;
+  line-height: 1.3;
 }
 
 .dn-show-more {
@@ -244,6 +250,37 @@ window.dn-window {
 .dn-show-more:active {
   background: transparent;
   color: @dn_primary;
+}
+
+button.dn-commit-hash {
+  min-height: 0;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+}
+
+button.dn-commit-hash:hover,
+button.dn-commit-hash:active {
+  background: transparent;
+}
+
+button.dn-commit-hash:hover label {
+  color: @dn_ink;
+}
+
+.dn-show-thread {
+  color: @dn_ink_muted;
+  font-size: 13px;
+  min-height: 0;
+  padding: 2px 8px;
+  margin-top: 4px;
+  background: transparent;
+}
+
+.dn-show-thread:hover,
+.dn-show-thread:active {
+  background-color: @dn_wash;
+  color: @dn_ink;
 }
 
 .dn-body-clamp {
@@ -331,6 +368,11 @@ headerbar button image {
 .dn-commit-row {
   background: transparent;
   box-shadow: none;
+  overflow: visible;
+}
+
+.dn-feed list > row.dn-commit {
+  overflow: visible;
 }
 
 .dn-commit-content {
@@ -375,6 +417,7 @@ headerbar button image {
 
 .dn-rail.dn-rail-nested {
   min-width: 0;
+  overflow: visible;
 }
 
 .dn-rail-avatar {
@@ -399,6 +442,11 @@ headerbar button image {
 .dn-composer.dn-log-composer,
 .dn-log-composer {
   padding: 0;
+  border-bottom: none;
+}
+
+.dn-log-composer .dn-composer-body {
+  border-bottom: 1px solid @dn_hairline;
 }
 
 .dn-log-composer-row {
@@ -530,8 +578,31 @@ scrolledwindow.dn-composer-input > * {
   background-color: @dn_surface;
 }
 
-.dn-user-menu {
+menubutton.dn-user-menu {
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border: none;
+  background: none;
+  box-shadow: none;
+}
+
+menubutton.dn-user-menu:hover,
+menubutton.dn-user-menu:checked,
+menubutton.dn-user-menu:active {
+  background-color: transparent;
+}
+
+.dn-sidebar menubutton.dn-user-menu > button {
   padding: 8px 12px;
+  border-radius: 8px;
+  min-height: 0;
+}
+
+.dn-sidebar menubutton.dn-user-menu > button:hover,
+.dn-sidebar menubutton.dn-user-menu > button:checked {
+  background-color: @dn_wash;
+  color: @dn_ink;
 }
 
 .dn-nav-avatar {
@@ -643,7 +714,9 @@ textview.dn-composer-text text {
 
 .dn-placeholder {
   font-size: 17px;
-  padding: 0 0 0 2px;
+  line-height: 1.375;
+  min-height: 0;
+  padding: 6px 0 0 2px;
   margin: 0;
 }
 
@@ -1563,16 +1636,23 @@ button.dn-reaction-pick {
   border-bottom: 1px solid @dn_hairline;
 }
 
+.dn-last-visit {
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
 .dn-last-visit-rule {
-  min-height: 0;
-  border-top: 1px dashed @dn_hairline;
+  min-height: 1px;
+  min-width: 0;
+  background: transparent;
 }
 
 .dn-new-posts,
 button.dn-new-posts {
   background-color: @dn_primary;
   color: @dn_primary_ink;
-  border-radius: 0;
+  border-radius: 8px;
+  font-weight: 500;
   padding: 6px 16px;
   min-height: 0;
   box-shadow: 0 4px 14px -4px rgba(0, 0, 0, 0.35);
@@ -2670,6 +2750,10 @@ window.dark menubutton.dn-outline-btn > button {
   background-color: #111112;
 }
 
+window.dark .dn-log-composer .dn-composer-body {
+  border-color: #2a2a2d;
+}
+
 window.dark .dn-profile-header,
 window.dark .dn-activity,
 window.dark .dn-streaks,
@@ -2790,6 +2874,8 @@ window.dark .dn-feed list > row.dn-commit:hover,
 window.dark .dn-feed list > row.dn-commit.dn-pointed,
 window.dark .dn-inbox-row:hover,
 window.dark .dn-nav-btn:hover,
+window.dark .dn-sidebar menubutton.dn-user-menu > button:hover,
+window.dark .dn-sidebar menubutton.dn-user-menu > button:checked,
 window.dark .dn-tab:hover,
 window.dark .dn-commit-bar-btn:hover {
   background-color: #232326;
@@ -2800,6 +2886,8 @@ window.dark .dn-commit.dn-period-hit {
 }
 
 window.dark .dn-nav-btn:hover,
+window.dark .dn-sidebar menubutton.dn-user-menu > button:hover,
+window.dark .dn-sidebar menubutton.dn-user-menu > button:checked,
 window.dark .dn-tab:hover,
 window.dark .dn-commit-bar-btn:hover {
   color: #ececec;
@@ -2858,6 +2946,16 @@ window.dark .dn-show-more:hover,
 window.dark .dn-show-more:active,
 window.dark link {
   color: #7aa2f7;
+}
+
+window.dark button.dn-commit-hash:hover label {
+  color: #ececec;
+}
+
+window.dark .dn-show-thread:hover,
+window.dark .dn-show-thread:active {
+  background-color: #232326;
+  color: #ececec;
 }
 
 window.dark .dn-quote,
@@ -2976,10 +3074,6 @@ window.dark .dn-aside-icon:hover {
 
 window.dark .dn-aside-icon {
   color: #a1a1a6;
-}
-
-window.dark .dn-last-visit-rule {
-  border-color: #2a2a2d;
 }
 
 window.dark .dn-new-posts {

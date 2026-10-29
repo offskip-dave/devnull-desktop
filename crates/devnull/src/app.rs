@@ -138,6 +138,7 @@ pub enum AppMsg {
     Translate(String),
     ToggleReplies(String),
     NestedRepliesLoaded(String, Result<Page<Commit>, ApiError>),
+    PreviewRepliesLoaded(String, Result<Page<Commit>, ApiError>),
     ToggleNotificationFilter(NotificationFilter),
     ShowAllNotificationFilters,
     OpenCommit(String),
@@ -266,6 +267,8 @@ pub struct App {
     thread_replies: Vec<Commit>,
     nested_replies: HashMap<String, Vec<Commit>>,
     expanded_replies: HashSet<String>,
+    previewed_replies: HashSet<String>,
+    preview_loading: HashSet<String>,
     log_commits: Vec<Commit>,
     profile_commits: Vec<Commit>,
     log_first_seen: Option<String>,
@@ -783,7 +786,6 @@ impl SimpleComponent for App {
 
                             gtk::MenuButton {
                                 add_css_class: "flat",
-                                add_css_class: "dn-nav-btn",
                                 add_css_class: "dn-user-menu",
                                 set_overflow: gtk::Overflow::Visible,
                                 set_always_show_arrow: false,
@@ -1053,7 +1055,7 @@ impl SimpleComponent for App {
                                             set_label: model.composer_placeholder(),
                                             add_css_class: "dn-placeholder",
                                             set_halign: gtk::Align::Start,
-                                            set_valign: gtk::Align::Center,
+                                            set_valign: gtk::Align::Start,
                                             set_can_target: false,
                                             #[watch]
                                             set_visible: model.composer_len == 0 && !model.composer_preview,
@@ -1943,6 +1945,12 @@ impl SimpleComponent for App {
                                         connect_clicked => AppMsg::OpenWeb(format!("{}/about", devnull_api::default_base_url())),
                                     },
                                     gtk::Button {
+                                        set_label: "Apps",
+                                        add_css_class: "flat",
+                                        add_css_class: "dn-aside-link",
+                                        connect_clicked => AppMsg::OpenWeb(format!("{}/apps", devnull_api::default_base_url())),
+                                    },
+                                    gtk::Button {
                                         set_label: "Terms",
                                         add_css_class: "flat",
                                         add_css_class: "dn-aside-link",
@@ -2150,6 +2158,8 @@ impl SimpleComponent for App {
             thread_replies: Vec::new(),
             nested_replies: HashMap::new(),
             expanded_replies: HashSet::new(),
+            previewed_replies: HashSet::new(),
+            preview_loading: HashSet::new(),
             log_commits: Vec::new(),
             profile_commits: Vec::new(),
             log_first_seen: None,
@@ -2418,6 +2428,11 @@ impl SimpleComponent for App {
                 let dest = match key {
                     gtk::gdk::Key::l | gtk::gdk::Key::L => Some(AppMsg::Select(Nav::Latest)),
                     gtk::gdk::Key::e | gtk::gdk::Key::E => Some(AppMsg::Select(Nav::Trending)),
+                    gtk::gdk::Key::n | gtk::gdk::Key::N => Some(AppMsg::Select(Nav::Notifications)),
+                    gtk::gdk::Key::m | gtk::gdk::Key::M => Some(AppMsg::Select(Nav::Remotes)),
+                    gtk::gdk::Key::asterisk | gtk::gdk::Key::KP_Multiply => {
+                        Some(AppMsg::Select(Nav::Starred))
+                    }
                     gtk::gdk::Key::p | gtk::gdk::Key::P => Some(AppMsg::OpenMe),
                     gtk::gdk::Key::s | gtk::gdk::Key::S => Some(AppMsg::OpenSettings),
                     _ => None,
@@ -2441,6 +2456,7 @@ impl SimpleComponent for App {
                 gtk::gdk::Key::r | gtk::gdk::Key::R => Some(AppMsg::ShortcutOnCommit('r')),
                 gtk::gdk::Key::q | gtk::gdk::Key::Q => Some(AppMsg::ShortcutOnCommit('q')),
                 gtk::gdk::Key::o | gtk::gdk::Key::O => Some(AppMsg::ShortcutOnCommit('o')),
+                gtk::gdk::Key::s | gtk::gdk::Key::S => Some(AppMsg::ShortcutOnCommit('s')),
                 gtk::gdk::Key::g | gtk::gdk::Key::G => {
                     awaiting_go.set(true);
                     let awaiting_go = awaiting_go.clone();
@@ -2580,6 +2596,8 @@ impl SimpleComponent for App {
                 self.capture_log_visit();
                 self.expanded_replies.clear();
                 self.nested_replies.clear();
+                self.previewed_replies.clear();
+                self.preview_loading.clear();
                 self.replying_to = None;
                 match nav {
                     Nav::Notifications => {
@@ -3022,6 +3040,7 @@ impl SimpleComponent for App {
                     if self.log_cursor.is_some() && self.near_log_end() {
                         sender.input(AppMsg::LoadMore);
                     }
+                    self.queue_reply_previews(&page.data, &sender);
                 }
             }
             AppMsg::LogLoaded(Err(err)) => {
@@ -3135,20 +3154,19 @@ impl SimpleComponent for App {
                 )));
             }
             AppMsg::ToggleReplies(id) => {
-                if self.visible == "commit"
-                    && self
-                        .open_commit
-                        .as_ref()
-                        .is_some_and(|commit| commit.id == id)
-                {
-                    return;
-                }
                 if self.expanded_replies.contains(&id) {
                     self.expanded_replies.remove(&id);
                     self.refresh_visible_feed(&sender, true);
                     return;
                 }
-                if self.nested_replies.contains_key(&id) {
+                let focused = self
+                    .open_commit
+                    .as_ref()
+                    .is_some_and(|commit| commit.id == id);
+                let have_full = (self.nested_replies.contains_key(&id)
+                    && !self.previewed_replies.contains(&id))
+                    || (focused && !self.thread_replies.is_empty());
+                if have_full {
                     self.expanded_replies.insert(id);
                     self.refresh_visible_feed(&sender, true);
                     return;
@@ -3160,23 +3178,43 @@ impl SimpleComponent for App {
                     relm4::spawn(async move {
                         sender2.input(AppMsg::NestedRepliesLoaded(
                             id.clone(),
-                            client.replies(&id, None).await,
+                            client.replies(&id, None, None).await,
                         ));
                     });
                 }
             }
             AppMsg::NestedRepliesLoaded(id, result) => match result {
                 Ok(page) => {
-                    self.nested_replies.insert(id.clone(), page.data);
+                    self.nested_replies
+                        .insert(id.clone(), newest_replies(page.data));
+                    self.previewed_replies.remove(&id);
+                    self.preview_loading.remove(&id);
                     self.expanded_replies.insert(id);
                     self.refresh_visible_feed(&sender, true);
                 }
                 Err(err) => {
                     self.expanded_replies.remove(&id);
+                    self.preview_loading.remove(&id);
                     self.refresh_visible_feed(&sender, true);
                     self.toast(&err.message);
                 }
             },
+            AppMsg::PreviewRepliesLoaded(id, result) => {
+                self.preview_loading.remove(&id);
+                let Ok(page) = result else {
+                    return;
+                };
+                if self.nested_replies.contains_key(&id) && !self.previewed_replies.contains(&id) {
+                    return;
+                }
+                if page.data.len() == ui::PREVIEW_REPLIES {
+                    self.previewed_replies.insert(id.clone());
+                } else {
+                    self.previewed_replies.remove(&id);
+                }
+                self.nested_replies.insert(id, newest_replies(page.data));
+                self.refresh_visible_feed(&sender, true);
+            }
             AppMsg::ToggleNotificationFilter(kind) => {
                 if !self.notif_types.remove(&kind) {
                     self.notif_types.insert(kind);
@@ -3226,6 +3264,8 @@ impl SimpleComponent for App {
                 self.thread_replies.clear();
                 self.nested_replies.clear();
                 self.expanded_replies.clear();
+                self.previewed_replies.clear();
+                self.preview_loading.clear();
                 if !self.focus_reply {
                     self.reply_composer.buffer().set_text("");
                 }
@@ -3239,7 +3279,7 @@ impl SimpleComponent for App {
                     let related_sender = sender2.clone();
                     relm4::spawn(async move {
                         let commit = client.commit(&id).await;
-                        let replies = client.replies(&id, None).await;
+                        let replies = client.replies(&id, None, None).await;
                         sender2.input(AppMsg::CommitLoaded(commit, replies));
                     });
                     relm4::spawn(async move {
@@ -3263,7 +3303,10 @@ impl SimpleComponent for App {
                         return;
                     }
                 }
-                self.thread_replies = replies.ok().map(|p| p.data).unwrap_or_default();
+                self.thread_replies = replies
+                    .ok()
+                    .map(|page| newest_replies(page.data))
+                    .unwrap_or_default();
                 self.render_thread(&sender);
                 if self.focus_reply {
                     self.focus_reply = false;
@@ -3347,7 +3390,11 @@ impl SimpleComponent for App {
                 }
                 match self.profile_tab {
                     ProfileFeed::Readme => self.load_readme(&sender),
-                    _ => self.render_profile_feed(&sender, false),
+                    _ => {
+                        self.render_profile_feed(&sender, false);
+                        let ids = reply_preview_ids(&self.profile_commits);
+                        self.queue_reply_previews_ids(ids, &sender);
+                    }
                 }
             }
             AppMsg::GoLive => {
@@ -3442,6 +3489,7 @@ impl SimpleComponent for App {
                             sender.input(AppMsg::StartQuote(commit));
                         }
                     }
+                    's' => self.shortcut_star(&id, &sender),
                     _ => {}
                 }
             }
@@ -4570,6 +4618,30 @@ impl App {
         }
     }
 
+    fn queue_reply_previews(&mut self, commits: &[Commit], sender: &ComponentSender<App>) {
+        self.queue_reply_previews_ids(reply_preview_ids(commits), sender);
+    }
+
+    fn queue_reply_previews_ids(&mut self, ids: Vec<String>, sender: &ComponentSender<App>) {
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let limit = ui::PREVIEW_REPLIES as u32;
+        for id in ids {
+            if self.nested_replies.contains_key(&id) || !self.preview_loading.insert(id.clone()) {
+                continue;
+            }
+            let sender2 = sender.clone();
+            let client = client.clone();
+            relm4::spawn(async move {
+                sender2.input(AppMsg::PreviewRepliesLoaded(
+                    id.clone(),
+                    client.replies(&id, None, Some(limit)).await,
+                ));
+            });
+        }
+    }
+
     fn reply_view(&self) -> &gtk::TextView {
         if self.replying_to.is_some() {
             &self.inline_reply
@@ -4916,12 +4988,42 @@ impl App {
             .or_else(|| self.profile_commits.iter().find(|commit| commit.id == id))
             .or_else(|| self.thread_replies.iter().find(|commit| commit.id == id))
             .or_else(|| self.ancestors.iter().find(|commit| commit.id == id))
+            .or_else(|| self.related_commits.iter().find(|commit| commit.id == id))
             .or_else(|| {
                 self.nested_replies
                     .values()
                     .flatten()
                     .find(|commit| commit.id == id)
             })
+    }
+
+    fn shortcut_star(&self, id: &str, sender: &ComponentSender<App>) {
+        let Some(commit) = self.commit_by_id(id).cloned() else {
+            return;
+        };
+        let me = self.user.as_ref().map(|user| user.user.id.as_str());
+        if commit.is_own(me) {
+            return;
+        }
+        if commit
+            .status
+            .as_deref()
+            .is_some_and(|status| status != "approved")
+        {
+            return;
+        }
+        let (starred, count) = self.stars.get(id).copied().unwrap_or((
+            commit.starred.unwrap_or(false),
+            commit.stars_count.unwrap_or(0),
+        ));
+        let next = !starred;
+        let next_count = if next {
+            count + 1
+        } else {
+            count.saturating_sub(1)
+        };
+        ui::paint_focused_star(self.visible_commit_list(), next, next_count);
+        sender.input(AppMsg::ToggleStar(id.to_owned(), next, next_count));
     }
 
     fn copy_permalink(&self, commit: &Commit) {
@@ -6392,6 +6494,19 @@ fn thread_people(thread: &ChatThread, me: Option<&User>) -> HashMap<String, User
         }
     }
     people
+}
+
+fn newest_replies(mut replies: Vec<Commit>) -> Vec<Commit> {
+    ui::sort_replies_newest_first(&mut replies);
+    replies
+}
+
+fn reply_preview_ids(commits: &[Commit]) -> Vec<String> {
+    commits
+        .iter()
+        .filter(|commit| !commit.is_deleted() && commit.replies_count.unwrap_or(0) > 0)
+        .map(|commit| commit.id.clone())
+        .collect()
 }
 
 fn fill_feed_list(list: &gtk::ListBox) {

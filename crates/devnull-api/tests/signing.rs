@@ -102,6 +102,7 @@ fn commit_page_with_youtube_embed_decodes() {
             "short_hash": "5f006bc",
             "body": "watch this",
             "parent_id": null,
+            "continuation_id": "01a16ac5-19d9-71e7-a44e-36b6d5f006bd",
             "html_url": "https://dev-null.sh/@nunomaduro/commits/01a16ac5-19d9-71e7-a44e-36b6d5f006bc",
             "created_at": "2026-10-23T21:57:44Z",
             "stars_count": 32,
@@ -130,6 +131,10 @@ fn commit_page_with_youtube_embed_decodes() {
     }"#;
     let page: devnull_api::Page<devnull_api::Commit> = serde_json::from_str(json).unwrap();
     assert_eq!(page.data[0].author.as_ref().unwrap().username, "nunomaduro");
+    assert_eq!(
+        page.data[0].continuation_id.as_deref(),
+        Some("01a16ac5-19d9-71e7-a44e-36b6d5f006bd")
+    );
     assert!(page.data[0]
         .link_preview
         .as_ref()

@@ -102,6 +102,7 @@ impl CommitChrome {
             incoming: (self.connected && has_previous) || self.dashed_in,
             terminator: self.terminator,
             dashed_in: self.dashed_in,
+            reply_tail: self.spine && self.terminator,
         }
     }
 }
@@ -1003,12 +1004,42 @@ pub fn commit_id_from_row(row: &gtk::ListBoxRow) -> Option<String> {
 }
 
 pub fn focused_commit_id(list: &gtk::ListBox) -> Option<String> {
+    focused_commit_row(list).and_then(|row| commit_id_from_row(&row))
+}
+
+pub fn paint_focused_star(list: &gtk::ListBox, starred: bool, count: i64) {
+    let Some(row) = focused_commit_row(list) else {
+        return;
+    };
+    let Some(star) = find_css_class(row.upcast_ref(), "dn-star")
+        .and_then(|widget| widget.downcast::<gtk::Button>().ok())
+    else {
+        return;
+    };
+    paint_star(&star, starred, count);
+}
+
+fn focused_commit_row(list: &gtk::ListBox) -> Option<gtk::ListBoxRow> {
     let mut index = 0;
     while let Some(row) = list.row_at_index(index) {
         if row.has_css_class("dn-commit") && holds_focus(&row) {
-            return commit_id_from_row(&row);
+            return Some(row);
         }
         index += 1;
+    }
+    None
+}
+
+fn find_css_class(widget: &gtk::Widget, class: &str) -> Option<gtk::Widget> {
+    if widget.has_css_class(class) {
+        return Some(widget.clone());
+    }
+    let mut child = widget.first_child();
+    while let Some(node) = child {
+        if let Some(found) = find_css_class(&node, class) {
+            return Some(found);
+        }
+        child = node.next_sibling();
     }
     None
 }
@@ -1121,12 +1152,38 @@ const REPLY_AVATAR_RING: i32 = 8;
 const REPLY_INDENT: i32 = 38;
 /// Elbow lands on the reply avatar center (web `sm:h-6`).
 const REPLY_NODE_Y: f64 = 24.0;
+/// Incoming sibling stub (web `h-1.5`).
+const REPLY_LINK_TOP: f64 = 6.0;
+/// Outgoing sibling line resumes below the avatar (web `sm:top-[42px]`).
+const REPLY_LINK_RESUME: f64 = 42.0;
 /// Tailwind `rounded-bl-xl`.
 const REPLY_ELBOW_RADIUS: f64 = 12.0;
 /// Web elbow width is `indent - spine - 3px`.
 const REPLY_ELBOW_GAP: f64 = 3.0;
 const MAX_THREAD_DEPTH: u8 = 3;
 const REPLY_DASH: [f64; 2] = [3.0, 3.0];
+/// Newest first-level replies shown under a post before "N replies" is opened.
+pub const PREVIEW_REPLIES: usize = 3;
+
+pub fn sort_replies_newest_first(replies: &mut [Commit]) {
+    replies.sort_by(|a, b| reply_recency(b).cmp(&reply_recency(a)));
+}
+
+fn reply_recency(commit: &Commit) -> (Option<DateTime<Utc>>, &str) {
+    (commit.created_at, commit.id.as_str())
+}
+
+/// `replies` is newest-first. Collapsed posts show the newest (last) N; nested
+/// replies stay hidden until that parent is opened.
+pub fn visible_replies(replies: &[Commit], expanded: bool, depth: u8) -> &[Commit] {
+    if expanded {
+        replies
+    } else if depth == 0 {
+        &replies[..replies.len().min(PREVIEW_REPLIES)]
+    } else {
+        &[]
+    }
+}
 
 pub fn staged_avatar_top() -> i32 {
     RAIL_NODE_Y as i32 - RAIL_AVATAR / 2
@@ -1135,6 +1192,10 @@ const RAIL_AVATAR_TOP: i32 = 10;
 const RAIL_TERMINATOR_PAD: f64 = 20.0;
 const RAIL_DOT_RING: f64 = 7.0;
 const RAIL_DOT_FILL: f64 = 4.0;
+
+fn reply_split_y(height: f64) -> f64 {
+    (height - RAIL_DOT_RING - 4.0).max(RAIL_NODE_Y + RAIL_DOT_RING * 2.0)
+}
 const STAGED_RING: f64 = 22.0;
 
 fn reply_indent(depth: u8) -> i32 {
@@ -1143,6 +1204,10 @@ fn reply_indent(depth: u8) -> i32 {
 
 fn reply_rail_width(depth: u8) -> i32 {
     RAIL_WIDTH + reply_indent(depth)
+}
+
+fn reply_chrome_width(depth: u8) -> i32 {
+    reply_rail_width(depth) + REPLY_AVATAR + REPLY_AVATAR_RING
 }
 
 fn reply_spine_x(depth: u8) -> f64 {
@@ -1161,7 +1226,7 @@ fn reply_content_offset(depth: u8) -> i32 {
     if depth == 0 {
         RAIL_WIDTH
     } else {
-        reply_rail_width(depth) + REPLY_AVATAR + REPLY_AVATAR_RING + 10
+        reply_chrome_width(depth) + 10
     }
 }
 
@@ -1180,22 +1245,22 @@ fn rail_area(
         RailKind::Nested { depth, .. } => Some(depth),
         _ => None,
     };
-    let rail_width = nested_depth.map_or(RAIL_WIDTH, reply_rail_width);
+    let rail_width = nested_depth.map_or(RAIL_WIDTH, reply_chrome_width);
     area.set_content_width(rail_width);
     area.set_size_request(rail_width, -1);
-    area.set_content_height(
-        if matches!(
-            variant,
-            RailKind::Commit {
-                terminator: true,
-                ..
-            }
-        ) {
-            96
-        } else {
-            64
-        },
-    );
+    area.set_content_height(match variant {
+        RailKind::Commit {
+            terminator: true,
+            reply_tail: false,
+            ..
+        } => 96,
+        RailKind::Nested { .. }
+        | RailKind::Commit {
+            reply_tail: true, ..
+        } => -1,
+        RailKind::Day | RailKind::Segment | RailKind::Dashed => 1,
+        _ => 64,
+    });
     area.set_hexpand(false);
     area.set_vexpand(true);
     area.add_css_class("dn-rail");
@@ -1208,8 +1273,8 @@ fn rail_area(
     let (pr, pg, pb) = previous.map(rgb).unwrap_or_else(|| rail_gray(dark));
     let (sr, sg, sb) = surface(dark);
     let (gr, gg, gb) = rail_gray(dark);
-    area.set_draw_func(move |_, cairo, width, height| {
-        let cx = f64::from(width) / 2.0;
+    area.set_draw_func(move |_, cairo, _width, height| {
+        let cx = f64::from(RAIL_WIDTH) / 2.0;
         let h = f64::from(height);
         let node_y = RAIL_NODE_Y;
         match variant {
@@ -1230,6 +1295,7 @@ fn rail_area(
             RailKind::Nested {
                 first,
                 continues,
+                spine,
                 depth,
                 parent,
             } => {
@@ -1238,6 +1304,7 @@ fn rail_area(
                     depth,
                     first,
                     continues,
+                    spine,
                     h,
                     parent.unwrap_or((pr, pg, pb)),
                     (pr, pg, pb),
@@ -1266,6 +1333,7 @@ fn rail_area(
                 incoming,
                 terminator,
                 dashed_in,
+                reply_tail,
             } => {
                 cairo.set_line_width(2.0);
                 if incoming {
@@ -1280,23 +1348,37 @@ fn rail_area(
                     cairo.stroke().ok();
                     cairo.set_dash(&[], 0.0);
                 }
-                let tail_end = if terminator {
-                    h - RAIL_TERMINATOR_PAD
-                } else {
-                    h
-                };
                 cairo.set_source_rgb(cr, cg, cb);
-                cairo.move_to(cx, node_y);
-                cairo.line_to(cx, tail_end);
-                cairo.stroke().ok();
-                if terminator {
+                if reply_tail {
+                    let split_y = reply_split_y(h);
+                    cairo.move_to(cx, node_y);
+                    cairo.line_to(cx, split_y);
+                    cairo.stroke().ok();
                     draw_rail_dot(
                         cairo,
-                        (cx, tail_end),
+                        (cx, split_y),
                         (cr, cg, cb),
                         (sr, sg, sb),
                         DotStyle::Filled,
                     );
+                } else {
+                    let tail_end = if terminator {
+                        h - RAIL_TERMINATOR_PAD
+                    } else {
+                        h
+                    };
+                    cairo.move_to(cx, node_y);
+                    cairo.line_to(cx, tail_end);
+                    cairo.stroke().ok();
+                    if terminator {
+                        draw_rail_dot(
+                            cairo,
+                            (cx, tail_end),
+                            (cr, cg, cb),
+                            (sr, sg, sb),
+                            DotStyle::Filled,
+                        );
+                    }
                 }
                 if !skip_node {
                     draw_rail_dot(
@@ -1355,21 +1437,50 @@ fn commit_rail(
     if !skip_node {
         return area.upcast();
     }
+    fill_rail_overlay(RAIL_WIDTH, area, &rail_avatar_node(author, sender), false).upcast()
+}
+
+fn fill_rail_overlay(
+    width: i32,
+    area: gtk::DrawingArea,
+    node: &impl IsA<gtk::Widget>,
+    nested: bool,
+) -> gtk::Overlay {
     let overlay = gtk::Overlay::new();
     overlay.add_css_class("dn-rail");
+    if nested {
+        overlay.add_css_class("dn-rail-nested");
+    }
     overlay.set_hexpand(false);
     overlay.set_vexpand(true);
+    overlay.set_halign(gtk::Align::Start);
+    overlay.set_valign(gtk::Align::Fill);
     overlay.set_overflow(gtk::Overflow::Visible);
-    overlay.set_size_request(RAIL_WIDTH, -1);
-    overlay.set_child(Some(&area));
-    overlay.add_overlay(&rail_avatar_node(author, sender));
-    overlay.upcast()
+    overlay.set_size_request(width, -1);
+    let sizer = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    sizer.set_size_request(width, 1);
+    sizer.set_hexpand(false);
+    sizer.set_vexpand(true);
+    overlay.set_child(Some(&sizer));
+    area.set_content_width(width);
+    area.set_content_height(-1);
+    area.set_size_request(width, -1);
+    area.set_halign(gtk::Align::Fill);
+    area.set_valign(gtk::Align::Fill);
+    area.set_hexpand(true);
+    area.set_vexpand(true);
+    overlay.add_overlay(&area);
+    overlay.set_clip_overlay(&area, false);
+    overlay.add_overlay(node);
+    overlay.set_clip_overlay(node, false);
+    overlay
 }
 
 fn nested_kind(chrome: CommitChrome, color: &str) -> RailKind {
     RailKind::Nested {
         first: chrome.first,
-        continues: !chrome.last || chrome.spine,
+        continues: !chrome.last,
+        spine: chrome.spine,
         depth: chrome.depth.min(MAX_THREAD_DEPTH),
         parent: Some(chrome.parent_rgb.unwrap_or_else(|| rgb(color))),
     }
@@ -1382,14 +1493,24 @@ fn append_reply_rail(
     depth: u8,
     flattened: bool,
     chrome: CommitChrome,
+    node: &impl IsA<gtk::Widget>,
 ) {
     if flattened {
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         spacer.set_size_request(reply_rail_width(depth), 1);
         outer.append(&spacer);
+        outer.append(node);
         return;
     }
-    outer.append(&rail(color, previous_lane, nested_kind(chrome, color)));
+    node.set_halign(gtk::Align::Start);
+    node.set_valign(gtk::Align::Start);
+    node.set_margin_start(RAIL_WIDTH + reply_indent(depth));
+    outer.append(&fill_rail_overlay(
+        reply_chrome_width(depth),
+        rail(color, previous_lane, nested_kind(chrome, color)),
+        node,
+        true,
+    ));
 }
 
 fn reply_avatar_node(user: Option<&User>, sender: Sender<AppMsg>) -> gtk::Widget {
@@ -1451,12 +1572,13 @@ fn rail_avatar_node(user: Option<&User>, sender: Sender<AppMsg>) -> gtk::Widget 
     btn.upcast()
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum RailKind {
     Commit {
         incoming: bool,
         terminator: bool,
         dashed_in: bool,
+        reply_tail: bool,
     },
     Root,
     Day,
@@ -1465,6 +1587,7 @@ pub enum RailKind {
     Nested {
         first: bool,
         continues: bool,
+        spine: bool,
         depth: u8,
         parent: Option<(f64, f64, f64)>,
     },
@@ -1476,6 +1599,7 @@ fn draw_reply_links(
     depth: u8,
     first: bool,
     continues: bool,
+    spine: bool,
     height: f64,
     parent: (f64, f64, f64),
     previous: (f64, f64, f64),
@@ -1485,36 +1609,42 @@ fn draw_reply_links(
     let avatar_left = reply_avatar_left(depth);
     let avatar_cx = avatar_left + f64::from(REPLY_AVATAR) / 2.0;
     let elbow_end = (avatar_left - REPLY_ELBOW_GAP).max(spine_x + 1.0);
-    let clear = 16.0;
     cairo.set_line_width(1.0);
     cairo.set_dash(&REPLY_DASH, 0.0);
-    cairo.set_line_cap(gtk::cairo::LineCap::Butt);
+    cairo.set_line_cap(gtk::cairo::LineCap::Square);
     cairo.set_line_join(gtk::cairo::LineJoin::Round);
-    if depth > 1 {
+    if depth <= 1 {
         cairo.set_source_rgb(parent.0, parent.1, parent.2);
-        if first {
-            draw_reply_elbow(cairo, spine_x, elbow_end);
+        draw_reply_elbow(cairo, spine_x, elbow_end);
+        if continues {
             cairo.move_to(spine_x, REPLY_NODE_Y);
             cairo.line_to(spine_x, height);
             cairo.stroke().ok();
+        }
+    } else {
+        cairo.set_source_rgb(parent.0, parent.1, parent.2);
+        if first {
+            draw_reply_elbow(cairo, spine_x, elbow_end);
+            if continues {
+                cairo.move_to(spine_x, REPLY_NODE_Y);
+                cairo.line_to(spine_x, height);
+                cairo.stroke().ok();
+            }
         } else {
             cairo.move_to(spine_x, 0.0);
             cairo.line_to(spine_x, height);
             cairo.stroke().ok();
         }
-    } else if first {
-        cairo.set_source_rgb(parent.0, parent.1, parent.2);
-        draw_reply_elbow(cairo, spine_x, elbow_end);
+        if !first {
+            cairo.set_source_rgb(previous.0, previous.1, previous.2);
+            cairo.move_to(avatar_cx, 0.0);
+            cairo.line_to(avatar_cx, REPLY_LINK_TOP);
+            cairo.stroke().ok();
+        }
     }
-    if !first {
-        cairo.set_source_rgb(previous.0, previous.1, previous.2);
-        cairo.move_to(avatar_cx, 0.0);
-        cairo.line_to(avatar_cx, (REPLY_NODE_Y - clear).max(0.0));
-        cairo.stroke().ok();
-    }
-    if continues {
+    if spine || (depth > 1 && continues) {
         cairo.set_source_rgb(lane.0, lane.1, lane.2);
-        cairo.move_to(avatar_cx, REPLY_NODE_Y + clear);
+        cairo.move_to(avatar_cx, REPLY_LINK_RESUME.min(height));
         cairo.line_to(avatar_cx, height);
         cairo.stroke().ok();
     }
@@ -2340,6 +2470,7 @@ pub fn commit_row(
     let row = gtk::ListBoxRow::new();
     row.add_css_class("dn-commit-row");
     row.add_css_class("dn-commit");
+    row.set_overflow(gtk::Overflow::Visible);
     row.set_widget_name(&format!("commit-{}", commit.id));
     row.set_activatable(true);
     row.set_focusable(true);
@@ -2350,11 +2481,19 @@ pub fn commit_row(
     let dark = adw_is_dark();
     let color = lane_color(commit.author.as_ref(), dark);
     let outer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    outer.set_overflow(gtk::Overflow::Visible);
 
     if commit.is_deleted() {
         if depth > 0 {
-            append_reply_rail(&outer, "#d3d7dd", previous_lane, depth, flattened, chrome);
-            outer.append(&reply_tombstone());
+            append_reply_rail(
+                &outer,
+                "#d3d7dd",
+                previous_lane,
+                depth,
+                flattened,
+                chrome,
+                &reply_tombstone(),
+            );
         } else {
             outer.append(&rail(
                 "#d3d7dd",
@@ -2391,12 +2530,19 @@ pub fn commit_row(
     }
 
     if depth > 0 {
-        append_reply_rail(&outer, &color, previous_lane, depth, flattened, chrome);
         let avatar = reply_avatar_node(commit.author.as_ref(), sender.clone());
         if let (Some(enabled), Some(author)) = (ctx.hover.as_ref(), commit.author.as_ref()) {
             bind_author_hover(&avatar, &author.id, enabled.clone());
         }
-        outer.append(&avatar);
+        append_reply_rail(
+            &outer,
+            &color,
+            previous_lane,
+            depth,
+            flattened,
+            chrome,
+            &avatar,
+        );
     } else {
         let rail = commit_rail(
             &color,
@@ -2430,7 +2576,6 @@ pub fn commit_row(
         name.set_xalign(0.0);
         name.add_css_class("dn-name");
         identity.append(&name);
-        identity.append(&handle_dot(Some(author)));
         let handle = gtk::Label::new(Some(&format!("@{}", author.username)));
         handle.add_css_class("dn-handle");
         identity.append(&handle);
@@ -2445,6 +2590,10 @@ pub fn commit_row(
             bind_author_hover(&identity, &author.id, enabled.clone());
         }
         names.append(&identity);
+        let sep = gtk::Label::new(Some("・"));
+        sep.add_css_class("dn-mono");
+        sep.add_css_class("dn-muted");
+        names.append(&sep);
     }
     let time = gtk::Label::new(Some(&relative_time(commit.created_at)));
     time.add_css_class("dn-mono");
@@ -2456,14 +2605,7 @@ pub fn commit_row(
             .as_deref(),
     );
     names.append(&time);
-    if let Some(hash) = &commit.short_hash {
-        let h = gtk::Label::new(Some(hash));
-        h.add_css_class("dn-mono");
-        h.add_css_class("dn-muted");
-        h.set_hexpand(true);
-        h.set_xalign(1.0);
-        names.append(&h);
-    }
+    names.append(&commit_hash_link(commit, sender.clone()));
     header.append(&names);
     content.append(&header);
 
@@ -2514,6 +2656,10 @@ pub fn commit_row(
         ));
     }
 
+    if shows_thread_link(commit, chrome.focused) {
+        content.append(&show_thread_button(commit, sender.clone()));
+    }
+
     content.append(&commit_actions(commit, ctx, chrome.focused));
 
     outer.append(&content);
@@ -2526,6 +2672,59 @@ pub fn commit_row(
     });
     tag_feed_hover(&row, commit, ctx, thread_root);
     row
+}
+
+fn shows_thread_link(commit: &Commit, focused: bool) -> bool {
+    if focused || commit.is_deleted() {
+        return false;
+    }
+    commit
+        .continuation_id
+        .as_deref()
+        .is_some_and(|id| !id.is_empty())
+        || commit.replies_count.unwrap_or(0) > 1
+}
+
+fn commit_hash_link(commit: &Commit, sender: Sender<AppMsg>) -> gtk::Widget {
+    let btn = gtk::Button::new();
+    btn.add_css_class("flat");
+    btn.add_css_class("dn-commit-hash");
+    btn.set_has_frame(false);
+    btn.set_hexpand(true);
+    btn.set_halign(gtk::Align::Fill);
+    pointer(&btn);
+    let hash = gtk::Label::new(Some(&short_hash(commit)));
+    hash.add_css_class("dn-mono");
+    hash.add_css_class("dn-muted");
+    hash.set_xalign(1.0);
+    hash.set_hexpand(true);
+    btn.set_child(Some(&hash));
+    btn.set_tooltip_text(Some(&format!("Commit {}", commit.id)));
+    let id = commit.id.clone();
+    btn.connect_clicked(move |_| {
+        sender.emit(AppMsg::OpenCommit(id.clone()));
+    });
+    btn.upcast()
+}
+
+fn show_thread_button(commit: &Commit, sender: Sender<AppMsg>) -> gtk::Button {
+    let btn = icon_button(
+        Some("dn-list-tree-symbolic"),
+        false,
+        "Show thread",
+        16,
+        &["flat", "dn-show-thread"],
+    );
+    btn.set_halign(gtk::Align::Start);
+    btn.set_has_frame(false);
+    if let Some(author) = &commit.author {
+        btn.set_tooltip_text(Some(&format!("Show thread by @{}", author.username)));
+    }
+    let id = commit.id.clone();
+    btn.connect_clicked(move |_| {
+        sender.emit(AppMsg::OpenCommit(id.clone()));
+    });
+    btn
 }
 
 fn action_btn(icon: &str, label: &str) -> gtk::Button {
@@ -2834,7 +3033,7 @@ fn feed_separator(
     row.set_activatable(false);
     row.add_css_class("dn-commit-row");
     let outer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    outer.append(&rail(
+    let marker_rail = rail(
         previous_lane.unwrap_or("#d3d7dd"),
         previous_lane,
         if dashed {
@@ -2844,8 +3043,15 @@ fn feed_separator(
         } else {
             RailKind::Day
         },
-    ));
-    let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    );
+    if last_visit {
+        marker_rail.set_content_height(1);
+    }
+    outer.append(&marker_rail);
+    let line = gtk::Box::new(
+        gtk::Orientation::Horizontal,
+        if last_visit { 12 } else { 8 },
+    );
     line.add_css_class("dn-day");
     if last_visit {
         line.add_css_class("dn-last-visit");
@@ -2857,15 +3063,37 @@ fn feed_separator(
     ellipsize_label(&text);
     line.append(&text);
     if last_visit {
-        let dash = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        dash.add_css_class("dn-last-visit-rule");
-        dash.set_hexpand(true);
-        dash.set_valign(gtk::Align::Center);
-        line.append(&dash);
+        line.append(&last_visit_rule());
     }
     outer.append(&line);
     row.set_child(Some(&outer));
     row
+}
+
+fn last_visit_rule() -> gtk::DrawingArea {
+    let dash = gtk::DrawingArea::new();
+    dash.add_css_class("dn-last-visit-rule");
+    dash.set_hexpand(true);
+    dash.set_vexpand(false);
+    dash.set_halign(gtk::Align::Fill);
+    dash.set_valign(gtk::Align::Center);
+    dash.set_content_height(1);
+    dash.set_size_request(-1, 1);
+    let (r, g, b) = if adw_is_dark() {
+        rgb("#2a2a2d")
+    } else {
+        rgb("#e1e4e8")
+    };
+    dash.set_draw_func(move |_, cairo, width, height| {
+        let y = f64::from(height).max(1.0) / 2.0;
+        cairo.set_line_width(1.0);
+        cairo.set_dash(&[4.0, 4.0], 0.0);
+        cairo.set_source_rgb(r, g, b);
+        cairo.move_to(0.0, y);
+        cairo.line_to(f64::from(width), y);
+        cairo.stroke().ok();
+    });
+    dash
 }
 
 pub fn last_visit_id(
@@ -2908,12 +3136,7 @@ pub fn paint_new_posts(button: &gtk::Button, count: u32, authors: &[User], away:
         }
         row.append(&stack);
     }
-    let label = if count == 1 {
-        "1 new commit".to_owned()
-    } else {
-        format!("{count} new commits")
-    };
-    row.append(&gtk::Label::new(Some(&label)));
+    row.append(&gtk::Label::new(Some("New commits")));
     button.set_child(Some(&row));
     button.set_tooltip_text(Some("Jump to newest"));
 }
@@ -3431,6 +3654,7 @@ fn notification_rail(item: &Notification, sender: Sender<AppMsg>) -> gtk::Widget
         incoming: false,
         terminator: true,
         dashed_in: false,
+        reply_tail: false,
     };
     if avatar {
         return commit_rail(&color, None, variant, actor, false, sender);
@@ -6130,6 +6354,7 @@ fn lane_preview(me: Option<&CurrentUser>, hex: &str) -> gtk::Box {
             incoming: true,
             terminator: false,
             dashed_in: false,
+            reply_tail: false,
         },
     )));
     let avatar = avatar_widget(me.map(|user| &user.user), 40, false);
@@ -8931,6 +9156,7 @@ pub fn append_commits(
                 *last_day = Some(key);
             }
         }
+        let replies_below = threads.is_some_and(|threads| thread_open(commit, threads, 0));
         list.append(&commit_row(
             commit,
             previous_lane.as_deref(),
@@ -8939,6 +9165,7 @@ pub fn append_commits(
                 connected: ctx.connected,
                 terminator: !ctx.connected,
                 dashed_in: join,
+                spine: replies_below,
                 ..CommitChrome::default()
             },
             Some(commit.id.as_str()),
@@ -9355,23 +9582,24 @@ fn append_open_thread(
     depth: u8,
     thread_root: &str,
 ) {
-    if threads.expanded.contains(&commit.id) {
-        match threads.nested.get(&commit.id) {
-            Some(children) => {
-                if !children.is_empty() {
-                    append_nested(
-                        list,
-                        children,
-                        threads,
-                        ctx,
-                        depth.saturating_add(1),
-                        &lane_color(commit.author.as_ref(), adw_is_dark()),
-                        thread_root,
-                    );
-                }
+    let expanded = threads.expanded.contains(&commit.id);
+    match threads.nested.get(&commit.id) {
+        Some(children) => {
+            let shown = visible_replies(children, expanded, depth);
+            if !shown.is_empty() {
+                append_nested(
+                    list,
+                    shown,
+                    threads,
+                    ctx,
+                    depth.saturating_add(1),
+                    &lane_color(commit.author.as_ref(), adw_is_dark()),
+                    thread_root,
+                );
             }
-            None => list.append(&reply_skeleton_row(depth.saturating_add(1))),
         }
+        None if expanded => list.append(&reply_skeleton_row(depth.saturating_add(1))),
+        None => {}
     }
     if threads.replying_to == Some(commit.id.as_str()) {
         list.append(&reply_composer_row(threads.composer, depth));
@@ -9406,18 +9634,21 @@ pub fn append_thread(
         previous = Some(lane_color(ancestor.author.as_ref(), dark));
         previous_author = ancestor.author.as_ref().map(|a| a.id.clone());
     }
+    let expanded = threads.expanded.contains(&commit.id);
+    let shown = visible_replies(replies, expanded, 0);
     list.append(&commit_row(
         commit,
         previous.as_deref(),
         ctx,
         CommitChrome {
             focused: true,
-            last: replies.is_empty(),
+            last: shown.is_empty(),
             depth: 0,
             connected: true,
             terminator: true,
             dashed_in: false,
             grouped: same_author(previous_author.as_deref(), commit),
+            spine: !shown.is_empty(),
             ..CommitChrome::default()
         },
         None,
@@ -9427,7 +9658,7 @@ pub fn append_thread(
     }
     append_nested(
         list,
-        replies,
+        shown,
         threads,
         ctx,
         1,
@@ -9476,6 +9707,12 @@ fn same_author(previous_id: Option<&str>, commit: &Commit) -> bool {
         .is_some_and(|(id, author)| id == author.id)
 }
 
+fn thread_open(commit: &Commit, threads: &ThreadState<'_>, depth: u8) -> bool {
+    threads.nested.get(&commit.id).is_some_and(|children| {
+        !visible_replies(children, threads.expanded.contains(&commit.id), depth).is_empty()
+    })
+}
+
 fn append_nested(
     list: &gtk::ListBox,
     replies: &[Commit],
@@ -9490,6 +9727,7 @@ fn append_nested(
     let mut previous = Some(parent_lane.to_string());
     for (index, reply) in replies.iter().enumerate() {
         let last = index + 1 == replies.len();
+        let spine = threads.expanded.contains(&reply.id) || thread_open(reply, threads, depth);
         list.append(&commit_row(
             reply,
             previous.as_deref(),
@@ -9503,7 +9741,7 @@ fn append_nested(
                 connected: true,
                 terminator: false,
                 dashed_in: false,
-                spine: threads.expanded.contains(&reply.id),
+                spine,
                 parent_rgb: Some(parent_rgb),
             },
             Some(thread_root),
@@ -9596,6 +9834,7 @@ fn notification_skeleton_row(_has_previous: bool) -> gtk::ListBoxRow {
             incoming: false,
             terminator: true,
             dashed_in: false,
+            reply_tail: false,
         },
     ));
     let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -9699,6 +9938,7 @@ fn loading_rail(has_previous: bool) -> gtk::DrawingArea {
             incoming: has_previous,
             terminator: false,
             dashed_in: false,
+            reply_tail: false,
         },
     )
 }
@@ -9979,6 +10219,7 @@ const SHORTCUTS: &[(&[&str], &str)] = &[
     (&["r"], "Reply to commit"),
     (&["q"], "Quote commit"),
     (&["o"], "Show or hide replies"),
+    (&["s"], "Star or unstar the focused commit"),
     (&["c"], "Write a commit"),
     (&["Ctrl", "K"], "Search developers and commits"),
     (&["/"], "Search developers and commits"),
@@ -9986,6 +10227,9 @@ const SHORTCUTS: &[(&[&str], &str)] = &[
     (&["Ctrl", "Shift", "P"], "Preview (in the composer)"),
     (&["g", "l"], "Go to your log"),
     (&["g", "e"], "Go to trending"),
+    (&["g", "n"], "Go to notifications"),
+    (&["g", "m"], "Go to remotes"),
+    (&["g", "*"], "Go to starred"),
     (&["g", "p"], "Go to your profile"),
     (&["g", "s"], "Go to settings"),
     (&["?"], "Show this list"),
@@ -11178,6 +11422,49 @@ mod last_visit_tests {
 }
 
 #[cfg(test)]
+mod thread_link_tests {
+    use super::*;
+
+    #[test]
+    fn show_thread_on_posts_with_multiple_replies() {
+        let many = Commit {
+            replies_count: Some(2),
+            ..Default::default()
+        };
+        assert!(shows_thread_link(&many, false));
+        assert!(!shows_thread_link(&many, true));
+        let one = Commit {
+            replies_count: Some(1),
+            ..Default::default()
+        };
+        assert!(!shows_thread_link(&one, false));
+    }
+
+    #[test]
+    fn show_thread_on_continuation_posts() {
+        let continuation = Commit {
+            continuation_id: Some("01a18555-f4b6-7354-a83f-fd785fc06cfc".into()),
+            replies_count: Some(0),
+            ..Default::default()
+        };
+        assert!(shows_thread_link(&continuation, false));
+        assert!(!shows_thread_link(&continuation, true));
+    }
+
+    #[test]
+    fn hide_thread_link_on_deleted_posts() {
+        let deleted = Commit {
+            replies_count: Some(4),
+            deleted_at: DateTime::parse_from_rfc3339("2026-10-26T12:00:00Z")
+                .ok()
+                .map(|dt| dt.with_timezone(&Utc)),
+            ..Default::default()
+        };
+        assert!(!shows_thread_link(&deleted, false));
+    }
+}
+
+#[cfg(test)]
 mod badge_tests {
     use super::*;
 
@@ -11574,6 +11861,59 @@ mod reply_rail_tests {
     use super::*;
 
     #[test]
+    fn reply_split_sits_at_the_foot_of_the_post() {
+        let height = 180.0;
+        let y = reply_split_y(height);
+        assert!(y > RAIL_NODE_Y);
+        assert!(y < height);
+        assert!(height - y <= RAIL_DOT_RING + 4.0);
+    }
+
+    #[test]
+    fn first_level_replies_branch_off_the_original_post() {
+        let first = nested_kind(
+            CommitChrome {
+                depth: 1,
+                first: true,
+                last: false,
+                spine: false,
+                ..CommitChrome::default()
+            },
+            "#d9480f",
+        );
+        let later = nested_kind(
+            CommitChrome {
+                depth: 1,
+                first: false,
+                last: true,
+                spine: false,
+                ..CommitChrome::default()
+            },
+            "#d9480f",
+        );
+        match (first, later) {
+            (
+                RailKind::Nested {
+                    first: true,
+                    continues: true,
+                    spine: false,
+                    depth: 1,
+                    ..
+                },
+                RailKind::Nested {
+                    first: false,
+                    continues: false,
+                    spine: false,
+                    depth: 1,
+                    ..
+                },
+            ) => {}
+            other => panic!("first-level replies should elbow off the post, got {other:?}"),
+        }
+        assert_eq!(reply_spine_x(1), f64::from(RAIL_WIDTH) / 2.0);
+    }
+
+    #[test]
     fn root_replies_line_up_with_the_commit_text() {
         assert_eq!(reply_indent(1), 0);
         assert_eq!(reply_spine_x(1), f64::from(RAIL_WIDTH) / 2.0);
@@ -11600,6 +11940,88 @@ mod reply_rail_tests {
         assert_eq!(reply_indent(3), REPLY_INDENT * 2);
         assert_eq!(reply_indent(4), reply_indent(3));
         assert_eq!(reply_indent(8), reply_indent(3));
+    }
+
+    #[test]
+    fn stub_posts_drop_a_dashed_tail_into_replies() {
+        let chrome = CommitChrome {
+            terminator: true,
+            spine: true,
+            ..CommitChrome::default()
+        };
+        match chrome.commit_kind(false) {
+            RailKind::Commit {
+                terminator,
+                reply_tail,
+                ..
+            } => {
+                assert!(terminator);
+                assert!(reply_tail);
+            }
+            other => panic!("expected a commit rail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn connected_posts_keep_a_solid_rail_through_replies() {
+        let chrome = CommitChrome {
+            connected: true,
+            terminator: false,
+            spine: true,
+            ..CommitChrome::default()
+        };
+        match chrome.commit_kind(true) {
+            RailKind::Commit {
+                terminator,
+                reply_tail,
+                ..
+            } => {
+                assert!(!terminator);
+                assert!(!reply_tail);
+            }
+            other => panic!("expected a commit rail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn sibling_links_leave_a_gap_around_the_avatar() {
+        assert!(REPLY_LINK_TOP < REPLY_NODE_Y);
+        assert!(REPLY_LINK_RESUME > REPLY_NODE_Y);
+    }
+
+    #[test]
+    fn nested_rail_covers_the_avatar_column() {
+        for depth in 1..=3 {
+            let width = f64::from(reply_chrome_width(depth));
+            let avatar_right = f64::from(reply_avatar_left(depth)) + f64::from(REPLY_AVATAR);
+            assert!(reply_spine_x(depth) < width);
+            assert!(avatar_right <= width);
+            assert!(f64::from(reply_avatar_left(depth)) + f64::from(REPLY_AVATAR) / 2.0 < width);
+        }
+    }
+
+    #[test]
+    fn first_level_replies_preview_the_newest_three() {
+        let mut replies: Vec<Commit> = (0..8)
+            .map(|i| Commit {
+                id: format!("r{i}"),
+                created_at: DateTime::from_timestamp(i, 0),
+                ..Commit::default()
+            })
+            .collect();
+        sort_replies_newest_first(&mut replies);
+        let shown = visible_replies(&replies, false, 0);
+        assert_eq!(
+            shown
+                .iter()
+                .map(|commit| commit.id.as_str())
+                .collect::<Vec<_>>(),
+            ["r7", "r6", "r5"]
+        );
+        assert_eq!(visible_replies(&replies, true, 0).len(), 8);
+        assert!(visible_replies(&replies, false, 1).is_empty());
+        assert_eq!(visible_replies(&replies, true, 1).len(), 8);
+        assert_eq!(visible_replies(&replies[..2], false, 0).len(), 2);
     }
 }
 
