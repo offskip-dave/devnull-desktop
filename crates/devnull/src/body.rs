@@ -13,6 +13,7 @@ use syntect::util::LinesWithEndings;
 
 use crate::app::AppMsg;
 use crate::ui;
+use devnull_api::Commit;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Segment {
@@ -25,10 +26,32 @@ pub enum Segment {
     },
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CapturedMentions<'a> {
+    pub users: Option<&'a HashMap<String, String>>,
+    pub organizations: Option<&'a HashMap<String, String>>,
+}
+
+impl<'a> CapturedMentions<'a> {
+    pub fn from_commit(commit: &'a Commit) -> Self {
+        Self {
+            users: commit.mentions(),
+            organizations: commit.organization_mentions(),
+        }
+    }
+
+    pub fn users_only(users: Option<&'a HashMap<String, String>>) -> Self {
+        Self {
+            users,
+            organizations: None,
+        }
+    }
+}
+
 pub fn body_widget(
     text: &str,
     class: &str,
-    mentions: Option<&HashMap<String, String>>,
+    mentions: CapturedMentions<'_>,
     sender: Option<&Sender<AppMsg>>,
 ) -> gtk::Widget {
     body_from(text, text, class, mentions, sender)
@@ -38,7 +61,7 @@ fn body_from(
     display: &str,
     source: &str,
     class: &str,
-    mentions: Option<&HashMap<String, String>>,
+    mentions: CapturedMentions<'_>,
     sender: Option<&Sender<AppMsg>>,
 ) -> gtk::Widget {
     let sender = sender.cloned();
@@ -93,7 +116,7 @@ fn body_from(
 }
 
 pub fn body_markup(text: &str) -> String {
-    render_markup(text, None)
+    render_markup(text, CapturedMentions::default())
 }
 
 /// Lists show a longer body folded to its first characters and lines. Keep in sync with
@@ -104,7 +127,7 @@ pub const PREVIEW_LINES: usize = 8;
 pub fn folded_body_widget(
     text: &str,
     class: &str,
-    mentions: Option<&HashMap<String, String>>,
+    mentions: CapturedMentions<'_>,
     sender: Option<&Sender<AppMsg>>,
 ) -> gtk::Widget {
     let Some(preview) = excerpt(text) else {
@@ -122,7 +145,8 @@ pub fn folded_body_widget(
     more.set_can_focus(true);
     let class = class.to_owned();
     let full = text.to_owned();
-    let mentions = mentions.cloned();
+    let users = mentions.users.cloned();
+    let organizations = mentions.organizations.cloned();
     let sender = sender.cloned();
     more.connect_clicked(move |btn| {
         let Some(wrap) = btn.parent().and_then(|p| p.downcast::<gtk::Box>().ok()) else {
@@ -134,7 +158,10 @@ pub fn folded_body_widget(
         wrap.append(&body_widget(
             &full,
             &class,
-            mentions.as_ref(),
+            CapturedMentions {
+                users: users.as_ref(),
+                organizations: organizations.as_ref(),
+            },
             sender.as_ref(),
         ));
     });
@@ -145,7 +172,7 @@ pub fn folded_body_widget(
 pub fn clamped_body_widget(
     text: &str,
     class: &str,
-    mentions: Option<&HashMap<String, String>>,
+    mentions: CapturedMentions<'_>,
     sender: Option<&Sender<AppMsg>>,
     max_height: i32,
 ) -> gtk::Widget {
@@ -282,11 +309,11 @@ fn char_take(text: &str, n: usize) -> String {
     text.chars().take(n).collect()
 }
 
-fn prose_markup(text: &str, mentions: Option<&HashMap<String, String>>) -> String {
+fn prose_markup(text: &str, mentions: CapturedMentions<'_>) -> String {
     markdown_markup(&crate::emoji::emojify(text), mentions)
 }
 
-fn render_markup(text: &str, mentions: Option<&HashMap<String, String>>) -> String {
+fn render_markup(text: &str, mentions: CapturedMentions<'_>) -> String {
     let mut out = String::new();
     for (index, segment) in segments(text).into_iter().enumerate() {
         if index > 0 && !out.ends_with('\n') {
@@ -386,8 +413,9 @@ struct MentionSpan {
     username: String,
 }
 
-fn with_mentions(text: &str, mentions: Option<&HashMap<String, String>>) -> String {
-    let captured = mentions.filter(|map| !map.is_empty());
+fn with_mentions(text: &str, mentions: CapturedMentions<'_>) -> String {
+    let users = mentions.users.filter(|map| !map.is_empty());
+    let organizations = mentions.organizations.filter(|map| !map.is_empty());
     let spans = mention_spans(text);
     if spans.is_empty() {
         return with_wordmarks(&with_colors(&escape(text)));
@@ -399,11 +427,25 @@ fn with_mentions(text: &str, mentions: Option<&HashMap<String, String>>) -> Stri
             &text[last..mention.start],
         ))));
         let token = &text[mention.start..mention.end];
-        let known = match captured {
-            Some(map) => captured_mention(map, &mention.username).is_some(),
-            None => true,
-        };
-        if known {
+        let user = users
+            .and_then(|map| captured_mention(map, &mention.username))
+            .is_some();
+        let organization = organizations
+            .and_then(|map| captured_mention(map, &mention.username))
+            .is_some();
+        if user {
+            out.push_str(&format!(
+                "<a href=\"mention:{}\"><span underline=\"none\">{}</span></a>",
+                escape(&mention.username),
+                escape(token)
+            ));
+        } else if organization {
+            out.push_str(&format!(
+                "<a href=\"org:{}\"><span underline=\"none\">{}</span></a>",
+                escape(&mention.username),
+                escape(token)
+            ));
+        } else if users.is_none() {
             out.push_str(&format!(
                 "<a href=\"mention:{}\"><span underline=\"none\">{}</span></a>",
                 escape(&mention.username),
@@ -494,6 +536,31 @@ fn take_github_username(s: &str) -> Option<&str> {
         n += 1;
     }
     Some(&s[..i])
+}
+
+/// The `@handle` being typed right before the caret, as the web composer finds it.
+pub fn mention_trigger_at(before: &str) -> Option<(usize, String)> {
+    let bytes = before.as_bytes();
+    let at = bytes.iter().rposition(|&b| b == b'@')?;
+    if !mention_left_ok(before, at) {
+        return None;
+    }
+    let query = &before[at + 1..];
+    if query.is_empty() {
+        return Some((before[..at].chars().count(), String::new()));
+    }
+    if !query
+        .bytes()
+        .next()
+        .is_some_and(|b| b.is_ascii_alphanumeric())
+        || query.len() > 39
+        || !query
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    {
+        return None;
+    }
+    Some((before[..at].chars().count(), query.to_owned()))
 }
 
 fn mention_right_ok(text: &str, end: usize) -> bool {
@@ -888,7 +955,7 @@ struct ListState {
     next: u64,
 }
 
-fn markdown_markup(text: &str, mentions: Option<&HashMap<String, String>>) -> String {
+fn markdown_markup(text: &str, mentions: CapturedMentions<'_>) -> String {
     let mut out = String::new();
     let mut in_link = false;
     let mut lists = Vec::new();
@@ -998,7 +1065,7 @@ struct UrlSpan {
     href: String,
 }
 
-fn with_urls(text: &str, mentions: Option<&HashMap<String, String>>) -> String {
+fn with_urls(text: &str, mentions: CapturedMentions<'_>) -> String {
     let spans = url_spans(text);
     if spans.is_empty() {
         return with_mentions(text, mentions);
@@ -1253,7 +1320,9 @@ fn prose_label(markup: &str, sender: Option<&Sender<AppMsg>>) -> gtk::Label {
     if let Some(sender) = sender {
         let sender = sender.clone();
         label.connect_activate_link(move |_, uri| {
-            if let Some(username) = uri.strip_prefix("mention:") {
+            if let Some(handle) = uri.strip_prefix("org:") {
+                sender.emit(AppMsg::OpenOrganization(handle.to_string()));
+            } else if let Some(username) = uri.strip_prefix("mention:") {
                 sender.emit(AppMsg::OpenProfile(username.to_string()));
             } else {
                 sender.emit(AppMsg::OpenWeb(uri.to_string()));
@@ -1633,7 +1702,10 @@ mod tests {
     fn links_captured_mentions_and_keeps_unknown_plain() {
         let id = "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b";
         let mentions = HashMap::from([("original".into(), id.into())]);
-        let marked = with_mentions("Thanks @ORIGINAL and @futuredev.", Some(&mentions));
+        let marked = with_mentions(
+            "Thanks @ORIGINAL and @futuredev.",
+            CapturedMentions::users_only(Some(&mentions)),
+        );
         assert!(marked.contains("href=\"mention:original\""));
         assert!(marked.contains("underline=\"none\">@ORIGINAL</span></a>"));
         assert!(marked.contains("@futuredev"));
@@ -1642,7 +1714,7 @@ mod tests {
 
     #[test]
     fn links_usernames_when_mentions_were_not_captured() {
-        let marked = with_mentions("Thanks @ORIGINAL and @futuredev.", None);
+        let marked = with_mentions("Thanks @ORIGINAL and @futuredev.", CapturedMentions::default());
         assert!(marked.contains("href=\"mention:original\""));
         assert!(marked.contains("underline=\"none\">@ORIGINAL</span></a>"));
         assert!(marked.contains("href=\"mention:futuredev\""));
@@ -1659,12 +1731,41 @@ mod tests {
         ]);
         let marked = render_markup(
             "thanks @taylorotwell for `@Override`\n```java\n@Deprecated\nvoid run() {}\n```",
-            Some(&mentions),
+            CapturedMentions::users_only(Some(&mentions)),
         );
         assert!(marked.contains("href=\"mention:taylorotwell\""));
         assert!(!marked.contains("mention:override"));
         assert!(!marked.contains("mention:deprecated"));
         assert!(marked.contains("@Override"));
+    }
+
+    #[test]
+    fn links_organization_mentions_apart_from_developers() {
+        let users = HashMap::from([("nuno".into(), "u1".into())]);
+        let organizations = HashMap::from([("laravel".into(), "o1".into())]);
+        let marked = with_mentions(
+            "Shipped with @nuno at @Laravel and @unknown.",
+            CapturedMentions {
+                users: Some(&users),
+                organizations: Some(&organizations),
+            },
+        );
+        assert!(marked.contains("href=\"mention:nuno\""));
+        assert!(marked.contains("href=\"org:laravel\""));
+        assert!(marked.contains("@unknown"));
+        assert!(!marked.contains("href=\"mention:unknown\""));
+        assert!(!marked.contains("href=\"org:unknown\""));
+    }
+
+    #[test]
+    fn mention_trigger_reads_the_handle_before_the_caret() {
+        assert_eq!(mention_trigger_at("@"), Some((0, String::new())));
+        assert_eq!(
+            mention_trigger_at("hi @Lara"),
+            Some((3, "Lara".into()))
+        );
+        assert_eq!(mention_trigger_at("email@host"), None);
+        assert_eq!(mention_trigger_at("see laravel"), None);
     }
 
     #[test]

@@ -226,6 +226,10 @@ impl Client {
         self.profile(username).await.map(|p| p.user)
     }
 
+    pub async fn user_preview(&self, username: &str) -> Result<UserPreview, ApiError> {
+        Ok(UserPreview::from_profile(self.profile(username).await?))
+    }
+
     pub async fn profile(&self, username: &str) -> Result<Profile, ApiError> {
         let bytes = self
             .execute(self.signed_request(
@@ -492,6 +496,49 @@ impl Client {
         .await
     }
 
+    pub async fn user_settings(&self) -> Result<UserSettings, ApiError> {
+        self.get("me/settings", &[]).await
+    }
+
+    pub async fn set_automatic_translation(&self, enabled: bool) -> Result<CurrentUser, ApiError> {
+        self.send_json(
+            Method::PUT,
+            "me/automatic-translation",
+            &[],
+            &serde_json::json!({ "enabled": enabled }),
+        )
+        .await
+    }
+
+    pub async fn set_translation_language(
+        &self,
+        language: Option<&str>,
+    ) -> Result<CurrentUser, ApiError> {
+        self.send_json(
+            Method::PUT,
+            "me/translation-language",
+            &[],
+            &serde_json::json!({ "translation_language": language }),
+        )
+        .await
+    }
+
+    pub async fn translate_commit(
+        &self,
+        id: &str,
+        language: &str,
+    ) -> Result<CommitTranslation, ApiError> {
+        let value: serde_json::Value = self
+            .send_json(
+                Method::POST,
+                &format!("commits/{id}/translation"),
+                &[],
+                &serde_json::json!({ "language": language }),
+            )
+            .await?;
+        Ok(CommitTranslation::from_value(value))
+    }
+
     pub async fn set_timezone(&self, timezone: Option<&str>) -> Result<CurrentUser, ApiError> {
         let payload = match timezone {
             Some(name) => serde_json::json!({ "timezone": name }),
@@ -555,6 +602,53 @@ impl Client {
         let value: serde_json::Value =
             serde_json::from_slice(&bytes).map_err(|_| ApiError::decode())?;
         Ok(User::list_from_value(value))
+    }
+
+    pub async fn organization(&self, handle: &str) -> Result<Organization, ApiError> {
+        let bytes = self
+            .execute(self.signed_request(
+                Method::GET,
+                &format!("organizations/{handle}"),
+                &[],
+                None,
+                JSON_NAMESPACE,
+            )?)
+            .await?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|_| ApiError::decode())?;
+        Organization::from_value(value).map_err(|_| ApiError::decode())
+    }
+
+    pub async fn organization_mentions(
+        &self,
+        handle: &str,
+        cursor: Option<&str>,
+    ) -> Result<Page<Commit>, ApiError> {
+        self.get(
+            &format!("organizations/{handle}/mentions"),
+            &[("cursor", cursor)],
+        )
+        .await
+    }
+
+    pub async fn mention_suggestions(
+        &self,
+        q: &str,
+        reply: Option<&str>,
+        quote: Option<&str>,
+    ) -> Result<MentionSuggestions, ApiError> {
+        let bytes = self
+            .execute(self.signed_request(
+                Method::GET,
+                "search/mentions",
+                &[("q", Some(q)), ("reply", reply), ("quote", quote)],
+                None,
+                JSON_NAMESPACE,
+            )?)
+            .await?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|_| ApiError::decode())?;
+        Ok(MentionSuggestions::from_value(value))
     }
 
     pub async fn user_commits(
@@ -731,6 +825,37 @@ impl Client {
             .await
     }
 
+    pub async fn set_message_reaction(
+        &self,
+        id: i64,
+        emoji: &str,
+        add: bool,
+    ) -> Result<Vec<MessageReaction>, ApiError> {
+        let path = format!("remotes/messages/{id}/reactions");
+        let method = if add { Method::POST } else { Method::DELETE };
+        let value: serde_json::Value = self
+            .send_json(method, &path, &[], &serde_json::json!({ "emoji": emoji }))
+            .await?;
+        Ok(MessageReaction::from_list(&value))
+    }
+
+    pub async fn set_message_pinned(
+        &self,
+        id: i64,
+        pinned: bool,
+    ) -> Result<Vec<Message>, ApiError> {
+        let path = format!("remotes/messages/{id}/pin");
+        let method = if pinned { Method::PUT } else { Method::DELETE };
+        let bytes = self
+            .execute(self.signed_request(method, &path, &[], None, JSON_NAMESPACE)?)
+            .await?;
+        if bytes.is_empty() {
+            return Ok(Vec::new());
+        }
+        let value: serde_json::Value = decode_maybe_wrapped(bytes)?;
+        Ok(ChatThread::pinned_from_value(&value))
+    }
+
     pub async fn mark_read(&self, reference: &ThreadRef, through: i64) -> Result<(), ApiError> {
         let path = match reference {
             ThreadRef::Direct { username } => format!("remotes/@{username}/read"),
@@ -742,6 +867,35 @@ impl Client {
             &serde_json::json!({ "through": through }),
         )
         .await
+    }
+
+    pub async fn set_remote_muted(
+        &self,
+        reference: &ThreadRef,
+        muted: bool,
+    ) -> Result<Option<chrono::DateTime<chrono::Utc>>, ApiError> {
+        let path = match reference {
+            ThreadRef::Direct { username } => format!("remotes/@{username}/mute"),
+            ThreadRef::Org { id, .. } => format!("remotes/orgs/{id}/mute"),
+        };
+        let duration = if muted { "forever" } else { "off" };
+        let value: serde_json::Value = self
+            .send_json(
+                Method::PUT,
+                &path,
+                &[],
+                &serde_json::json!({ "duration": duration }),
+            )
+            .await?;
+        let root = value
+            .get("data")
+            .filter(|data| data.is_object())
+            .unwrap_or(&value);
+        Ok(["muted_until_at", "mutedUntilAt"].iter().find_map(|key| {
+            root.get(*key)
+                .and_then(serde_json::Value::as_str)
+                .and_then(crate::date::parse_date)
+        }))
     }
 
     pub async fn set_archived(

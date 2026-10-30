@@ -3,9 +3,10 @@ use chrono::{
 };
 use devnull_api::{
     event_line, Achievements, Activity, ActivityCell, ApiError, Badge, ChatThread, Client, Commit,
-    CommitImage, ConversationSummary, CurrentUser, Embed, Lane, LinkPreview, Message, MessageImage,
-    Notification, Profile, RemoteCandidate, RemotesSettings, SearchResults, Streaks, ThreadRef,
-    Upload, User,
+    CommitImage, CommitTranslation, ConversationSummary, CurrentUser, Embed, Lane, LinkPreview,
+    MentionSuggestions, Message, MessageImage, MessageReaction, Notification, Organization,
+    Profile, RemoteCandidate, RemotesSettings, SearchResults, Streaks, ThreadRef,
+    TranslationLanguage, Upload, User, UserPreview,
 };
 use relm4::adw;
 use relm4::adw::prelude::{AdwDialogExt, AlertDialogExt};
@@ -36,6 +37,7 @@ pub struct FeedCtx {
     pub sender: Sender<AppMsg>,
     pub pasteis_mode: bool,
     pub me_id: Option<String>,
+    pub me_username: Option<String>,
     pub stars: HashMap<String, (bool, i64)>,
     pub pasteis: HashMap<String, i64>,
     pub expanded: HashSet<String>,
@@ -45,6 +47,16 @@ pub struct FeedCtx {
     pub join_staged: bool,
     /// Mouse hover dims other commits. `None` on the focused commit page.
     pub hover: Option<Rc<Cell<bool>>>,
+    pub automatic_translation: bool,
+    pub translations: HashMap<String, CommitTranslation>,
+    pub showing_original: HashSet<String>,
+    pub requested_translation: HashSet<String>,
+    pub translation_loading: HashSet<String>,
+    /// Insert Who to follow after this commit index when the aside is hidden.
+    pub who_to_follow_after: Option<usize>,
+    pub suggested: Vec<User>,
+    pub following: HashSet<String>,
+    pub user_card: Option<Rc<UserCard>>,
 }
 
 #[derive(Clone, Default)]
@@ -331,6 +343,554 @@ fn bind_author_hover(widget: &impl IsA<gtk::Widget>, author_id: &str, enabled: R
         });
     }
     widget.add_controller(motion);
+}
+
+const USER_CARD_OPEN_MS: u64 = 450;
+const USER_CARD_CLOSE_MS: u64 = 200;
+
+pub struct UserCard {
+    popover: gtk::Popover,
+    body: gtk::Box,
+    show: Rc<RefCell<Option<glib::SourceId>>>,
+    hide: Rc<RefCell<Option<glib::SourceId>>>,
+    current: Rc<RefCell<Option<String>>>,
+    pointer: Rc<Cell<bool>>,
+    menu_open: Rc<Cell<bool>>,
+    cache: Rc<RefCell<HashMap<String, UserPreview>>>,
+}
+
+impl UserCard {
+    pub fn new() -> Rc<Self> {
+        let popover = gtk::Popover::new();
+        popover.add_css_class("dn-user-card");
+        popover.set_autohide(false);
+        popover.set_has_arrow(false);
+        popover.set_position(gtk::PositionType::Bottom);
+        popover.set_size_request(304, -1);
+        popover.set_can_focus(false);
+        let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        body.add_css_class("dn-user-card-body");
+        popover.set_child(Some(&body));
+        let card = Rc::new(Self {
+            popover: popover.clone(),
+            body,
+            show: Rc::new(RefCell::new(None)),
+            hide: Rc::new(RefCell::new(None)),
+            current: Rc::new(RefCell::new(None)),
+            pointer: Rc::new(Cell::new(false)),
+            menu_open: Rc::new(Cell::new(false)),
+            cache: Rc::new(RefCell::new(HashMap::new())),
+        });
+        let motion = gtk::EventControllerMotion::new();
+        motion.connect_enter({
+            let card = card.clone();
+            move |controller, _, _| {
+                if is_mouse_hover(controller) {
+                    card.pointer.set(true);
+                    card.cancel_hide();
+                }
+            }
+        });
+        motion.connect_leave({
+            let card = card.clone();
+            move |_| {
+                card.pointer.set(false);
+                card.schedule_hide();
+            }
+        });
+        popover.add_controller(motion);
+        card
+    }
+
+    pub fn bind(
+        self: &Rc<Self>,
+        widget: &impl IsA<gtk::Widget>,
+        user: &User,
+        sender: Sender<AppMsg>,
+        me_id: Option<String>,
+    ) {
+        if user.username.trim().is_empty() {
+            return;
+        }
+        let widget = widget.upcast_ref::<gtk::Widget>().clone();
+        let user = user.clone();
+        let motion = gtk::EventControllerMotion::new();
+        motion.connect_enter({
+            let card = self.clone();
+            let widget = widget.clone();
+            let user = user.clone();
+            let sender = sender.clone();
+            let me_id = me_id.clone();
+            move |controller, _, _| {
+                if !is_mouse_hover(controller) {
+                    return;
+                }
+                card.pointer.set(true);
+                if card.cached(&user.username).is_none() {
+                    sender.emit(AppMsg::PreviewUser(user.username.clone()));
+                }
+                card.schedule_show(
+                    widget.clone(),
+                    user.clone(),
+                    sender.clone(),
+                    me_id.clone(),
+                );
+            }
+        });
+        motion.connect_leave({
+            let card = self.clone();
+            move |_| {
+                card.pointer.set(false);
+                card.schedule_hide();
+            }
+        });
+        widget.add_controller(motion);
+    }
+
+    pub fn insert(&self, preview: UserPreview) {
+        self.cache
+            .borrow_mut()
+            .insert(UserPreview::key(preview.username()), preview);
+    }
+
+    pub fn cached(&self, username: &str) -> Option<UserPreview> {
+        self.cache.borrow().get(&UserPreview::key(username)).cloned()
+    }
+
+    pub fn patch(&self, username: &str, patch: impl FnOnce(&mut UserPreview)) {
+        if let Some(preview) = self
+            .cache
+            .borrow_mut()
+            .get_mut(&UserPreview::key(username))
+        {
+            patch(preview);
+        }
+    }
+
+    pub fn showing(&self) -> Option<String> {
+        self.current.borrow().clone()
+    }
+
+    pub fn apply(
+        &self,
+        preview: &UserPreview,
+        me_id: Option<&str>,
+        sender: &Sender<AppMsg>,
+    ) {
+        if self.showing().as_deref() != Some(preview.username())
+            && self
+                .showing()
+                .as_deref()
+                .is_none_or(|name| !name.eq_ignore_ascii_case(preview.username()))
+        {
+            return;
+        }
+        self.fill(&preview.user, Some(preview), me_id, sender);
+    }
+
+    pub fn refresh(&self, me_id: Option<&str>, sender: &Sender<AppMsg>) {
+        let Some(username) = self.showing() else {
+            return;
+        };
+        let Some(preview) = self.cached(&username) else {
+            return;
+        };
+        self.fill(&preview.user, Some(&preview), me_id, sender);
+    }
+
+    pub fn dismiss(&self) {
+        Self::cancel(&self.show);
+        Self::cancel(&self.hide);
+        self.current.replace(None);
+        if self.popover.is_visible() {
+            self.popover.popdown();
+        }
+        if self.popover.parent().is_some() {
+            self.popover.unparent();
+        }
+    }
+
+    pub fn clear(&self) {
+        self.dismiss();
+        self.cache.borrow_mut().clear();
+    }
+
+    fn schedule_show(
+        self: &Rc<Self>,
+        over: gtk::Widget,
+        user: User,
+        sender: Sender<AppMsg>,
+        me_id: Option<String>,
+    ) {
+        self.cancel_hide();
+        if self
+            .showing()
+            .is_some_and(|name| name.eq_ignore_ascii_case(&user.username))
+            && self.popover.is_visible()
+        {
+            return;
+        }
+        Self::cancel(&self.show);
+        let card = self.clone();
+        *self.show.borrow_mut() = Some(glib::timeout_add_local_once(
+            Duration::from_millis(USER_CARD_OPEN_MS),
+            move || {
+                card.show.borrow_mut().take();
+                card.present(&over, &user, me_id.as_deref(), &sender);
+            },
+        ));
+    }
+
+    fn schedule_hide(&self) {
+        Self::cancel(&self.show);
+        if self.menu_open.get() || self.pointer.get() || !self.popover.is_visible() {
+            return;
+        }
+        Self::cancel(&self.hide);
+        let popover = self.popover.clone();
+        let current = self.current.clone();
+        let hide = self.hide.clone();
+        *self.hide.borrow_mut() = Some(glib::timeout_add_local_once(
+            Duration::from_millis(USER_CARD_CLOSE_MS),
+            move || {
+                hide.borrow_mut().take();
+                current.replace(None);
+                popover.popdown();
+                if popover.parent().is_some() {
+                    popover.unparent();
+                }
+            },
+        ));
+    }
+
+    fn cancel_hide(&self) {
+        Self::cancel(&self.hide);
+    }
+
+    fn cancel(slot: &RefCell<Option<glib::SourceId>>) {
+        if let Some(id) = slot.borrow_mut().take() {
+            id.remove();
+        }
+    }
+
+    fn present(&self, over: &gtk::Widget, user: &User, me_id: Option<&str>, sender: &Sender<AppMsg>) {
+        if let Some(parent) = self.popover.parent() {
+            if parent != *over {
+                self.popover.unparent();
+                self.popover.set_parent(over);
+            }
+        } else {
+            self.popover.set_parent(over);
+        }
+        *self.current.borrow_mut() = Some(user.username.clone());
+        let preview = self.cached(&user.username);
+        self.fill(user, preview.as_ref(), me_id, sender);
+        self.popover.popup();
+    }
+
+    fn fill(
+        &self,
+        user: &User,
+        preview: Option<&UserPreview>,
+        me_id: Option<&str>,
+        sender: &Sender<AppMsg>,
+    ) {
+        while let Some(child) = self.body.first_child() {
+            self.body.remove(&child);
+        }
+        let own = me_id.is_some_and(|id| id == user.id);
+        let unavailable = preview.is_some_and(|preview| preview.is_unavailable);
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        header.set_valign(gtk::Align::Start);
+        let avatar = gtk::Button::new();
+        avatar.add_css_class("flat");
+        avatar.add_css_class("dn-user-card-avatar");
+        pointer(&avatar);
+        avatar.set_child(Some(&avatar_widget(Some(user), 56, true)));
+        let username = user.username.clone();
+        let profile_sender = sender.clone();
+        let card_dismiss = self.popover.clone();
+        avatar.connect_clicked(move |_| {
+            card_dismiss.popdown();
+            profile_sender.emit(AppMsg::OpenProfile(username.clone()));
+        });
+        header.append(&avatar);
+        if !own {
+            let actions = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            actions.set_halign(gtk::Align::End);
+            actions.set_hexpand(true);
+            actions.set_valign(gtk::Align::Start);
+            if let Some(preview) = preview.filter(|preview| !preview.is_unavailable) {
+                actions.append(&user_card_safety_menu(preview, sender.clone(), self.menu_open.clone()));
+                actions.append(&user_card_follow_button(preview, sender.clone()));
+            }
+            header.append(&actions);
+        }
+        self.body.append(&header);
+
+        let name = gtk::Label::new(Some(user.display_name()));
+        name.add_css_class("dn-user-card-name");
+        name.set_xalign(0.0);
+        name.set_wrap(true);
+        name.set_max_width_chars(28);
+        self.body.append(&name);
+
+        let handle_row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        handle_row.set_valign(gtk::Align::Center);
+        let handle = gtk::Label::new(Some(&format!("@{}", user.username)));
+        handle.add_css_class("dn-handle");
+        handle.set_xalign(0.0);
+        handle.set_ellipsize(pango::EllipsizeMode::End);
+        handle_row.append(&handle);
+        if preview.is_some_and(|preview| preview.follows_you) {
+            let chip = gtk::Label::new(Some("Follows you"));
+            chip.add_css_class("dn-profile-chip");
+            handle_row.append(&chip);
+        }
+        if preview.is_some_and(|preview| preview.is_muting) {
+            let chip = gtk::Label::new(Some("Muted"));
+            chip.add_css_class("dn-profile-chip");
+            handle_row.append(&chip);
+        }
+        self.body.append(&handle_row);
+
+        if unavailable {
+            let message = gtk::Label::new(Some(&if preview.is_some_and(|preview| preview.is_blocking) {
+                format!("You blocked @{}.", user.username)
+            } else {
+                "This profile is unavailable.".into()
+            }));
+            message.add_css_class("dn-muted");
+            message.set_xalign(0.0);
+            message.set_wrap(true);
+            self.body.append(&message);
+            return;
+        }
+
+        if let Some(bio) = user.bio.as_deref().filter(|bio| !bio.is_empty()) {
+            let line = gtk::Label::new(Some(bio));
+            line.add_css_class("dn-user-card-bio");
+            line.set_xalign(0.0);
+            line.set_wrap(true);
+            line.set_lines(4);
+            line.set_ellipsize(pango::EllipsizeMode::End);
+            self.body.append(&line);
+        }
+
+        if let Some(preview) = preview {
+            self.body.append(&user_card_counts(&preview.user, sender.clone()));
+        }
+
+        if let Some(url) = user.live_url() {
+            self.body.append(&user_card_live(user, url, sender.clone()));
+        }
+    }
+}
+
+pub fn preview_follow_label(following: bool, follows_you: bool) -> &'static str {
+    if following {
+        "Following"
+    } else if follows_you {
+        "Follow back"
+    } else {
+        "Follow"
+    }
+}
+
+fn bind_user_preview(widget: &impl IsA<gtk::Widget>, user: &User, ctx: &FeedCtx) {
+    if let Some(card) = &ctx.user_card {
+        card.bind(widget, user, ctx.sender.clone(), ctx.me_id.clone());
+    }
+}
+
+fn user_card_follow_button(preview: &UserPreview, sender: Sender<AppMsg>) -> gtk::Button {
+    let following = preview.is_following;
+    let label = preview_follow_label(following, preview.follows_you);
+    let follow = gtk::Button::with_label(label);
+    follow.add_css_class("dn-follow-btn");
+    follow.add_css_class("dn-user-card-follow");
+    pointer(&follow);
+    if following {
+        follow.add_css_class("dn-outline-btn");
+        follow.add_css_class("dn-unfollow");
+        let button = follow.clone();
+        let hover = gtk::EventControllerMotion::new();
+        hover.connect_enter(move |_, _, _| button.set_label("Unfollow"));
+        let button = follow.clone();
+        let restore = label.to_owned();
+        hover.connect_leave(move |_| button.set_label(&restore));
+        follow.add_controller(hover);
+    } else {
+        follow.add_css_class("suggested-action");
+    }
+    let username = preview.user.username.clone();
+    follow.connect_clicked(move |_| {
+        sender.emit(AppMsg::FollowUser(username.clone(), !following));
+    });
+    follow
+}
+
+fn user_card_safety_menu(
+    preview: &UserPreview,
+    sender: Sender<AppMsg>,
+    menu_open: Rc<Cell<bool>>,
+) -> gtk::MenuButton {
+    let more = gtk::MenuButton::new();
+    more.add_css_class("flat");
+    more.add_css_class("dn-icon-btn");
+    more.set_icon_name("dn-ellipsis-symbolic");
+    more.set_tooltip_text(Some("More"));
+    more.set_always_show_arrow(false);
+    more.set_has_frame(false);
+    pointer(&more);
+    let popover = gtk::Popover::new();
+    popover.set_has_arrow(false);
+    popover.set_position(gtk::PositionType::Bottom);
+    let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    list.add_css_class("dn-user-card-menu");
+    let username = preview.user.username.clone();
+    let mute_label = if preview.is_muting {
+        format!("Unmute @{}", preview.user.username)
+    } else {
+        format!("Mute @{}", preview.user.username)
+    };
+    let mute = gtk::Button::new();
+    mute.add_css_class("flat");
+    mute.add_css_class("dn-aside-menu-item");
+    let mute_row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    mute_row.append(&named_icon(
+        if preview.is_muting {
+            "dn-volume-x-symbolic"
+        } else {
+            "dn-volume-x-symbolic"
+        },
+        16,
+    ));
+    let mute_copy = gtk::Label::new(Some(&mute_label));
+    mute_copy.set_xalign(0.0);
+    mute_row.append(&mute_copy);
+    mute.set_child(Some(&mute_row));
+    pointer(&mute);
+    let muting = preview.is_muting;
+    let mute_name = username.clone();
+    let mute_sender = sender.clone();
+    let mute_pop = popover.clone();
+    mute.connect_clicked(move |_| {
+        mute_pop.popdown();
+        if muting {
+            mute_sender.emit(AppMsg::Unmute(mute_name.clone()));
+        } else {
+            mute_sender.emit(AppMsg::MuteUser(mute_name.clone()));
+        }
+    });
+    list.append(&mute);
+    let blocking = preview.is_blocking;
+    let block_label = if blocking {
+        format!("Unblock @{}", preview.user.username)
+    } else {
+        format!("Block @{}", preview.user.username)
+    };
+    let block = gtk::Button::new();
+    block.add_css_class("flat");
+    block.add_css_class("dn-aside-menu-item");
+    let block_row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    block_row.append(&named_icon("dn-ban-symbolic", 16));
+    let block_copy = gtk::Label::new(Some(&block_label));
+    block_copy.set_xalign(0.0);
+    block_row.append(&block_copy);
+    block.set_child(Some(&block_row));
+    pointer(&block);
+    let block_name = username;
+    let block_sender = sender;
+    let block_pop = popover.clone();
+    block.connect_clicked(move |_| {
+        block_pop.popdown();
+        if blocking {
+            block_sender.emit(AppMsg::Unblock(block_name.clone()));
+        } else {
+            block_sender.emit(AppMsg::ConfirmBlockUser(block_name.clone()));
+        }
+    });
+    list.append(&block);
+    popover.set_child(Some(&list));
+    more.set_popover(Some(&popover));
+    more.connect_notify_local(Some("active"), {
+        let menu_open = menu_open.clone();
+        move |button, _| menu_open.set(button.is_active())
+    });
+    more
+}
+
+fn user_card_counts(user: &User, sender: Sender<AppMsg>) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 16);
+    row.add_css_class("dn-user-card-counts");
+    let base = devnull_api::default_base_url();
+    let username = user.username.clone();
+    let commits = user.commits_count.unwrap_or(0);
+    let following = user.following_count.unwrap_or(0);
+    let followers = user.followers_count.unwrap_or(0);
+    row.append(&profile_stat(
+        commits,
+        if commits == 1 { "commit" } else { "commits" },
+        Some({
+            let username = username.clone();
+            move || AppMsg::OpenProfile(username.clone())
+        }),
+        sender.clone(),
+    ));
+    row.append(&profile_stat(
+        following,
+        "following",
+        Some({
+            let url = format!("{base}/@{username}/following");
+            move || AppMsg::OpenWeb(url.clone())
+        }),
+        sender.clone(),
+    ));
+    row.append(&profile_stat(
+        followers,
+        if followers == 1 {
+            "follower"
+        } else {
+            "followers"
+        },
+        Some({
+            let url = format!("{base}/@{username}/followers");
+            move || AppMsg::OpenWeb(url.clone())
+        }),
+        sender,
+    ));
+    row
+}
+
+fn user_card_live(user: &User, url: &str, sender: Sender<AppMsg>) -> gtk::Button {
+    let btn = gtk::Button::new();
+    btn.add_css_class("flat");
+    btn.add_css_class("dn-user-card-live");
+    pointer(&btn);
+    let inner = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    inner.set_valign(gtk::Align::Center);
+    let copy = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    copy.set_hexpand(true);
+    let title = gtk::Label::new(Some(&format!("{} is live", user.display_name())));
+    title.add_css_class("dn-name");
+    title.set_xalign(0.0);
+    title.set_ellipsize(pango::EllipsizeMode::End);
+    copy.append(&title);
+    let host = gtk::Label::new(Some(&hostname(url)));
+    host.add_css_class("dn-muted");
+    host.add_css_class("dn-mono");
+    host.set_xalign(0.0);
+    host.set_ellipsize(pango::EllipsizeMode::End);
+    copy.append(&host);
+    inner.append(&copy);
+    let watch = gtk::Label::new(Some("Watch"));
+    watch.add_css_class("dn-user-card-watch");
+    inner.append(&watch);
+    btn.set_child(Some(&inner));
+    let url = url.to_owned();
+    btn.connect_clicked(move |_| sender.emit(AppMsg::OpenWeb(url.clone())));
+    btn
 }
 
 fn tag_feed_hover(
@@ -1192,6 +1752,8 @@ const RAIL_AVATAR_TOP: i32 = 10;
 const RAIL_TERMINATOR_PAD: f64 = 20.0;
 const RAIL_DOT_RING: f64 = 7.0;
 const RAIL_DOT_FILL: f64 = 4.0;
+/// Clearance under a live avatar so the rail does not run through the LIVE badge.
+const LIVE_BADGE_CLEARANCE: f64 = 10.0;
 
 fn reply_split_y(height: f64) -> f64 {
     (height - RAIL_DOT_RING - 4.0).max(RAIL_NODE_Y + RAIL_DOT_RING * 2.0)
@@ -1231,7 +1793,7 @@ fn reply_content_offset(depth: u8) -> i32 {
 }
 
 pub fn rail(color: &str, previous: Option<&str>, variant: RailKind) -> gtk::DrawingArea {
-    rail_area(color, previous, variant, false)
+    rail_area(color, previous, variant, false, false)
 }
 
 fn rail_area(
@@ -1239,6 +1801,7 @@ fn rail_area(
     previous: Option<&str>,
     variant: RailKind,
     skip_node: bool,
+    live: bool,
 ) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::new();
     let nested_depth = match variant {
@@ -1351,7 +1914,12 @@ fn rail_area(
                 cairo.set_source_rgb(cr, cg, cb);
                 if reply_tail {
                     let split_y = reply_split_y(h);
-                    cairo.move_to(cx, node_y);
+                    let tail_start = if live {
+                        f64::from(RAIL_AVATAR_TOP + RAIL_AVATAR) + LIVE_BADGE_CLEARANCE
+                    } else {
+                        node_y
+                    };
+                    cairo.move_to(cx, tail_start.min(split_y));
                     cairo.line_to(cx, split_y);
                     cairo.stroke().ok();
                     draw_rail_dot(
@@ -1367,7 +1935,12 @@ fn rail_area(
                     } else {
                         h
                     };
-                    cairo.move_to(cx, node_y);
+                    let tail_start = if live {
+                        f64::from(RAIL_AVATAR_TOP + RAIL_AVATAR) + LIVE_BADGE_CLEARANCE
+                    } else {
+                        node_y
+                    };
+                    cairo.move_to(cx, tail_start.min(tail_end));
                     cairo.line_to(cx, tail_end);
                     cairo.stroke().ok();
                     if terminator {
@@ -1433,7 +2006,8 @@ fn commit_rail(
     sender: Sender<AppMsg>,
 ) -> gtk::Widget {
     let skip_node = author.is_some() && !grouped && matches!(variant, RailKind::Commit { .. });
-    let area = rail_area(color, previous, variant, skip_node);
+    let live = author.is_some_and(User::is_live);
+    let area = rail_area(color, previous, variant, skip_node, live);
     if !skip_node {
         return area.upcast();
     }
@@ -2459,6 +3033,85 @@ fn handle_dot(user: Option<&User>) -> gtk::DrawingArea {
     dot
 }
 
+fn commit_display_body<'a>(commit: &'a Commit, ctx: &'a FeedCtx) -> Option<&'a str> {
+    if shows_commit_translation(commit, ctx) {
+        if let Some(body) = ctx
+            .translations
+            .get(&commit.id)
+            .and_then(|translation| translation.body.as_deref())
+            .filter(|body| !body.is_empty())
+        {
+            return Some(body);
+        }
+    }
+    commit
+        .body
+        .as_deref()
+        .filter(|body| !body.is_empty())
+}
+
+fn shows_commit_translation(commit: &Commit, ctx: &FeedCtx) -> bool {
+    if ctx.showing_original.contains(&commit.id) {
+        return false;
+    }
+    ctx.translations
+        .get(&commit.id)
+        .is_some_and(CommitTranslation::shows_translation)
+        && (ctx.automatic_translation || ctx.requested_translation.contains(&commit.id))
+}
+
+fn shows_commit_translate(commit: &Commit, ctx: &FeedCtx) -> bool {
+    if commit.body.as_ref().is_none_or(|body| body.is_empty()) || commit.is_own(ctx.me_id.as_deref())
+    {
+        return false;
+    }
+    if shows_commit_translation(commit, ctx) {
+        return false;
+    }
+    if ctx.automatic_translation
+        && !ctx.showing_original.contains(&commit.id)
+        && ctx.translation_loading.contains(&commit.id)
+    {
+        return false;
+    }
+    ctx.translations
+        .get(&commit.id)
+        .is_none_or(|translation| translation.available || translation.body.is_none())
+}
+
+fn translation_notice(commit: &Commit, ctx: &FeedCtx) -> Option<gtk::Box> {
+    if !shows_commit_translation(commit, ctx) {
+        return None;
+    }
+    let translation = ctx.translations.get(&commit.id)?;
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    row.add_css_class("dn-translation-notice");
+    let from = translation
+        .source_name
+        .as_deref()
+        .filter(|name| !name.is_empty())
+        .unwrap_or("another language");
+    let label = gtk::Label::new(Some(&format!("Translated from {from}")));
+    label.add_css_class("dn-muted");
+    label.set_xalign(0.0);
+    row.append(&label);
+    let dot = gtk::Label::new(Some("·"));
+    dot.add_css_class("dn-muted");
+    row.append(&dot);
+    let original = gtk::Button::with_label("Show original");
+    original.add_css_class("flat");
+    original.add_css_class("dn-text-btn");
+    original.add_css_class("dn-translation-original");
+    pointer(&original);
+    let id = commit.id.clone();
+    let sender = ctx.sender.clone();
+    original.connect_clicked(move |_| {
+        sender.emit(AppMsg::ShowOriginal(id.clone()));
+    });
+    row.append(&original);
+    Some(row)
+}
+
 pub fn commit_row(
     commit: &Commit,
     previous_lane: Option<&str>,
@@ -2589,6 +3242,7 @@ pub fn commit_row(
         if let Some(enabled) = ctx.hover.as_ref() {
             bind_author_hover(&identity, &author.id, enabled.clone());
         }
+        bind_user_preview(&identity, author, ctx);
         names.append(&identity);
         let sep = gtk::Label::new(Some("・"));
         sep.add_css_class("dn-mono");
@@ -2623,18 +3277,21 @@ pub fn commit_row(
         content.append(&reply_to);
     }
 
-    if let Some(body) = &commit.body {
+    if let Some(body) = commit_display_body(commit, ctx) {
         let class = if chrome.focused {
             "dn-body dn-body-focus"
         } else {
             "dn-body"
         };
-        let mentions = commit.mentions.as_ref();
+        let mentions = body::CapturedMentions::from_commit(commit);
         content.append(&if chrome.focused {
             body::body_widget(body, class, mentions, Some(&sender))
         } else {
             body::folded_body_widget(body, class, mentions, Some(&sender))
         });
+        if let Some(notice) = translation_notice(commit, ctx) {
+            content.append(&notice);
+        }
     }
 
     if !commit.images.is_empty() {
@@ -2877,12 +3534,19 @@ fn commit_actions(commit: &Commit, ctx: &FeedCtx, focused: bool) -> gtk::Box {
     });
     meta.append(&reply);
 
-    if commit.body.as_ref().is_some_and(|b| !b.is_empty()) {
+    if shows_commit_translate(commit, ctx) {
         let translate = action_btn("dn-languages-symbolic", "Translate");
-        let body = commit.body.clone().unwrap_or_default();
+        let loading = ctx.translation_loading.contains(&commit.id);
+        translate.set_sensitive(!loading);
+        translate.set_tooltip_text(Some(if loading {
+            "Translating commit"
+        } else {
+            "Translate commit"
+        }));
+        let id = commit.id.clone();
         let translate_sender = ctx.sender.clone();
         translate.connect_clicked(move |_| {
-            translate_sender.emit(AppMsg::Translate(body.clone()));
+            translate_sender.emit(AppMsg::TranslateCommit(id.clone()));
         });
         meta.append(&translate);
     }
@@ -2985,7 +3649,7 @@ fn quoted_commit_widget(quoted: Option<&Commit>, sender: Sender<AppMsg>) -> gtk:
                 card.append(&body::clamped_body_widget(
                     body,
                     "dn-body",
-                    commit.mentions.as_ref(),
+                    body::CapturedMentions::from_commit(commit),
                     Some(&sender),
                     150,
                 ));
@@ -3301,7 +3965,12 @@ fn readme_content(source: &str, github_login: &str, sender: Sender<AppMsg>) -> g
                 if text.trim().is_empty() {
                     continue;
                 }
-                let body = body::body_widget(&text, "dn-readme-body", None, Some(&sender));
+                let body = body::body_widget(
+                    &text,
+                    "dn-readme-body",
+                    body::CapturedMentions::default(),
+                    Some(&sender),
+                );
                 wrap.append(&body);
             }
             ReadmePart::Image { url, alt } => {
@@ -3535,8 +4204,9 @@ fn notification_row(
     row.add_css_class("dn-commit");
     let kind = item.kind();
     let follow = matches!(kind, "follow" | "followed");
-    row.set_activatable(item.commit.is_some() || follow);
-    if item.commit.is_some() || follow {
+    let level_up = kind == "leveled_up";
+    row.set_activatable(item.commit.is_some() || follow || level_up);
+    if item.commit.is_some() || follow || level_up {
         pointer(&row);
     }
     let outer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -3560,6 +4230,12 @@ fn notification_row(
         } else {
             chip.add_css_class("dn-muted");
         }
+        header.append(&chip);
+    } else if let Some(chip_text) = item.level_chip() {
+        let chip = gtk::Label::new(Some(&chip_text));
+        chip.add_css_class("dn-mono");
+        chip.add_css_class("dn-notif-chip");
+        chip.add_css_class("dn-muted");
         header.append(&chip);
     } else {
         header.append(&notification_avatars(item));
@@ -3588,7 +4264,7 @@ fn notification_row(
                 let excerpt = body::clamped_body_widget(
                     text,
                     "dn-body dn-muted",
-                    commit.mentions.as_ref(),
+                    body::CapturedMentions::from_commit(commit),
                     Some(&sender),
                     if own { 73 } else { 160 },
                 );
@@ -3601,6 +4277,21 @@ fn notification_row(
                     col.append(&excerpt);
                 }
             }
+        }
+    } else if kind == "leveled_up" {
+        if let Some(description) = item
+            .rank_description
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            let excerpt = gtk::Label::new(Some(description));
+            excerpt.add_css_class("dn-body");
+            excerpt.add_css_class("dn-muted");
+            excerpt.set_wrap(true);
+            excerpt.set_wrap_mode(pango::WrapMode::WordChar);
+            excerpt.set_xalign(0.0);
+            shrink_label(&excerpt);
+            col.append(&excerpt);
         }
     }
     if item.is_grouped() {
@@ -3619,7 +4310,7 @@ fn notification_row(
         row.connect_activate(move |_| {
             sender.emit(AppMsg::OpenCommit(id.clone()));
         });
-    } else if follow {
+    } else if follow || level_up {
         if let Some(username) = item
             .actor
             .as_ref()
@@ -3659,7 +4350,7 @@ fn notification_rail(item: &Notification, sender: Sender<AppMsg>) -> gtk::Widget
     if avatar {
         return commit_rail(&color, None, variant, actor, false, sender);
     }
-    let area = rail_area(&color, None, variant, true);
+    let area = rail_area(&color, None, variant, true, false);
     let overlay = gtk::Overlay::new();
     overlay.add_css_class("dn-rail");
     overlay.set_hexpand(false);
@@ -3698,6 +4389,8 @@ fn notification_icon(kind: &str) -> &'static str {
         "quote" | "quoted" => "dn-quote-symbolic",
         "star" | "starred" => "dn-star-filled-symbolic",
         "mention" | "mentioned" => "dn-at-sign-symbolic",
+        "first_commit" => "dn-git-commit-vertical-symbolic",
+        "leveled_up" => "dn-chevrons-up-symbolic",
         "approved" => "dn-check-symbolic",
         "rejected" => "dn-x-symbolic",
         _ => "dn-bell-symbolic",
@@ -3716,6 +4409,8 @@ fn notification_action(kind: &str) -> &str {
         "reply" | "replied" => "replied to your commit",
         "quote" | "quoted" => "quoted your commit",
         "mention" | "mentioned" => "mentioned you",
+        "first_commit" => "made their first commit",
+        "leveled_up" => "leveled up",
         other if !other.is_empty() => other,
         _ => "notified you",
     }
@@ -3732,6 +4427,11 @@ fn notification_headline_row(item: &Notification) -> gtk::Widget {
                 "rejected"
             }
         )));
+        shrink_label(&title);
+        return title.upcast();
+    }
+    if kind == "leveled_up" {
+        let title = gtk::Label::new(Some(&item.level_up_title()));
         shrink_label(&title);
         return title.upcast();
     }
@@ -4018,12 +4718,13 @@ fn notification_event_line(item: &Notification, sender: Sender<AppMsg>) -> gtk::
     row.append(&meta);
     let starred = matches!(kind, "star" | "starred");
     let follow = matches!(kind, "follow" | "followed");
+    let level_up = kind == "leveled_up";
     let profile = actor.map(|user| user.username.clone());
     let commit = item.commit.as_ref().map(|commit| commit.id.clone());
     let click = gtk::GestureClick::new();
     click.connect_pressed(move |gesture, _, _, _| {
         gesture.set_state(gtk::EventSequenceState::Claimed);
-        if starred || follow {
+        if starred || follow || level_up {
             if let Some(username) = &profile {
                 sender.emit(AppMsg::OpenProfile(username.clone()));
             }
@@ -4211,7 +4912,8 @@ pub struct ThreadHeaderState<'a> {
     pub archived: bool,
     pub pinned: bool,
     pub muted: bool,
-    pub pinned_message: Option<&'a Message>,
+    pub pinned_messages: &'a [Message],
+    pub can_unpin: bool,
     pub show_back: bool,
 }
 
@@ -4236,22 +4938,37 @@ impl ThreadPulls {
         }
     }
 
-    fn pulled_by(&self, message_id: i64) -> Vec<&User> {
+    fn pulled_by(&self, message: &Message) -> Vec<&User> {
         self.members
             .iter()
-            .filter(|(_, through)| *through >= message_id)
+            .filter(|(user, through)| {
+                Some(user.id.as_str()) != message.user_id.as_deref() && *through >= message.id
+            })
             .map(|(user, _)| user)
             .collect()
     }
 
-    fn is_pulled(&self, message_id: i64, is_org: bool) -> bool {
+    fn reader_count(&self, message: &Message) -> usize {
+        self.members
+            .iter()
+            .filter(|(user, _)| Some(user.id.as_str()) != message.user_id.as_deref())
+            .count()
+    }
+
+    fn is_pulled(&self, message: &Message, is_org: bool) -> bool {
         if is_org {
-            self.members
-                .iter()
-                .any(|(_, through)| *through >= message_id)
+            !self.pulled_by(message).is_empty()
         } else {
-            self.read_through >= message_id
+            self.read_through >= message.id
         }
+    }
+}
+
+fn org_thread_meta(member_count: usize) -> String {
+    if member_count == 0 {
+        "org · – members".into()
+    } else {
+        format!("org · {member_count} members")
     }
 }
 
@@ -4265,7 +4982,8 @@ pub fn fill_thread_header(header: &gtk::Box, state: ThreadHeaderState<'_>, sende
         archived,
         pinned,
         muted,
-        pinned_message,
+        pinned_messages,
+        can_unpin,
         show_back,
     } = state;
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -4342,16 +5060,30 @@ pub fn fill_thread_header(header: &gtk::Box, state: ThreadHeaderState<'_>, sende
             heading.add_css_class("dn-name");
             ellipsize_label(&heading);
             names.append(&heading);
+            let count = if people.is_empty() {
+                item.map(|item| item.member_count(me.map(|user| user.id.as_str())))
+                    .unwrap_or(0)
+            } else {
+                people.len()
+            };
+            let meta = gtk::Label::new(Some(&org_thread_meta(count)));
+            meta.add_css_class("dn-handle");
+            ellipsize_label(&meta);
+            names.append(&meta);
             identity.append(&names);
         }
     }
     row.append(&identity);
     row.append(&thread_actions_menu(
-        reference, archived, pinned, muted, sender,
+        reference,
+        archived,
+        pinned,
+        muted,
+        sender.clone(),
     ));
     header.append(&row);
-    if let Some(message) = pinned_message {
-        header.append(&pinned_message_bar(message));
+    if !pinned_messages.is_empty() {
+        header.append(&pinned_messages_bar(pinned_messages, can_unpin, sender));
     }
 }
 
@@ -4374,18 +5106,27 @@ pub fn thread_empty_history(reference: &ThreadRef) -> gtk::ListBoxRow {
 }
 
 pub fn last_mine_id(messages: &[Message], me: Option<&str>) -> Option<i64> {
+    status_message_id(messages, me, false)
+}
+
+pub fn status_message_id(messages: &[Message], me: Option<&str>, is_org: bool) -> Option<i64> {
     messages.iter().rev().find_map(|message| {
-        if message.user_id.as_deref() == me
-            && !message
-                .event
-                .as_deref()
-                .is_some_and(|event| !event.is_empty())
-        {
+        if is_chat_event(message) {
+            return None;
+        }
+        if is_org || message.user_id.as_deref() == me {
             Some(message.id)
         } else {
             None
         }
     })
+}
+
+fn is_chat_event(message: &Message) -> bool {
+    message
+        .event
+        .as_deref()
+        .is_some_and(|event| !event.is_empty())
 }
 
 pub fn message_ids(messages: &[Message]) -> Vec<i64> {
@@ -4394,8 +5135,8 @@ pub fn message_ids(messages: &[Message]) -> Vec<i64> {
 
 #[derive(Clone, Default)]
 pub struct ThreadChrome {
-    pub pinned_message: Option<i64>,
-    pub reactions: HashMap<i64, Vec<String>>,
+    pub pinned_ids: HashSet<i64>,
+    pub can_pin: bool,
     pub people: HashMap<String, User>,
     pub bubbles: BubbleWidth,
 }
@@ -4502,7 +5243,7 @@ fn append_thread_messages_from(
     chrome: &ThreadChrome,
     sender: Sender<AppMsg>,
 ) {
-    let last_mine = last_mine_id(messages, me);
+    let status_id = status_message_id(messages, me, is_org);
     let previous = start.checked_sub(1).and_then(|index| messages.get(index));
     let mut last_day = previous
         .and_then(|message| message.created_at)
@@ -4552,7 +5293,7 @@ fn append_thread_messages_from(
             is_org,
             starts_group,
             ends_group,
-            last_mine == Some(message.id),
+            status_id == Some(message.id),
             pulls,
             chrome,
             sender.clone(),
@@ -4574,30 +5315,34 @@ pub fn sync_thread_messages(
     let old_ids = message_ids(previous);
     let new_ids = message_ids(messages);
     if old_ids == new_ids {
-        if let Some(id) = last_mine_id(messages, me) {
+        refresh_thread_reactions(list, messages, me, &chrome.people, sender.clone());
+        if let Some(id) = status_message_id(messages, me, is_org) {
             refresh_latest_meta(list, messages, id, me, is_org, pulls);
         }
         return true;
     }
     if !old_ids.is_empty() && new_ids.starts_with(&old_ids) {
         let last_index = old_ids.len() - 1;
-        if !message_ends_group(messages, last_index) {
+        if !message_ends_group(messages, last_index)
+            && status_message_id(messages, me, is_org) != Some(old_ids[last_index])
+        {
             hide_message_meta(list, old_ids[last_index]);
         }
-        let old_latest = last_mine_id(previous, me);
-        let new_latest = last_mine_id(messages, me);
-        if old_latest.is_some() && old_latest != new_latest {
+        let old_status = status_message_id(previous, me, is_org);
+        let new_status = status_message_id(messages, me, is_org);
+        if old_status.is_some() && old_status != new_status {
             if let Some(message) = previous
                 .iter()
-                .find(|message| Some(message.id) == old_latest)
+                .find(|message| Some(message.id) == old_status)
             {
                 let index = old_ids
                     .iter()
-                    .position(|id| Some(*id) == old_latest)
+                    .position(|id| Some(*id) == old_status)
                     .unwrap_or(last_index);
                 refresh_row_meta(
                     list,
                     message,
+                    message.user_id.as_deref() == me,
                     false,
                     message_ends_group(messages, index),
                     is_org,
@@ -4613,8 +5358,9 @@ pub fn sync_thread_messages(
             is_org,
             pulls,
             chrome,
-            sender,
+            sender.clone(),
         );
+        refresh_thread_reactions(list, messages, me, &chrome.people, sender);
         return true;
     }
     false
@@ -4672,7 +5418,7 @@ fn message_row(
     is_org: bool,
     starts_group: bool,
     ends_group: bool,
-    is_latest_mine: bool,
+    shows_status: bool,
     pulls: &ThreadPulls,
     chrome: &ThreadChrome,
     sender: Sender<AppMsg>,
@@ -4734,7 +5480,7 @@ fn message_row(
             } else {
                 "dn-body dn-bubble-body"
             },
-            message.mentions.as_ref(),
+            body::CapturedMentions::users_only(message.mentions.as_ref()),
             Some(&sender),
         );
         text.set_hexpand(false);
@@ -4756,9 +5502,13 @@ fn message_row(
             gtk::Align::Start
         });
         host.set_child(Some(&bubble));
+        let pinned = chrome.pinned_ids.contains(&message.id);
         let (hover, hovering, hold) = message_hover_bar(
             message,
-            chrome.pinned_message == Some(message.id),
+            is_org.then_some(MessagePinHover {
+                pinned,
+                can_toggle: chrome.can_pin,
+            }),
             sender.clone(),
         );
         hover.set_halign(if mine {
@@ -4773,19 +5523,17 @@ fn message_row(
         bind_message_hover(&row, &hover, hovering, hold);
     }
     col.append(&reaction_row(
-        chrome
-            .reactions
-            .get(&message.id)
-            .map(Vec::as_slice)
-            .unwrap_or(&[]),
+        &message.reactions,
         message.id,
         mine,
+        me,
+        &chrome.people,
         sender.clone(),
     ));
     col.append(&message_meta_line(
         message,
         mine,
-        is_latest_mine,
+        shows_status,
         ends_group,
         is_org,
         pulls,
@@ -4795,6 +5543,11 @@ fn message_row(
 }
 
 const QUICK_REACTIONS: &[&str] = &["👍", "❤️", "😂", "🎉", "😮", "😢"];
+
+struct MessagePinHover {
+    pinned: bool,
+    can_toggle: bool,
+}
 
 fn hover_icon_btn(icon: &str, tooltip: &str) -> gtk::Button {
     let btn = gtk::Button::from_icon_name(icon);
@@ -4809,20 +5562,37 @@ fn hover_icon_btn(icon: &str, tooltip: &str) -> gtk::Button {
 
 fn message_hover_bar(
     message: &Message,
-    pinned: bool,
+    pin: Option<MessagePinHover>,
     sender: Sender<AppMsg>,
 ) -> (gtk::Box, Rc<Cell<bool>>, Rc<Cell<bool>>) {
     let bar = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     bar.add_css_class("dn-message-hover");
     bar.set_visible(false);
 
-    let pin = hover_icon_btn("dn-pin-symbolic", if pinned { "Unpin" } else { "Pin" });
     let id = message.id;
-    pin.connect_clicked({
-        let sender = sender.clone();
-        move |_| sender.emit(AppMsg::PinThreadMessage(id))
-    });
-    bar.append(&pin);
+    if let Some(pin) = pin {
+        let show = pin.can_toggle || pin.pinned;
+        let tooltip = if pin.pinned {
+            if pin.can_toggle {
+                "Unpin"
+            } else {
+                "Pinned"
+            }
+        } else {
+            "Pin"
+        };
+        let btn = hover_icon_btn("dn-pin-symbolic", tooltip);
+        btn.set_widget_name("dn-msg-pin");
+        btn.set_visible(show);
+        btn.set_sensitive(pin.can_toggle);
+        if pin.can_toggle {
+            btn.connect_clicked({
+                let sender = sender.clone();
+                move |_| sender.emit(AppMsg::PinThreadMessage(id))
+            });
+        }
+        bar.append(&btn);
+    }
 
     let reply = hover_icon_btn("dn-message-square-reply-symbolic", "Reply");
     let reply_msg = message.clone();
@@ -4922,7 +5692,50 @@ fn bind_message_hover(
     row.add_controller(motion);
 }
 
-fn reaction_row(emojis: &[String], id: i64, mine: bool, sender: Sender<AppMsg>) -> gtk::Box {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReactionChip {
+    emoji: String,
+    count: usize,
+    is_mine: bool,
+    user_ids: Vec<String>,
+}
+
+fn summarize_reactions(reactions: &[MessageReaction], me: Option<&str>) -> Vec<ReactionChip> {
+    let mut chips = Vec::new();
+    let mut index_of: HashMap<String, usize> = HashMap::new();
+    for reaction in reactions {
+        let emoji = reaction.emoji.trim();
+        if emoji.is_empty() || reaction.user_id.is_empty() {
+            continue;
+        }
+        if let Some(&index) = index_of.get(emoji) {
+            let chip: &mut ReactionChip = &mut chips[index];
+            chip.count += 1;
+            chip.is_mine |= me == Some(reaction.user_id.as_str());
+            if !chip.user_ids.iter().any(|id| id == &reaction.user_id) {
+                chip.user_ids.push(reaction.user_id.clone());
+            }
+        } else {
+            index_of.insert(emoji.to_owned(), chips.len());
+            chips.push(ReactionChip {
+                emoji: emoji.to_owned(),
+                count: 1,
+                is_mine: me == Some(reaction.user_id.as_str()),
+                user_ids: vec![reaction.user_id.clone()],
+            });
+        }
+    }
+    chips
+}
+
+fn reaction_row(
+    reactions: &[MessageReaction],
+    id: i64,
+    mine: bool,
+    me: Option<&str>,
+    people: &HashMap<String, User>,
+    sender: Sender<AppMsg>,
+) -> gtk::Box {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
     row.add_css_class("dn-message-reacts");
     row.set_widget_name("dn-message-reacts");
@@ -4931,57 +5744,96 @@ fn reaction_row(emojis: &[String], id: i64, mine: bool, sender: Sender<AppMsg>) 
     } else {
         gtk::Align::Start
     });
-    fill_reaction_chips(&row, emojis, id, sender);
+    fill_reaction_chips(&row, reactions, id, me, people, sender);
     row
 }
 
-fn fill_reaction_chips(row: &gtk::Box, emojis: &[String], id: i64, sender: Sender<AppMsg>) {
+fn fill_reaction_chips(
+    row: &gtk::Box,
+    reactions: &[MessageReaction],
+    id: i64,
+    me: Option<&str>,
+    people: &HashMap<String, User>,
+    sender: Sender<AppMsg>,
+) {
     while let Some(child) = row.first_child() {
         row.remove(&child);
     }
-    for emoji in emojis {
-        let chip = gtk::Button::new();
-        chip.add_css_class("flat");
-        chip.add_css_class("dn-reaction-chip");
-        let label = gtk::Label::new(Some(&format!("{emoji} 1")));
-        chip.set_child(Some(&label));
-        chip.set_tooltip_text(Some("Remove reaction"));
-        pointer(&chip);
-        let emoji = emoji.clone();
+    let chips = summarize_reactions(reactions, me);
+    for chip in &chips {
+        let btn = gtk::Button::new();
+        btn.add_css_class("flat");
+        btn.add_css_class("dn-reaction-chip");
+        if chip.is_mine {
+            btn.add_css_class("mine");
+        }
+        let label = gtk::Label::new(Some(&format!("{} {}", chip.emoji, chip.count)));
+        btn.set_child(Some(&label));
+        btn.set_tooltip_text(Some(&reaction_tooltip(chip, people)));
+        pointer(&btn);
+        let emoji = chip.emoji.clone();
         let sender = sender.clone();
-        chip.connect_clicked(move |_| {
+        btn.connect_clicked(move |_| {
             sender.emit(AppMsg::ReactToRemote {
                 id,
                 emoji: emoji.clone(),
             });
         });
-        row.append(&chip);
+        row.append(&btn);
     }
-    row.set_visible(!emojis.is_empty());
+    row.set_visible(!chips.is_empty());
+}
+
+fn reaction_tooltip(chip: &ReactionChip, people: &HashMap<String, User>) -> String {
+    chip.user_ids
+        .iter()
+        .map(|id| {
+            people
+                .get(id)
+                .map(User::display_name)
+                .unwrap_or("someone")
+                .to_owned()
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 pub fn refresh_message_reactions(
     list: &gtk::ListBox,
     id: i64,
-    emojis: &[String],
+    reactions: &[MessageReaction],
+    me: Option<&str>,
+    people: &HashMap<String, User>,
     sender: Sender<AppMsg>,
 ) {
     let Some(row) = named_row(list, &format!("dn-msg-{id}")) else {
         return;
     };
-    let Some(col) = row.child() else {
+    let Some(widget) = find_named(row.upcast_ref(), "dn-message-reacts") else {
         return;
     };
-    let mut child = col.first_child();
-    while let Some(widget) = child {
-        let next = widget.next_sibling();
-        if widget.widget_name() == "dn-message-reacts" {
-            if let Ok(box_) = widget.downcast::<gtk::Box>() {
-                fill_reaction_chips(&box_, emojis, id, sender);
-            }
-            return;
-        }
-        child = next;
+    let Ok(box_) = widget.downcast::<gtk::Box>() else {
+        return;
+    };
+    fill_reaction_chips(&box_, reactions, id, me, people, sender);
+}
+
+fn refresh_thread_reactions(
+    list: &gtk::ListBox,
+    messages: &[Message],
+    me: Option<&str>,
+    people: &HashMap<String, User>,
+    sender: Sender<AppMsg>,
+) {
+    for message in messages {
+        refresh_message_reactions(
+            list,
+            message.id,
+            &message.reactions,
+            me,
+            people,
+            sender.clone(),
+        );
     }
 }
 
@@ -5071,17 +5923,15 @@ fn thread_actions_menu(
         },
         &popover,
     ));
-    if matches!(reference, ThreadRef::Direct { .. }) {
-        list.append(&user_menu_item(
-            "dn-volume-x-symbolic",
-            if muted { "Unmute" } else { "Mute" },
-            {
-                let sender = sender.clone();
-                move || sender.emit(AppMsg::MuteRemote)
-            },
-            &popover,
-        ));
-    }
+    list.append(&user_menu_item(
+        "dn-volume-x-symbolic",
+        if muted { "Unmute" } else { "Mute" },
+        {
+            let sender = sender.clone();
+            move || sender.emit(AppMsg::MuteRemote)
+        },
+        &popover,
+    ));
     let sep = gtk::Separator::new(gtk::Orientation::Horizontal);
     sep.set_margin_top(4);
     sep.set_margin_bottom(4);
@@ -5119,35 +5969,284 @@ fn thread_actions_menu(
     more
 }
 
-fn pinned_message_bar(message: &Message) -> gtk::Widget {
-    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    bar.add_css_class("dn-pinned-bar");
-    bar.append(&named_icon("dn-pin-symbolic", 14));
-    let col = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    col.set_hexpand(true);
-    let title = gtk::Label::new(Some("Pinned message"));
-    title.add_css_class("dn-name");
-    title.set_xalign(0.0);
-    col.append(&title);
-    let preview = message
+fn message_snippet(message: &Message) -> String {
+    if let Some(body) = message
         .body
         .as_deref()
         .map(str::trim)
         .filter(|text| !text.is_empty())
-        .unwrap_or("Image");
-    let body = gtk::Label::new(Some(preview));
+    {
+        return body.to_owned();
+    }
+    match message.images.len() {
+        0 => "Message".into(),
+        1 => "Image".into(),
+        n => format!("{n} images"),
+    }
+}
+
+fn pinned_banner_label(count: usize) -> String {
+    format!("pinned · {count}")
+}
+
+fn sorted_pinned(messages: &[Message]) -> Vec<Message> {
+    let mut items = messages.to_vec();
+    items.sort_by(|left, right| {
+        right
+            .created_at
+            .cmp(&left.created_at)
+            .then_with(|| right.id.cmp(&left.id))
+    });
+    items
+}
+
+fn pinned_messages_bar(
+    messages: &[Message],
+    can_unpin: bool,
+    sender: Sender<AppMsg>,
+) -> gtk::Widget {
+    let messages = sorted_pinned(messages);
+    let latest = messages.first().cloned();
+    let trigger = gtk::MenuButton::new();
+    trigger.add_css_class("flat");
+    trigger.add_css_class("dn-pinned-bar");
+    trigger.set_always_show_arrow(false);
+    trigger.set_hexpand(true);
+    trigger.set_halign(gtk::Align::Fill);
+    pointer(&trigger);
+    let bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    bar.append(&named_icon("dn-pin-symbolic", 14));
+    let col = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    col.set_hexpand(true);
+    let title = gtk::Label::new(Some(&pinned_banner_label(messages.len())));
+    title.add_css_class("dn-name");
+    title.set_xalign(0.0);
+    col.append(&title);
+    if let Some(latest) = &latest {
+        let author = latest
+            .user
+            .as_ref()
+            .map(User::display_name)
+            .unwrap_or("someone");
+        let preview = gtk::Label::new(Some(&format!("{author}  {}", message_snippet(latest))));
+        preview.add_css_class("dn-muted");
+        preview.set_xalign(0.0);
+        preview.set_ellipsize(pango::EllipsizeMode::End);
+        col.append(&preview);
+    }
+    bar.append(&col);
+    trigger.set_child(Some(&bar));
+    let popover = gtk::Popover::new();
+    popover.set_has_arrow(false);
+    popover.set_position(gtk::PositionType::Bottom);
+    popover.set_child(Some(&pinned_panel(&messages, can_unpin, sender, &popover)));
+    trigger.set_popover(Some(&popover));
+    trigger.upcast()
+}
+
+fn pinned_panel(
+    messages: &[Message],
+    can_unpin: bool,
+    sender: Sender<AppMsg>,
+    popover: &gtk::Popover,
+) -> gtk::Widget {
+    let col = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    col.add_css_class("dn-pinned-panel");
+    let head = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    head.add_css_class("dn-pinned-panel-head");
+    let title = gtk::Label::new(Some("Pinned messages"));
+    title.add_css_class("dn-name");
+    title.set_hexpand(true);
+    title.set_xalign(0.0);
+    head.append(&title);
+    let count = gtk::Label::new(Some(&messages.len().to_string()));
+    count.add_css_class("dn-muted");
+    head.append(&count);
+    col.append(&head);
+    let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    for message in messages {
+        list.append(&pinned_item(message, can_unpin, sender.clone(), popover));
+    }
+    let scroll = gtk::ScrolledWindow::new();
+    scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    scroll.set_max_content_height(360);
+    scroll.set_propagate_natural_height(true);
+    scroll.set_child(Some(&list));
+    col.append(&scroll);
+    col.upcast()
+}
+
+fn pinned_item(
+    message: &Message,
+    can_unpin: bool,
+    sender: Sender<AppMsg>,
+    popover: &gtk::Popover,
+) -> gtk::Widget {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    row.add_css_class("dn-pinned-item");
+    let jump = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    jump.set_hexpand(true);
+    let who = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    who.append(&avatar_widget(message.user.as_ref(), 20, true));
+    let name = gtk::Label::new(Some(
+        message
+            .user
+            .as_ref()
+            .map(User::display_name)
+            .unwrap_or("someone"),
+    ));
+    name.add_css_class("dn-name");
+    name.set_hexpand(true);
+    name.set_xalign(0.0);
+    name.set_ellipsize(pango::EllipsizeMode::End);
+    who.append(&name);
+    jump.append(&who);
+    let body = gtk::Label::new(Some(&message_snippet(message)));
     body.add_css_class("dn-muted");
     body.set_xalign(0.0);
-    body.set_ellipsize(pango::EllipsizeMode::End);
-    col.append(&body);
-    bar.append(&col);
-    bar.upcast()
+    body.set_wrap(true);
+    body.set_wrap_mode(pango::WrapMode::WordChar);
+    body.set_max_width_chars(48);
+    jump.append(&body);
+    let id = message.id;
+    let click = gtk::GestureClick::new();
+    click.set_button(1);
+    click.connect_pressed({
+        let sender = sender.clone();
+        let popover = popover.clone();
+        move |gesture, _, _, _| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            popover.popdown();
+            sender.emit(AppMsg::JumpToThreadMessage(id));
+        }
+    });
+    jump.add_controller(click);
+    pointer(&jump);
+    row.append(&jump);
+    let reply = hover_icon_btn("dn-message-square-reply-symbolic", "Reply");
+    let reply_msg = message.clone();
+    reply.connect_clicked({
+        let sender = sender.clone();
+        let popover = popover.clone();
+        move |_| {
+            popover.popdown();
+            sender.emit(AppMsg::ReplyToRemote(reply_msg.clone()));
+        }
+    });
+    row.append(&reply);
+    if can_unpin {
+        let unpin = hover_icon_btn("dn-pin-symbolic", "Unpin message");
+        let id = message.id;
+        unpin.connect_clicked({
+            let sender = sender.clone();
+            let popover = popover.clone();
+            move |_| {
+                popover.popdown();
+                sender.emit(AppMsg::PinThreadMessage(id));
+            }
+        });
+        row.append(&unpin);
+    }
+    row.upcast()
+}
+
+pub fn confirm_pin_org_message(id: i64, sender: Sender<AppMsg>) {
+    let dialog = adw::AlertDialog::new(
+        Some("Pin for the whole org?"),
+        Some(
+            "Everyone in the org sees pinned messages, including people added without Share history, who can't read anything pushed before they joined.",
+        ),
+    );
+    let check = gtk::CheckButton::with_label("Don't show this again");
+    check.set_margin_top(8);
+    dialog.set_extra_child(Some(&check));
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("pin", "Pin message");
+    dialog.set_response_appearance("pin", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("pin"));
+    dialog.set_close_response("cancel");
+    dialog.connect_response(None, move |_, response| {
+        if response == "pin" {
+            sender.emit(AppMsg::ConfirmPinThreadMessage {
+                id,
+                dismiss: check.is_active(),
+            });
+        }
+    });
+    dialog.present(toplevel().as_ref());
+}
+
+fn find_named(widget: &gtk::Widget, name: &str) -> Option<gtk::Widget> {
+    if widget.widget_name() == name {
+        return Some(widget.clone());
+    }
+    let mut child = widget.first_child();
+    while let Some(node) = child {
+        if let Some(found) = find_named(&node, name) {
+            return Some(found);
+        }
+        child = node.next_sibling();
+    }
+    None
+}
+
+pub fn refresh_thread_pins(list: &gtk::ListBox, pinned: &HashSet<i64>, can_pin: bool) {
+    let mut index = 0;
+    while let Some(row) = list.row_at_index(index) {
+        index += 1;
+        let name = row.widget_name();
+        let Some(id) = name
+            .strip_prefix("dn-msg-")
+            .and_then(|id| id.parse::<i64>().ok())
+        else {
+            continue;
+        };
+        let Some(pin) = find_named(row.upcast_ref(), "dn-msg-pin") else {
+            continue;
+        };
+        let Ok(btn) = pin.downcast::<gtk::Button>() else {
+            continue;
+        };
+        let is_pinned = pinned.contains(&id);
+        btn.set_visible(can_pin || is_pinned);
+        btn.set_sensitive(can_pin);
+        btn.set_tooltip_text(Some(if is_pinned {
+            if can_pin {
+                "Unpin"
+            } else {
+                "Pinned"
+            }
+        } else {
+            "Pin"
+        }));
+    }
+}
+
+pub fn scroll_to_thread_message(scroll: &gtk::ScrolledWindow, list: &gtk::ListBox, id: i64) {
+    let Some(row) = named_row(list, &format!("dn-msg-{id}")) else {
+        return;
+    };
+    row.add_css_class("dn-flash");
+    let clear = row.clone();
+    glib::timeout_add_local(Duration::from_millis(1200), move || {
+        clear.remove_css_class("dn-flash");
+        glib::ControlFlow::Break
+    });
+    if let Some(bounds) = row.compute_bounds(list) {
+        let adj = scroll.vadjustment();
+        let target = (f64::from(bounds.y())).clamp(
+            adj.lower(),
+            (adj.upper() - adj.page_size()).max(adj.lower()),
+        );
+        adj.set_value(target);
+    }
+    row.grab_focus();
 }
 
 fn message_meta_line(
     message: &Message,
     mine: bool,
-    is_latest_mine: bool,
+    shows_status: bool,
     ends_group: bool,
     is_org: bool,
     pulls: &ThreadPulls,
@@ -5164,7 +6263,7 @@ fn message_meta_line(
         &line,
         message,
         mine,
-        is_latest_mine,
+        shows_status,
         ends_group,
         is_org,
         pulls,
@@ -5176,7 +6275,7 @@ fn fill_message_meta(
     line: &gtk::Box,
     message: &Message,
     mine: bool,
-    is_latest_mine: bool,
+    shows_status: bool,
     ends_group: bool,
     is_org: bool,
     pulls: &ThreadPulls,
@@ -5184,10 +6283,10 @@ fn fill_message_meta(
     while let Some(child) = line.first_child() {
         line.remove(&child);
     }
-    if is_latest_mine {
-        let pulled = pulls.is_pulled(message.id, is_org);
+    if shows_status {
+        let pulled = pulls.is_pulled(message, is_org);
         let pulled_by = if is_org {
-            pulls.pulled_by(message.id)
+            pulls.pulled_by(message)
         } else {
             Vec::new()
         };
@@ -5207,7 +6306,7 @@ fn fill_message_meta(
         label.add_css_class("dn-muted");
         line.append(&label);
         if !pulled_by.is_empty() {
-            line.append(&pulled_by_stack(&pulled_by, pulls.members.len()));
+            line.append(&pulled_by_stack(&pulled_by, pulls.reader_count(message)));
         }
         line.set_visible(true);
         return;
@@ -5273,14 +6372,22 @@ fn refresh_latest_meta(
     let Some(message) = messages.iter().find(|message| message.id == id) else {
         return;
     };
-    let _ = me;
-    refresh_row_meta(list, message, true, true, is_org, pulls);
+    refresh_row_meta(
+        list,
+        message,
+        message.user_id.as_deref() == me,
+        true,
+        true,
+        is_org,
+        pulls,
+    );
 }
 
 fn refresh_row_meta(
     list: &gtk::ListBox,
     message: &Message,
-    is_latest_mine: bool,
+    mine: bool,
+    shows_status: bool,
     ends_group: bool,
     is_org: bool,
     pulls: &ThreadPulls,
@@ -5288,45 +6395,29 @@ fn refresh_row_meta(
     let Some(row) = named_row(list, &format!("dn-msg-{}", message.id)) else {
         return;
     };
-    let Some(col) = row.child() else {
+    let Some(widget) = find_named(row.upcast_ref(), "dn-message-meta") else {
         return;
     };
-    let mut child = col.first_child();
-    while let Some(widget) = child {
-        let next = widget.next_sibling();
-        if widget.widget_name() == "dn-message-meta" {
-            if let Ok(line) = widget.downcast::<gtk::Box>() {
-                fill_message_meta(
-                    &line,
-                    message,
-                    true,
-                    is_latest_mine,
-                    ends_group,
-                    is_org,
-                    pulls,
-                );
-            }
-            return;
-        }
-        child = next;
-    }
+    let Ok(line) = widget.downcast::<gtk::Box>() else {
+        return;
+    };
+    fill_message_meta(
+        &line,
+        message,
+        mine,
+        shows_status,
+        ends_group,
+        is_org,
+        pulls,
+    );
 }
 
 fn hide_message_meta(list: &gtk::ListBox, id: i64) {
     let Some(row) = named_row(list, &format!("dn-msg-{id}")) else {
         return;
     };
-    let Some(col) = row.child() else {
-        return;
-    };
-    let mut child = col.first_child();
-    while let Some(widget) = child {
-        let next = widget.next_sibling();
-        if widget.widget_name() == "dn-message-meta" {
-            widget.set_visible(false);
-            return;
-        }
-        child = next;
+    if let Some(widget) = find_named(row.upcast_ref(), "dn-message-meta") {
+        widget.set_visible(false);
     }
 }
 
@@ -5356,6 +6447,27 @@ pub fn confirm_leave_org(title: &str, sender: Sender<AppMsg>) {
     dialog.connect_response(None, move |_, response| {
         if response == "leave" {
             sender.emit(AppMsg::ConfirmLeaveOrg);
+        }
+    });
+    dialog.present(toplevel().as_ref());
+}
+
+pub fn confirm_block_developer(username: &str, sender: Sender<AppMsg>) {
+    let dialog = adw::AlertDialog::new(
+        Some(&format!("Block @{username}?")),
+        Some(
+            "You'll stop following each other. Neither of you will be able to message, follow, reply to, or star the other, or see each other's commits. They won't be told, but they'll see your profile as unavailable. You can unblock them any time from your settings.",
+        ),
+    );
+    dialog.add_response("cancel", "Cancel");
+    dialog.add_response("block", "Block");
+    dialog.set_response_appearance("block", adw::ResponseAppearance::Destructive);
+    dialog.set_default_response(Some("cancel"));
+    dialog.set_close_response("cancel");
+    let username = username.to_owned();
+    dialog.connect_response(None, move |_, response| {
+        if response == "block" {
+            sender.emit(AppMsg::BlockUser(username.clone()));
         }
     });
     dialog.present(toplevel().as_ref());
@@ -5715,6 +6827,7 @@ pub fn fill_profile_hero(
     top.append(&spacer);
     top.append(&profile_actions(
         own,
+        user.is_live(),
         follow_label,
         me.is_some_and(CurrentUser::remotes_on),
         sender.clone(),
@@ -5831,6 +6944,7 @@ pub fn fill_profile_hero(
 
 fn profile_actions(
     own: bool,
+    live: bool,
     follow_label: &str,
     remotes: bool,
     sender: Sender<AppMsg>,
@@ -5845,7 +6959,7 @@ fn profile_actions(
     actions.append(&share);
 
     if own {
-        actions.append(&profile_actions_menu(sender.clone()));
+        actions.append(&profile_live_button(live, sender.clone()));
         actions.append(&edit_profile_menu(sender.clone()));
     } else {
         if remotes {
@@ -5879,35 +6993,15 @@ fn profile_actions(
     actions
 }
 
-fn profile_actions_menu(sender: Sender<AppMsg>) -> gtk::MenuButton {
-    let more = gtk::MenuButton::new();
-    more.add_css_class("dn-outline-btn");
-    more.add_css_class("dn-icon-btn");
-    more.set_icon_name("dn-ellipsis-symbolic");
-    more.set_tooltip_text(Some("More"));
-    more.set_always_show_arrow(false);
-    pointer(&more);
-
-    let popover = gtk::Popover::new();
-    popover.set_has_arrow(false);
-    popover.set_position(gtk::PositionType::Bottom);
-    let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
-    list.set_margin_top(4);
-    list.set_margin_bottom(4);
-    list.set_margin_start(4);
-    list.set_margin_end(4);
-    list.append(&user_menu_item(
-        "dn-arrow-up-right-symbolic",
-        "Go live",
-        {
-            let sender = sender.clone();
-            move || sender.emit(AppMsg::GoLive)
-        },
-        &popover,
-    ));
-    popover.set_child(Some(&list));
-    more.set_popover(Some(&popover));
-    more
+fn profile_live_button(live: bool, sender: Sender<AppMsg>) -> gtk::Button {
+    let (icon, label) = if live {
+        ("dn-radio-off-symbolic", "End stream")
+    } else {
+        ("dn-radio-symbolic", "Go live")
+    };
+    let btn = outline_icon_button(icon, label);
+    btn.connect_clicked(move |_| sender.emit(AppMsg::GoLive));
+    btn
 }
 
 fn edit_profile_menu(sender: Sender<AppMsg>) -> gtk::MenuButton {
@@ -6591,6 +7685,9 @@ pub struct SettingsCtx<'a> {
     pub draft_lane: Option<Option<Lane>>,
     pub device_name: String,
     pub fingerprint: Option<String>,
+    pub automatic_translation: bool,
+    pub translation_language: Option<String>,
+    pub translation_languages: &'a [TranslationLanguage],
     pub sender: Sender<AppMsg>,
 }
 
@@ -6708,6 +7805,12 @@ fn fill_profile_settings(panel: &gtk::Box, ctx: SettingsCtx<'_>) {
         &lane_picker(me, ctx.draft_lane.clone(), true, sender.clone()),
     ));
     panel.append(&timezone_picker(me, sender.clone()));
+    panel.append(&translation_settings(
+        ctx.automatic_translation,
+        ctx.translation_language.clone(),
+        ctx.translation_languages,
+        sender.clone(),
+    ));
     panel.append(&toggle_setting(
         "Pastéis mode",
         "A little appreciation, fresh daily. Get 10 pastéis to give to other people’s commits, one per click. Your allowance resets at 00:00 UTC.\n\nWhen off, all pastéis controls and counters are hidden. You still receive pastéis from others.",
@@ -7066,6 +8169,65 @@ fn field_list(fields: &[(&str, Option<String>)]) -> gtk::Box {
         list.append(&row);
     }
     list
+}
+
+fn translation_settings(
+    automatic: bool,
+    language: Option<String>,
+    languages: &[TranslationLanguage],
+    sender: Sender<AppMsg>,
+) -> gtk::Box {
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    let mut labels = vec!["Device language (automatic)".to_owned()];
+    labels.extend(languages.iter().map(|language| {
+        if language.native_name.is_empty() || language.native_name == language.name {
+            language.name.clone()
+        } else {
+            format!("{} · {}", language.name, language.native_name)
+        }
+    }));
+    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let dropdown = gtk::DropDown::from_strings(&refs);
+    dropdown.set_enable_search(true);
+    let selected = language
+        .as_deref()
+        .and_then(|code| languages.iter().position(|item| item.code == code))
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    dropdown.set_selected(selected as u32);
+    let codes: Vec<Option<String>> = std::iter::once(None)
+        .chain(languages.iter().map(|item| Some(item.code.clone())))
+        .collect();
+    let picked = Rc::new(RefCell::new(language.clone()));
+    dropdown.connect_selected_notify({
+        let picked = picked.clone();
+        let codes = codes.clone();
+        move |drop| {
+            *picked.borrow_mut() = codes.get(drop.selected() as usize).cloned().flatten();
+        }
+    });
+    body.append(&dropdown);
+    let save = gtk::Button::with_label("Save translation language");
+    save.add_css_class("suggested-action");
+    pointer(&save);
+    let save_sender = sender.clone();
+    save.connect_clicked(move |_| {
+        save_sender.emit(AppMsg::SetTranslationLanguage(picked.borrow().clone()));
+    });
+    body.append(&save);
+    let wrap = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    wrap.append(&settings_section(
+        "Translation language",
+        "Choose the language for translated commits and replies, or follow this computer's language. Search by English or native name.",
+        &body,
+    ));
+    wrap.append(&toggle_setting(
+        "Automatically show translations",
+        "Show available translations in your chosen language. Turn off to read originals first and choose Translate when you need it.",
+        automatic,
+        move |on| sender.emit(AppMsg::SetAutomaticTranslation(on)),
+    ));
+    wrap
 }
 
 fn timezone_picker(me: Option<&CurrentUser>, sender: Sender<AppMsg>) -> gtk::Box {
@@ -8754,11 +9916,101 @@ pub fn fill_suggestions(
         return;
     }
     for user in shown {
-        box_.append(&suggestion_row(user, sender.clone()));
+        box_.append(&suggestion_row(user, sender.clone(), false));
     }
 }
 
-fn suggestion_row(user: &User, sender: Sender<AppMsg>) -> gtk::Box {
+fn who_to_follow_in_log(ctx: &FeedCtx) -> gtk::ListBoxRow {
+    let row = gtk::ListBoxRow::new();
+    row.set_activatable(false);
+    row.add_css_class("dn-who-log");
+    let outer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    spacer.add_css_class("dn-rail");
+    outer.append(&spacer);
+    let inner = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    inner.add_css_class("dn-who-log-inner");
+    inner.set_hexpand(true);
+    let header = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let title = gtk::Label::new(Some("$ who --should-i-follow"));
+    title.add_css_class("dn-mono");
+    title.add_css_class("dn-muted");
+    title.set_xalign(0.0);
+    title.set_hexpand(true);
+    header.append(&title);
+    let refresh = gtk::Button::new();
+    refresh.add_css_class("flat");
+    refresh.add_css_class("dn-aside-icon");
+    refresh.set_icon_name("dn-refresh-cw-symbolic");
+    refresh.set_tooltip_text(Some("Suggest other people"));
+    pointer(&refresh);
+    let refresh_sender = ctx.sender.clone();
+    refresh.connect_clicked(move |_| {
+        refresh_sender.emit(AppMsg::RefreshSuggested);
+    });
+    header.append(&refresh);
+    let more = gtk::MenuButton::new();
+    more.add_css_class("flat");
+    more.add_css_class("dn-aside-icon");
+    more.set_icon_name("dn-ellipsis-symbolic");
+    more.set_tooltip_text(Some("Who to follow options"));
+    more.set_always_show_arrow(false);
+    more.set_has_frame(false);
+    let popover = gtk::Popover::new();
+    popover.set_position(gtk::PositionType::Bottom);
+    let hide = gtk::Button::new();
+    hide.add_css_class("flat");
+    hide.add_css_class("dn-aside-menu-item");
+    let hide_row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    let hide_icon = gtk::Image::from_icon_name("dn-eye-off-symbolic");
+    hide_icon.set_pixel_size(16);
+    hide_row.append(&hide_icon);
+    let hide_copy = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    let hide_title = gtk::Label::new(Some("Don't show again"));
+    hide_title.set_xalign(0.0);
+    hide_copy.append(&hide_title);
+    hide_row.append(&hide_copy);
+    hide.set_child(Some(&hide_row));
+    let hide_sender = ctx.sender.clone();
+    let pop = popover.clone();
+    hide.connect_clicked(move |_| {
+        pop.popdown();
+        hide_sender.emit(AppMsg::SetWhoToFollow(false));
+    });
+    popover.set_child(Some(&hide));
+    more.set_popover(Some(&popover));
+    header.append(&more);
+    inner.append(&header);
+    let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    list.add_css_class("dn-who-log-list");
+    let shown = suggestion_candidates(
+        &ctx.suggested,
+        ctx.me_username.as_deref(),
+        &ctx.following,
+    );
+    if shown.is_empty() {
+        let empty = gtk::Label::new(Some("No suggestions right now."));
+        empty.add_css_class("dn-muted");
+        empty.add_css_class("dn-mono");
+        empty.set_xalign(0.0);
+        empty.set_margin_top(8);
+        empty.set_margin_bottom(8);
+        empty.set_margin_start(12);
+        list.append(&empty);
+    } else {
+        for user in shown {
+            let item = suggestion_row(user, ctx.sender.clone(), true);
+            item.add_css_class("dn-who-log-item");
+            list.append(&item);
+        }
+    }
+    inner.append(&list);
+    outer.append(&inner);
+    row.set_child(Some(&outer));
+    row
+}
+
+fn suggestion_row(user: &User, sender: Sender<AppMsg>, stacked: bool) -> gtk::Box {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     row.add_css_class("dn-suggest-row");
     row.set_overflow(gtk::Overflow::Visible);
@@ -8782,6 +10034,23 @@ fn suggestion_row(user: &User, sender: Sender<AppMsg>) -> gtk::Box {
     handle.set_xalign(0.0);
     handle_row.append(&handle);
     col.append(&handle_row);
+    if stacked {
+        if let Some(bio) = user.bio_line() {
+            let line = gtk::Label::new(Some(bio));
+            line.add_css_class("dn-muted");
+            line.set_xalign(0.0);
+            line.set_ellipsize(pango::EllipsizeMode::End);
+            col.append(&line);
+        }
+        if let Some(reason) = user.suggestion_reason() {
+            let line = gtk::Label::new(Some(&reason));
+            line.add_css_class("dn-muted");
+            line.add_css_class("dn-mono");
+            line.set_xalign(0.0);
+            line.set_ellipsize(pango::EllipsizeMode::End);
+            col.append(&line);
+        }
+    }
     inner.append(&col);
     open.set_child(Some(&inner));
     let username = user.username.clone();
@@ -8810,7 +10079,7 @@ fn suggestion_row(user: &User, sender: Sender<AppMsg>) -> gtk::Box {
         follow_sender.emit(AppMsg::FollowUser(follow_name.clone(), !following));
     });
     row.append(&follow);
-    let remove = icon_only_button("dn-x-symbolic", "Remove", false);
+    let remove = icon_only_button("dn-x-symbolic", "Not interested", false);
     remove.connect_clicked(move |_| {
         sender.emit(AppMsg::DismissSuggested(username.clone()));
     });
@@ -8842,6 +10111,7 @@ pub fn append_search(list: &gtk::ListBox, results: &SearchResults, ctx: &FeedCtx
             &mut last_day,
             None,
             None,
+            0,
         );
     }
 }
@@ -9116,6 +10386,14 @@ pub fn reset_log_list(list: &gtk::ListBox, composer: &gtk::Box) {
     pin_log_composer(list, composer);
 }
 
+pub fn who_to_follow_index(count: usize) -> Option<usize> {
+    if count == 0 {
+        None
+    } else {
+        Some(count.min(5) - 1)
+    }
+}
+
 pub fn append_commits(
     list: &gtk::ListBox,
     commits: &[Commit],
@@ -9124,11 +10402,12 @@ pub fn append_commits(
     last_day: &mut Option<String>,
     first_seen_id: Option<&str>,
     threads: Option<&ThreadState<'_>>,
+    offset: usize,
 ) {
     let dark = adw_is_dark();
     let gray = if dark { "#36363a" } else { "#d3d7dd" };
     let mut join = ctx.join_staged && previous_lane.is_none();
-    for commit in commits {
+    for (index, commit) in commits.iter().enumerate() {
         if first_seen_id == Some(commit.id.as_str()) {
             list.append(&last_visit_marker(
                 if join {
@@ -9175,6 +10454,9 @@ pub fn append_commits(
             append_open_thread(list, commit, threads, ctx, 0, &commit.id);
         }
         *previous_lane = Some(lane_color(commit.author.as_ref(), dark));
+        if ctx.who_to_follow_after == Some(offset + index) {
+            list.append(&who_to_follow_in_log(ctx));
+        }
     }
 }
 
@@ -11422,6 +12704,101 @@ mod last_visit_tests {
 }
 
 #[cfg(test)]
+mod remotes_header_tests {
+    use super::*;
+
+    #[test]
+    fn org_header_names_the_member_count() {
+        assert_eq!(org_thread_meta(0), "org · – members");
+        assert_eq!(org_thread_meta(1), "org · 1 members");
+        assert_eq!(org_thread_meta(3), "org · 3 members");
+    }
+
+    #[test]
+    fn pinned_banner_names_the_count() {
+        assert_eq!(pinned_banner_label(1), "pinned · 1");
+        assert_eq!(pinned_banner_label(3), "pinned · 3");
+    }
+
+    #[test]
+    fn pinned_snippet_falls_back_to_images() {
+        assert_eq!(
+            message_snippet(&Message {
+                body: Some(" keep this ".into()),
+                ..Message::default()
+            }),
+            "keep this"
+        );
+        assert_eq!(
+            message_snippet(&Message {
+                images: vec![MessageImage::default()],
+                ..Message::default()
+            }),
+            "Image"
+        );
+        assert_eq!(
+            message_snippet(&Message {
+                images: vec![MessageImage::default(), MessageImage::default()],
+                ..Message::default()
+            }),
+            "2 images"
+        );
+    }
+
+    #[test]
+    fn org_status_follows_the_latest_message() {
+        let mine = Message {
+            id: 1,
+            user_id: Some("me".into()),
+            ..Message::default()
+        };
+        let theirs = Message {
+            id: 2,
+            user_id: Some("ada".into()),
+            ..Message::default()
+        };
+        let ping = Message {
+            id: 3,
+            user_id: Some("ada".into()),
+            event: Some("ping".into()),
+            ..Message::default()
+        };
+        let messages = [mine.clone(), theirs.clone(), ping];
+        assert_eq!(status_message_id(&messages, Some("me"), true), Some(2));
+        assert_eq!(status_message_id(&messages, Some("me"), false), Some(1));
+        assert_eq!(last_mine_id(&messages, Some("me")), Some(1));
+    }
+
+    #[test]
+    fn reaction_chips_group_in_first_seen_order() {
+        let chips = summarize_reactions(
+            &[
+                MessageReaction {
+                    user_id: "ada".into(),
+                    emoji: "❤️".into(),
+                },
+                MessageReaction {
+                    user_id: "me".into(),
+                    emoji: "😂".into(),
+                },
+                MessageReaction {
+                    user_id: "me".into(),
+                    emoji: "❤️".into(),
+                },
+            ],
+            Some("me"),
+        );
+        assert_eq!(chips.len(), 2);
+        assert_eq!(chips[0].emoji, "❤️");
+        assert_eq!(chips[0].count, 2);
+        assert!(chips[0].is_mine);
+        assert_eq!(chips[1].emoji, "😂");
+        assert_eq!(chips[1].count, 1);
+        assert!(chips[1].is_mine);
+    }
+}
+
+#[cfg(test)]
 mod thread_link_tests {
     use super::*;
 
@@ -11738,6 +13115,26 @@ mod suggestion_tests {
     }
 
     #[test]
+    fn first_commit_and_level_up_use_web_copy() {
+        assert_eq!(
+            notification_action("first_commit"),
+            "made their first commit"
+        );
+        assert_eq!(
+            notification_icon("first_commit"),
+            "dn-git-commit-vertical-symbolic"
+        );
+        assert_eq!(notification_icon("leveled_up"), "dn-chevrons-up-symbolic");
+        let notice = Notification {
+            kind: Some("leveled_up".into()),
+            level: Some(2),
+            rank: Some("contributor".into()),
+            ..Default::default()
+        };
+        assert_eq!(notice.level_up_title(), "You reached level 2: contributor.");
+    }
+
+    #[test]
     fn grouped_stars_keep_the_others_in_the_same_sentence() {
         assert_eq!(
             others_and_action(4, "starred your commit"),
@@ -11841,6 +13238,21 @@ mod suggestion_tests {
             .map(|user| user.username.as_str())
             .collect();
         assert_eq!(shown, ["grace", "dijkstra"]);
+    }
+
+    #[test]
+    fn who_to_follow_lands_after_the_fifth_commit() {
+        assert_eq!(who_to_follow_index(0), None);
+        assert_eq!(who_to_follow_index(3), Some(2));
+        assert_eq!(who_to_follow_index(5), Some(4));
+        assert_eq!(who_to_follow_index(20), Some(4));
+    }
+
+    #[test]
+    fn preview_follow_label_matches_the_web() {
+        assert_eq!(preview_follow_label(false, false), "Follow");
+        assert_eq!(preview_follow_label(false, true), "Follow back");
+        assert_eq!(preview_follow_label(true, true), "Following");
     }
 }
 

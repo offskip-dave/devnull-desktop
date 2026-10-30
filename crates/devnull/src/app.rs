@@ -12,9 +12,10 @@ use relm4::gtk::pango;
 use relm4::prelude::*;
 
 use devnull_api::{
-    ApiError, ChatThread, Client, Commit, CommitPage, ConversationSummary, CurrentUser, InboxPage,
-    InboxTab, Lane, LogKind, LogPage, Message, Notification, NotificationFilter, Page, PastelAward,
-    Profile, RemoteCandidate, SearchResults, ThreadRef, Upload, User,
+    ApiError, ChatThread, Client, Commit, CommitPage, CommitTranslation, ConversationSummary,
+    CurrentUser, InboxPage, InboxTab, Lane, LogKind, LogPage, Message, MessageReaction,
+    Notification, NotificationFilter, Page, PastelAward, Profile, RemoteCandidate, SearchResults,
+    ThreadRef, Upload, User, UserPreview, UserSettings,
 };
 use devnull_auth::{self as auth, Pkce, APP_ID};
 
@@ -75,6 +76,11 @@ pub enum AppMsg {
     SetHighlightOnHover(bool),
     SetTimezone(Option<String>),
     TimezoneSaved(Result<CurrentUser, ApiError>),
+    SetAutomaticTranslation(bool),
+    AutomaticTranslationSaved(Result<CurrentUser, ApiError>),
+    SetTranslationLanguage(Option<String>),
+    TranslationLanguageSaved(Result<CurrentUser, ApiError>),
+    UserSettingsLoaded(Result<UserSettings, ApiError>),
     SetRemotes(bool),
     RemotesSaved(Result<CurrentUser, ApiError>),
     ExportData,
@@ -135,7 +141,9 @@ pub enum AppMsg {
     SubmitQuote(String, String),
     ReplyTo(String),
     CancelReply,
-    Translate(String),
+    TranslateCommit(String),
+    ShowOriginal(String),
+    CommitTranslated(String, Result<CommitTranslation, ApiError>),
     ToggleReplies(String),
     NestedRepliesLoaded(String, Result<Page<Commit>, ApiError>),
     PreviewRepliesLoaded(String, Result<Page<Commit>, ApiError>),
@@ -170,6 +178,13 @@ pub enum AppMsg {
     FollowUser(String, bool),
     UserFollowed(String, bool),
     RefreshSuggested,
+    PreviewUser(String),
+    UserPreviewLoaded(String, Result<UserPreview, ApiError>),
+    MuteUser(String),
+    UserMuted(String, Result<(), ApiError>),
+    ConfirmBlockUser(String),
+    BlockUser(String),
+    UserBlocked(String, Result<(), ApiError>),
     ToggleFollowCurrent,
     AttachImages,
     ImagesPicked(Vec<Upload>),
@@ -215,13 +230,21 @@ pub enum AppMsg {
     CloseThread,
     ThreadActionDone(Result<String, ApiError>),
     PingMention,
+    StartCall,
     PinThreadMessage(i64),
+    ConfirmPinThreadMessage {
+        id: i64,
+        dismiss: bool,
+    },
+    ThreadPinsLoaded(String, bool, Result<Vec<Message>, ApiError>),
+    JumpToThreadMessage(i64),
     ReplyToRemote(Message),
     CancelRemoteReply,
     ReactToRemote {
         id: i64,
         emoji: String,
     },
+    MessageReactionsLoaded(String, i64, Result<Vec<MessageReaction>, ApiError>),
     RecordVoice,
     Toast(String),
     Poll,
@@ -254,6 +277,11 @@ pub struct App {
     profile_readme: Option<(String, Result<Option<String>, ApiError>)>,
     suggested: Vec<User>,
     following: HashSet<String>,
+    user_settings: Option<UserSettings>,
+    translations: HashMap<String, CommitTranslation>,
+    showing_original: HashSet<String>,
+    requested_translation: HashSet<String>,
+    translation_loading: HashSet<String>,
     live_following: Vec<User>,
     muted: Vec<User>,
     blocked: Vec<User>,
@@ -261,6 +289,8 @@ pub struct App {
     draft_lane: Option<Option<Lane>>,
     prefs: Prefs,
     hover_enabled: Rc<Cell<bool>>,
+    user_card: Rc<ui::UserCard>,
+    user_preview_loading: HashSet<String>,
     open_commit: Option<Commit>,
     ancestors: Vec<Commit>,
     related_commits: Vec<Commit>,
@@ -287,6 +317,8 @@ pub struct App {
     unread_notifications: i64,
     unread_remotes: i64,
     counts_ready: bool,
+    remote_arrivals: HashMap<String, i64>,
+    last_thread_ping: Option<i64>,
     composer_len: usize,
     composer_poll: bool,
     composer_schedule: bool,
@@ -830,7 +862,10 @@ impl SimpleComponent for App {
                         set_orientation: gtk::Orientation::Vertical,
                         #[watch]
                         set_css_classes: &model.feed_classes(),
-                        set_hexpand: true,
+                        #[watch]
+                        set_hexpand: model.feed_fills(),
+                        #[watch]
+                        set_width_request: model.feed_width_request(),
                         set_vexpand: true,
 
                         gtk::Box {
@@ -1653,14 +1688,15 @@ impl SimpleComponent for App {
                                     gtk::Box {
                                         set_orientation: gtk::Orientation::Horizontal,
                                         set_spacing: 8,
-                                        set_valign: gtk::Align::End,
+                                        add_css_class: "dn-remote-row",
+                                        set_valign: gtk::Align::Fill,
                                         gtk::Button {
                                             add_css_class: "flat",
                                             add_css_class: "dn-icon-btn",
                                             add_css_class: "dn-composer-icon",
                                             set_icon_name: "dn-image-plus-symbolic",
                                             set_tooltip_text: Some("Attach up to 3 images"),
-                                            set_valign: gtk::Align::Center,
+                                            set_valign: gtk::Align::End,
                                             #[watch]
                                             set_sensitive: model.remote_images.len() < 3,
                                             connect_clicked => AppMsg::AttachRemoteImages,
@@ -1671,7 +1707,7 @@ impl SimpleComponent for App {
                                             add_css_class: "dn-composer-icon",
                                             set_icon_name: "dn-mic-symbolic",
                                             set_tooltip_text: Some("Voice note"),
-                                            set_valign: gtk::Align::Center,
+                                            set_valign: gtk::Align::End,
                                             connect_clicked => AppMsg::RecordVoice,
                                         },
                                         gtk::Button {
@@ -1680,13 +1716,22 @@ impl SimpleComponent for App {
                                             add_css_class: "dn-composer-icon",
                                             set_icon_name: "dn-megaphone-symbolic",
                                             set_tooltip_text: Some("Ping everyone in the org"),
-                                            set_valign: gtk::Align::Center,
+                                            set_valign: gtk::Align::End,
                                             connect_clicked => AppMsg::PingMention,
+                                        },
+                                        gtk::Button {
+                                            add_css_class: "flat",
+                                            add_css_class: "dn-icon-btn",
+                                            add_css_class: "dn-composer-icon",
+                                            set_icon_name: "dn-phone-symbolic",
+                                            set_tooltip_text: Some("Call"),
+                                            set_valign: gtk::Align::End,
+                                            connect_clicked => AppMsg::StartCall,
                                         },
                                         gtk::Overlay {
                                             add_css_class: "dn-remote-input",
                                             set_hexpand: true,
-                                            set_valign: gtk::Align::Center,
+                                            set_valign: gtk::Align::End,
                                             #[wrap(Some)]
                                             set_child = &gtk::ScrolledWindow {
                                                 set_hexpand: true,
@@ -1713,9 +1758,9 @@ impl SimpleComponent for App {
                                             set_label: "Push",
                                             add_css_class: "suggested-action",
                                             add_css_class: "dn-push-btn",
-                                            set_valign: gtk::Align::Center,
+                                            set_valign: gtk::Align::End,
                                             set_vexpand: false,
-                                            set_size_request: (-1, 40),
+                                            set_size_request: (80, 40),
                                             #[watch]
                                             set_sensitive: model.can_push_remote(),
                                             connect_clicked => AppMsg::PushRemote,
@@ -2036,10 +2081,12 @@ impl SimpleComponent for App {
         let remote_composer = gtk::TextView::new();
         remote_composer.set_wrap_mode(gtk::WrapMode::WordChar);
         remote_composer.add_css_class("dn-composer-text");
-        remote_composer.set_top_margin(8);
-        remote_composer.set_bottom_margin(8);
-        remote_composer.set_left_margin(12);
-        remote_composer.set_right_margin(12);
+        remote_composer.set_top_margin(0);
+        remote_composer.set_bottom_margin(0);
+        remote_composer.set_left_margin(0);
+        remote_composer.set_right_margin(0);
+        remote_composer.set_pixels_above_lines(0);
+        remote_composer.set_pixels_below_lines(0);
 
         let emoji = ui::EmojiSuggest::new(sender.input_sender().clone());
         let emoji_open = emoji.open_flag();
@@ -2128,6 +2175,7 @@ impl SimpleComponent for App {
         let (compose_dialog, compose_host) = ui::compose_dialog();
         let prefs = Prefs::load();
         let hover_enabled = Rc::new(Cell::new(prefs.highlight_on_hover));
+        let user_card = ui::UserCard::new();
         let remote_settings = ui::remote_settings_button(sender.input_sender().clone());
         let chat_dock = ui::ChatDock::new(sender.input_sender().clone());
         let people_picker = ui::PeoplePicker::new(sender.input_sender().clone());
@@ -2146,6 +2194,11 @@ impl SimpleComponent for App {
             profile_readme: None,
             suggested: Vec::new(),
             following: HashSet::new(),
+            user_settings: None,
+            translations: HashMap::new(),
+            showing_original: HashSet::new(),
+            requested_translation: HashSet::new(),
+            translation_loading: HashSet::new(),
             live_following: Vec::new(),
             muted: Vec::new(),
             blocked: Vec::new(),
@@ -2178,6 +2231,8 @@ impl SimpleComponent for App {
             unread_notifications: 0,
             unread_remotes: 0,
             counts_ready: false,
+            remote_arrivals: HashMap::new(),
+            last_thread_ping: None,
             composer_len: 0,
             composer_poll: false,
             composer_schedule: false,
@@ -2216,6 +2271,8 @@ impl SimpleComponent for App {
             user_menu: ui::UserMenu::new(sender.input_sender().clone()),
             header_user_menu: ui::UserMenu::for_header(sender.input_sender().clone()),
             hover_enabled,
+            user_card,
+            user_preview_loading: HashSet::new(),
             log_list,
             reply_list,
             profile_list,
@@ -2509,6 +2566,7 @@ impl SimpleComponent for App {
                 sender.input(AppMsg::Select(Nav::Latest));
                 sender.input(AppMsg::RefreshSuggested);
                 self.load_safety_quiet(&sender);
+                self.load_user_settings(&sender);
             }
             AppMsg::Restored(Err(err)) => {
                 self.phase = Phase::SignedOut;
@@ -2571,6 +2629,7 @@ impl SimpleComponent for App {
                 sender.input(AppMsg::Select(Nav::Latest));
                 sender.input(AppMsg::RefreshSuggested);
                 self.load_safety_quiet(&sender);
+                self.load_user_settings(&sender);
             }
             AppMsg::Redeemed(Err(err)) => {
                 self.phase = Phase::SignedOut;
@@ -2585,6 +2644,13 @@ impl SimpleComponent for App {
                 self.live_following.clear();
                 self.following.clear();
                 self.suggested.clear();
+                self.user_settings = None;
+                self.user_card.clear();
+                self.user_preview_loading.clear();
+                self.translations.clear();
+                self.showing_original.clear();
+                self.requested_translation.clear();
+                self.translation_loading.clear();
                 self.notifications.clear();
                 self.notif_groups.clear();
                 ui::fill_live_following(&self.live_list, &[], sender.input_sender().clone());
@@ -2592,6 +2658,7 @@ impl SimpleComponent for App {
                 self.visible = "sign_in";
             }
             AppMsg::Select(nav) => {
+                self.user_card.dismiss();
                 self.nav = nav;
                 self.capture_log_visit();
                 self.expanded_replies.clear();
@@ -2647,6 +2714,9 @@ impl SimpleComponent for App {
                     sender.input(AppMsg::RefreshSuggested);
                 }
                 self.render_settings(&sender);
+                if self.visible == "log" {
+                    self.refresh_visible_feed(&sender, true);
+                }
             }
             AppMsg::SetHighlightOnHover(on) => {
                 self.prefs.highlight_on_hover = on;
@@ -2681,6 +2751,93 @@ impl SimpleComponent for App {
                     Err(err) => self.toast(&err.message),
                 }
             }
+            AppMsg::SetAutomaticTranslation(enabled) => {
+                self.patch_settings(|settings| settings.automatic_translation = enabled);
+                self.render_settings(&sender);
+                if enabled {
+                    self.queue_auto_translations_visible(&sender);
+                }
+                self.refresh_visible_feed(&sender, true);
+                if let Some(client) = self.client.clone() {
+                    self.begin_busy();
+                    let sender2 = sender.clone();
+                    relm4::spawn(async move {
+                        sender2.input(AppMsg::AutomaticTranslationSaved(
+                            client.set_automatic_translation(enabled).await,
+                        ));
+                    });
+                }
+            }
+            AppMsg::AutomaticTranslationSaved(result) => {
+                self.end_busy();
+                match result {
+                    Ok(user) => {
+                        self.set_user(Some(user));
+                        self.render_settings(&sender);
+                    }
+                    Err(err) => {
+                        self.toast(&err.message);
+                        self.load_user_settings(&sender);
+                    }
+                }
+            }
+            AppMsg::SetTranslationLanguage(language) => {
+                self.patch_settings(|settings| settings.translation_language = language.clone());
+                self.translations.clear();
+                self.showing_original.clear();
+                self.requested_translation.clear();
+                self.translation_loading.clear();
+                self.render_settings(&sender);
+                if self.automatic_translation() {
+                    self.queue_auto_translations_visible(&sender);
+                }
+                self.refresh_visible_feed(&sender, true);
+                if let Some(client) = self.client.clone() {
+                    self.begin_busy();
+                    let sender2 = sender.clone();
+                    relm4::spawn(async move {
+                        sender2.input(AppMsg::TranslationLanguageSaved(
+                            client
+                                .set_translation_language(language.as_deref())
+                                .await,
+                        ));
+                    });
+                }
+            }
+            AppMsg::TranslationLanguageSaved(result) => {
+                self.end_busy();
+                match result {
+                    Ok(user) => {
+                        self.set_user(Some(user));
+                        self.toast("Translation language saved.");
+                        self.render_settings(&sender);
+                    }
+                    Err(err) => {
+                        self.toast(&err.message);
+                        self.load_user_settings(&sender);
+                    }
+                }
+            }
+            AppMsg::UserSettingsLoaded(result) => match result {
+                Ok(settings) => {
+                    self.user_settings = Some(settings);
+                    self.render_settings(&sender);
+                    if self.automatic_translation() {
+                        self.queue_auto_translations_visible(&sender);
+                        self.refresh_visible_feed(&sender, true);
+                    }
+                }
+                Err(_) => {
+                    if self.user_settings.is_none() {
+                        self.user_settings = Some(UserSettings::default());
+                    }
+                    self.render_settings(&sender);
+                    if self.automatic_translation() {
+                        self.queue_auto_translations_visible(&sender);
+                        self.refresh_visible_feed(&sender, true);
+                    }
+                }
+            },
             AppMsg::SetRemotes(enabled) => {
                 if let Some(client) = self.client.clone() {
                     self.begin_busy();
@@ -2783,6 +2940,19 @@ impl SimpleComponent for App {
                 self.end_busy();
                 match result {
                     Ok(()) => {
+                        if muted {
+                            self.user_card
+                                .patch(&username, |preview| preview.is_muting = false);
+                        } else {
+                            self.user_card.patch(&username, |preview| {
+                                preview.is_blocking = false;
+                                preview.is_unavailable = false;
+                            });
+                        }
+                        self.user_card.refresh(
+                            self.user.as_ref().map(|user| user.user.id.as_str()),
+                            sender.input_sender(),
+                        );
                         self.toast(&format!(
                             "{} @{username}.",
                             if muted { "Unmuted" } else { "Unblocked" }
@@ -2863,6 +3033,9 @@ impl SimpleComponent for App {
                         self.open_thread.as_ref(),
                         sender.input_sender().clone(),
                     );
+                }
+                if self.visible == "log" {
+                    self.refresh_visible_feed(&sender, true);
                 }
             }
             AppMsg::CloseThread => self.close_open_thread(&sender),
@@ -3016,7 +3189,13 @@ impl SimpleComponent for App {
                         }
                     }
                     self.set_live_following(self.live_following.clone(), &sender);
+                    self.queue_auto_translations(&page.data, &sender);
                     let ctx = self.feed_ctx(&sender);
+                    let offset = if more {
+                        self.log_commits.len().saturating_sub(page.data.len())
+                    } else {
+                        0
+                    };
                     ui::append_commits(
                         &self.log_list,
                         &page.data,
@@ -3030,6 +3209,7 @@ impl SimpleComponent for App {
                             replying_to: self.replying_to.as_deref(),
                             composer: &self.inline_reply_box,
                         }),
+                        offset,
                     );
                     self.log_cursor = page.next_cursor();
                     if self.log_cursor.is_none() {
@@ -3146,12 +3326,28 @@ impl SimpleComponent for App {
                 self.inline_reply.buffer().set_text("");
                 self.refresh_visible_feed(&sender, true);
             }
-            AppMsg::Translate(body) => {
-                let encoded: String =
-                    url::form_urlencoded::byte_serialize(body.as_bytes()).collect();
-                sender.input(AppMsg::OpenWeb(format!(
-                    "https://translate.google.com/?sl=auto&text={encoded}"
-                )));
+            AppMsg::TranslateCommit(id) => self.translate_commit(&id, &sender),
+            AppMsg::ShowOriginal(id) => {
+                self.requested_translation.remove(&id);
+                self.showing_original.insert(id);
+                self.refresh_visible_feed(&sender, true);
+            }
+            AppMsg::CommitTranslated(id, result) => {
+                self.translation_loading.remove(&id);
+                match result {
+                    Ok(translation) => {
+                        self.showing_original.remove(&id);
+                        self.translations.insert(id, translation);
+                        self.refresh_visible_feed(&sender, true);
+                        if self.automatic_translation() && self.translation_loading.is_empty() {
+                            self.queue_auto_translations_visible(&sender);
+                        }
+                    }
+                    Err(err) => {
+                        self.translations.entry(id).or_insert_with(CommitTranslation::default);
+                        self.toast(&err.message);
+                    }
+                }
             }
             AppMsg::ToggleReplies(id) => {
                 if self.expanded_replies.contains(&id) {
@@ -3185,8 +3381,9 @@ impl SimpleComponent for App {
             }
             AppMsg::NestedRepliesLoaded(id, result) => match result {
                 Ok(page) => {
-                    self.nested_replies
-                        .insert(id.clone(), newest_replies(page.data));
+                    let replies = newest_replies(page.data);
+                    self.queue_auto_translations(&replies, &sender);
+                    self.nested_replies.insert(id.clone(), replies);
                     self.previewed_replies.remove(&id);
                     self.preview_loading.remove(&id);
                     self.expanded_replies.insert(id);
@@ -3212,7 +3409,9 @@ impl SimpleComponent for App {
                 } else {
                     self.previewed_replies.remove(&id);
                 }
-                self.nested_replies.insert(id, newest_replies(page.data));
+                let replies = newest_replies(page.data);
+                self.queue_auto_translations(&replies, &sender);
+                self.nested_replies.insert(id, replies);
                 self.refresh_visible_feed(&sender, true);
             }
             AppMsg::ToggleNotificationFilter(kind) => {
@@ -3307,6 +3506,7 @@ impl SimpleComponent for App {
                     .ok()
                     .map(|page| newest_replies(page.data))
                     .unwrap_or_default();
+                self.queue_auto_translations_visible(&sender);
                 self.render_thread(&sender);
                 if self.focus_reply {
                     self.focus_reply = false;
@@ -3326,6 +3526,7 @@ impl SimpleComponent for App {
                 }
             }
             AppMsg::OpenProfile(username) => {
+                self.user_card.dismiss();
                 self.visible = "profile";
                 self.profile_tab = ProfileFeed::Commits;
                 self.profile_readme = None;
@@ -3391,6 +3592,7 @@ impl SimpleComponent for App {
                 match self.profile_tab {
                     ProfileFeed::Readme => self.load_readme(&sender),
                     _ => {
+                        self.queue_auto_translations_visible(&sender);
                         self.render_profile_feed(&sender, false);
                         let ids = reply_preview_ids(&self.profile_commits);
                         self.queue_reply_previews_ids(ids, &sender);
@@ -3585,6 +3787,7 @@ impl SimpleComponent for App {
             }
             AppMsg::SearchLoaded(result) => {
                 self.end_busy();
+                self.user_card.dismiss();
                 match result {
                     Ok(results) => ui::append_search(
                         &self.search_list,
@@ -3625,6 +3828,7 @@ impl SimpleComponent for App {
                 if let Ok(users) = result {
                     self.suggested = users;
                     self.render_suggestions(&sender);
+                    self.maybe_refresh_who_to_follow(&sender);
                 }
             }
             AppMsg::LiveFollowingLoaded(result) => {
@@ -3635,18 +3839,34 @@ impl SimpleComponent for App {
             AppMsg::DismissSuggested(username) => {
                 self.suggested.retain(|user| user.username != username);
                 self.render_suggestions(&sender);
+                self.maybe_refresh_who_to_follow(&sender);
             }
             AppMsg::UserFollowed(username, follow) => {
                 self.toast(&format!(
                     "{} @{username}",
                     if follow { "Following" } else { "Unfollowed" }
                 ));
+                self.user_card.patch(&username, |preview| {
+                    preview.is_following = follow;
+                    preview.user.is_followed = Some(follow);
+                    let count = preview.user.followers_count.unwrap_or(0);
+                    preview.user.followers_count = Some(if follow {
+                        count + 1
+                    } else {
+                        count.saturating_sub(1)
+                    });
+                });
+                self.user_card.refresh(
+                    self.user.as_ref().map(|user| user.user.id.as_str()),
+                    sender.input_sender(),
+                );
                 let name = username.trim().to_ascii_lowercase();
                 if follow {
                     self.following.insert(name);
                     self.suggested
                         .retain(|user| !user.username.eq_ignore_ascii_case(&username));
                     self.render_suggestions(&sender);
+                    self.maybe_refresh_who_to_follow(&sender);
                 } else {
                     self.following.remove(&name);
                 }
@@ -3655,6 +3875,82 @@ impl SimpleComponent for App {
                     && self.visible == "profile"
                 {
                     sender.input(AppMsg::OpenProfile(username));
+                }
+            }
+            AppMsg::PreviewUser(username) => self.load_user_preview(&username, &sender),
+            AppMsg::UserPreviewLoaded(username, result) => {
+                self.user_preview_loading.remove(&UserPreview::key(&username));
+                match result {
+                    Ok(mut preview) => {
+                        preview.is_blocking = self.is_blocked(&username);
+                        preview.is_muting = preview.is_muting || self.is_muted(&username);
+                        self.user_card.insert(preview.clone());
+                        self.user_card.apply(
+                            &preview,
+                            self.user.as_ref().map(|user| user.user.id.as_str()),
+                            sender.input_sender(),
+                        );
+                    }
+                    Err(_) => {}
+                }
+            }
+            AppMsg::MuteUser(username) => {
+                if let Some(client) = self.client.clone() {
+                    self.begin_busy();
+                    let sender2 = sender.clone();
+                    relm4::spawn(async move {
+                        sender2.input(AppMsg::UserMuted(username.clone(), client.mute(&username).await));
+                    });
+                }
+            }
+            AppMsg::UserMuted(username, result) => {
+                self.end_busy();
+                match result {
+                    Ok(()) => {
+                        self.user_card.patch(&username, |preview| preview.is_muting = true);
+                        self.user_card.refresh(
+                            self.user.as_ref().map(|user| user.user.id.as_str()),
+                            sender.input_sender(),
+                        );
+                        self.toast(&format!("Muted @{username}."));
+                        self.load_safety(&sender);
+                    }
+                    Err(err) => self.toast(&err.message),
+                }
+            }
+            AppMsg::ConfirmBlockUser(username) => {
+                ui::confirm_block_developer(&username, sender.input_sender().clone());
+            }
+            AppMsg::BlockUser(username) => {
+                if let Some(client) = self.client.clone() {
+                    self.begin_busy();
+                    let sender2 = sender.clone();
+                    relm4::spawn(async move {
+                        sender2.input(AppMsg::UserBlocked(
+                            username.clone(),
+                            client.block(&username).await,
+                        ));
+                    });
+                }
+            }
+            AppMsg::UserBlocked(username, result) => {
+                self.end_busy();
+                match result {
+                    Ok(()) => {
+                        self.user_card.patch(&username, |preview| {
+                            preview.is_blocking = true;
+                            preview.is_unavailable = true;
+                            preview.is_following = false;
+                            preview.user.is_followed = Some(false);
+                        });
+                        self.user_card.refresh(
+                            self.user.as_ref().map(|user| user.user.id.as_str()),
+                            sender.input_sender(),
+                        );
+                        self.toast(&format!("Blocked @{username}."));
+                        self.load_safety(&sender);
+                    }
+                    Err(err) => self.toast(&err.message),
                 }
             }
             AppMsg::FollowUser(username, follow) => {
@@ -3932,9 +4228,11 @@ impl SimpleComponent for App {
                 self.fail(err);
             }
             AppMsg::RemotesLoaded(Ok(page)) => {
+                self.alert_incoming_remotes(&page.data);
                 self.unread_remotes = page.unread_count;
                 self.inbox_requests = page.requests_count;
                 self.inbox = page.data;
+                self.sync_chat_dock();
                 if self.inbox_query.trim().is_empty() {
                     self.inbox_hits = None;
                     self.inbox_people.clear();
@@ -4107,6 +4405,7 @@ impl SimpleComponent for App {
                     self.thread_typing.clear();
                     self.open_thread = None;
                     self.remote_reply = None;
+                    self.last_thread_ping = None;
                     self.thread_header_stamp.clear();
                     self.fill_open_thread_header(None, sender.input_sender().clone());
                     ui::clear_list(&self.thread_list);
@@ -4171,14 +4470,24 @@ impl SimpleComponent for App {
                             );
                             self.render_inbox(&sender);
                         } else if action.starts_with("Muted") || action.starts_with("Unmuted") {
-                            self.load_safety_quiet(&sender);
+                            self.load_remotes(&sender);
+                            if self.thread_ref.is_some() {
+                                self.fetch_open_thread(&sender);
+                            }
+                            self.thread_header_stamp.clear();
                             self.fill_open_thread_header(
                                 self.open_thread.as_ref(),
                                 sender.input_sender().clone(),
                             );
                         }
                     }
-                    Err(err) => self.toast(&err.message),
+                    Err(err) => {
+                        self.toast(&err.message);
+                        if self.thread_ref.is_some() {
+                            self.load_remotes(&sender);
+                            self.fetch_open_thread(&sender);
+                        }
+                    }
                 }
             }
             AppMsg::PingMention => {
@@ -4186,7 +4495,55 @@ impl SimpleComponent for App {
                 self.remote_composer.buffer().insert_at_cursor(&insert);
                 self.remote_composer.grab_focus();
             }
+            AppMsg::StartCall => {
+                let Some(reference) = &self.thread_ref else {
+                    self.toast("fatal: no remote selected");
+                    return;
+                };
+                sender.input(AppMsg::OpenWeb(
+                    reference.html_url(&devnull_api::default_base_url()),
+                ));
+            }
             AppMsg::PinThreadMessage(id) => self.pin_thread_message(id, &sender),
+            AppMsg::ConfirmPinThreadMessage { id, dismiss } => {
+                if dismiss {
+                    self.prefs.dismiss_pin_warning();
+                }
+                self.request_message_pin(id, true, &sender);
+            }
+            AppMsg::ThreadPinsLoaded(key, pinning, result) => {
+                if self.thread_ref.as_ref().map(ThreadRef::key).as_deref() != Some(key.as_str()) {
+                    return;
+                }
+                match result {
+                    Ok(pinned) => {
+                        if let Some(thread) = &mut self.open_thread {
+                            thread.pinned = pinned;
+                        }
+                        self.toast(if pinning {
+                            "Pinned message."
+                        } else {
+                            "Unpinned message."
+                        });
+                        self.thread_header_stamp.clear();
+                        self.fill_open_thread_header(
+                            self.open_thread.as_ref(),
+                            sender.input_sender().clone(),
+                        );
+                        if let Some(thread) = &self.open_thread {
+                            ui::refresh_thread_pins(
+                                &self.thread_list,
+                                &thread.pinned.iter().map(|message| message.id).collect(),
+                                self.can_pin_org_messages(Some(thread)),
+                            );
+                        }
+                    }
+                    Err(err) => self.toast(&err.message),
+                }
+            }
+            AppMsg::JumpToThreadMessage(id) => {
+                ui::scroll_to_thread_message(&self.thread_scroll, &self.thread_list, id);
+            }
             AppMsg::ReplyToRemote(mut message) => {
                 if message.user.is_none() {
                     if let (Some(thread), Some(id)) =
@@ -4207,6 +4564,20 @@ impl SimpleComponent for App {
             }
             AppMsg::ReactToRemote { id, emoji } => {
                 self.toggle_message_reaction(id, &emoji, &sender);
+            }
+            AppMsg::MessageReactionsLoaded(key, id, result) => {
+                if self.thread_ref.as_ref().map(ThreadRef::key).as_deref() != Some(key.as_str()) {
+                    return;
+                }
+                match result {
+                    Ok(reactions) => {
+                        self.set_message_reactions(id, reactions, &sender);
+                    }
+                    Err(err) => {
+                        self.toast(&err.message);
+                        self.fetch_open_thread(&sender);
+                    }
+                }
             }
             AppMsg::RecordVoice => {
                 self.toast("Voice notes aren't on remotes yet.");
@@ -4255,10 +4626,12 @@ impl SimpleComponent for App {
                     return;
                 }
                 self.poll_unread(&sender);
+                if self.remotes_on() {
+                    self.load_remotes(&sender);
+                }
                 match self.nav {
                     Nav::Notifications => self.load_notifications(&sender),
                     Nav::Remotes => {
-                        self.load_remotes(&sender);
                         self.fetch_open_thread(&sender);
                     }
                     _ if self.tracks_new_posts() => {
@@ -4309,6 +4682,7 @@ impl SimpleComponent for App {
                 self.load_log(&sender, false);
             }
             AppMsg::LogScrolled => {
+                self.user_card.dismiss();
                 let away = self.log_scroll.vadjustment().value() > 48.0;
                 self.log_away = away;
                 if !away && self.new_posts_count > 0 {
@@ -4446,6 +4820,10 @@ impl App {
 
     fn feed_width(&self) -> i32 {
         feed_column_width(self.visible, self.shell_compact)
+    }
+
+    fn feed_width_request(&self) -> i32 {
+        feed_column_width_request(self.visible, self.shell_compact)
     }
 
     fn feed_fills(&self) -> bool {
@@ -4592,12 +4970,22 @@ impl App {
             sender: sender.input_sender().clone(),
             pasteis_mode: self.user.as_ref().is_some_and(|u| u.pasteis_on()),
             me_id: self.user.as_ref().map(|u| u.user.id.clone()),
+            me_username: self.user.as_ref().map(|user| user.username().to_owned()),
             stars: self.stars.clone(),
             pasteis: self.pasteis.clone(),
             expanded: self.expanded_replies.clone(),
             connected: false,
             join_staged: self.visible == "log" && self.nav.log().is_some() && self.user.is_some(),
             hover: Some(self.hover_enabled.clone()),
+            automatic_translation: self.automatic_translation(),
+            translations: self.translations.clone(),
+            showing_original: self.showing_original.clone(),
+            requested_translation: self.requested_translation.clone(),
+            translation_loading: self.translation_loading.clone(),
+            who_to_follow_after: self.who_to_follow_after(),
+            suggested: self.suggested.clone(),
+            following: self.following.clone(),
+            user_card: Some(self.user_card.clone()),
         }
     }
 
@@ -4605,6 +4993,7 @@ impl App {
         ui::FeedCtx {
             connected: true,
             join_staged: false,
+            who_to_follow_after: None,
             ..self.feed_ctx(sender)
         }
     }
@@ -4717,6 +5106,7 @@ impl App {
                 replying_to: self.replying_to.as_deref(),
                 composer: &self.inline_reply_box,
             }),
+            0,
         );
         if self.log_cursor.is_none() {
             self.log_list.append(&ui::root_row(
@@ -4729,6 +5119,7 @@ impl App {
     }
 
     fn rebuild_log_list(&mut self) {
+        self.user_card.dismiss();
         ui::unparent(&self.inline_reply_box);
         if self.compose_open {
             ui::clear_list(&self.log_list);
@@ -4781,6 +5172,7 @@ impl App {
             &mut last_day,
             None,
             Some(&threads),
+            0,
         );
         let username = self
             .profile
@@ -4938,6 +5330,7 @@ impl App {
     }
 
     fn render_thread(&self, sender: &ComponentSender<App>) {
+        self.user_card.dismiss();
         ui::unparent(&self.inline_reply_box);
         ui::clear_list(&self.reply_list);
         let Some(commit) = &self.open_commit else {
@@ -4945,6 +5338,7 @@ impl App {
         };
         let ctx = ui::FeedCtx {
             hover: None,
+            who_to_follow_after: None,
             ..self.feed_ctx(sender)
         };
         let threads = self.thread_state();
@@ -5064,7 +5458,7 @@ impl App {
     fn apply_unread(&mut self, notifications: i64, remotes: i64, alert: bool) {
         if alert && self.counts_ready {
             let new_notifications = notifications > self.unread_notifications;
-            let new_remotes = remotes > self.unread_remotes;
+            let new_remotes = remotes > self.unread_remotes && self.remote_arrivals.is_empty();
             if new_notifications {
                 ui::notify(
                     "activity",
@@ -5280,6 +5674,16 @@ impl App {
                 draft_lane: self.draft_lane.clone(),
                 device_name: auth::device_name(),
                 fingerprint: self.client.as_ref().and_then(Client::fingerprint),
+                automatic_translation: self.automatic_translation(),
+                translation_language: self
+                    .user_settings
+                    .as_ref()
+                    .and_then(|settings| settings.translation_language.clone()),
+                translation_languages: self
+                    .user_settings
+                    .as_ref()
+                    .map(|settings| settings.translation_languages.as_slice())
+                    .unwrap_or(&[]),
                 sender: sender.input_sender().clone(),
             }));
     }
@@ -5302,6 +5706,7 @@ impl App {
     }
 
     fn reset_profile_list(&self) {
+        self.user_card.dismiss();
         ui::unparent(&self.inline_reply_box);
         ui::reset_profile_list(&self.profile_list, &self.profile_hero);
     }
@@ -5651,6 +6056,66 @@ impl App {
             .find(|item| ThreadRef::from_summary(item) == *reference)
     }
 
+    fn conversation_for_mut(&mut self, reference: &ThreadRef) -> Option<&mut ConversationSummary> {
+        let matches = |item: &ConversationSummary| ThreadRef::from_summary(item) == *reference;
+        if let Some(index) = self.inbox.iter().position(matches) {
+            return self.inbox.get_mut(index);
+        }
+        self.inbox_hits
+            .as_mut()
+            .and_then(|hits| hits.iter_mut().find(|item| matches(item)))
+    }
+
+    fn apply_local_mute(&mut self, reference: &ThreadRef, muted: bool) {
+        let until = muted.then(|| chrono::Utc::now() + chrono::Duration::days(3650));
+        if self.thread_ref.as_ref() == Some(reference) {
+            if let Some(thread) = self.open_thread.as_mut() {
+                thread.muted_until_at = until;
+            }
+        }
+        if let Some(item) = self.conversation_for_mut(reference) {
+            item.muted_until_at = until;
+        }
+    }
+
+    fn alert_incoming_remotes(&mut self, conversations: &[ConversationSummary]) {
+        let me_id = self.user.as_ref().map(|user| user.user.id.clone());
+        let me = self.user.as_ref().map(|user| user.user.clone());
+        let mut chime = false;
+        let mut notify = false;
+        let mut title = String::from("New remote");
+        let mut body = String::from("You have a new message.");
+        for item in conversations {
+            let reference = ThreadRef::from_summary(item);
+            let key = reference.key();
+            let incoming = item.arrival_id(me_id.as_deref());
+            let previous = self.remote_arrivals.get(&key).copied().unwrap_or(0);
+            if incoming > 0 {
+                self.remote_arrivals.insert(key, incoming.max(previous));
+            }
+            let reading = self.thread_ref.as_ref() == Some(&reference);
+            if !item.should_alert_arrival(previous, reading, me_id.as_deref()) {
+                continue;
+            }
+            chime = true;
+            if reading {
+                continue;
+            }
+            notify = true;
+            title = item.title_for(me.as_ref());
+            let preview = item.preview_for(me_id.as_deref());
+            if !preview.is_empty() {
+                body = preview;
+            }
+        }
+        if notify {
+            ui::notify("remote", &title, &body);
+        }
+        if chime {
+            ui::play_notification_sound();
+        }
+    }
+
     fn header_stamp(&self, thread: Option<&ChatThread>) -> String {
         let Some(reference) = self.thread_ref.as_ref() else {
             return String::new();
@@ -5665,13 +6130,23 @@ impl App {
                     .join(",")
             })
             .unwrap_or_default();
+        let pins = thread
+            .map(|thread| {
+                thread
+                    .pinned
+                    .iter()
+                    .map(|message| message.id.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .unwrap_or_default();
         format!(
             "{}:{}:{}:{}:{}:{}:{}",
             reference.key(),
             thread.map(|thread| thread.is_archived).unwrap_or(false),
             self.is_remote_pinned(reference),
             self.is_remote_muted(reference),
-            self.prefs.pinned_message_id(&reference.key()).unwrap_or(0),
+            pins,
             members,
             self.aside_compact
         )
@@ -5681,7 +6156,6 @@ impl App {
         let Some(reference) = self.thread_ref.as_ref() else {
             return;
         };
-        let key = reference.key();
         let item = self.conversation_for(reference);
         let archived = thread
             .map(|thread| thread.is_archived)
@@ -5689,13 +6163,10 @@ impl App {
             .unwrap_or(false);
         let pinned = self.is_remote_pinned(reference);
         let muted = self.is_remote_muted(reference);
-        let pinned_id = self.prefs.pinned_message_id(&key);
-        let pinned_message = pinned_id.and_then(|id| {
-            thread
-                .or(self.open_thread.as_ref())
-                .and_then(|thread| thread.messages.iter().find(|message| message.id == id))
-                .cloned()
-        });
+        let pinned_messages = thread
+            .or(self.open_thread.as_ref())
+            .map(|thread| thread.pinned.as_slice())
+            .unwrap_or(&[]);
         ui::fill_thread_header(
             &self.thread_header,
             ui::ThreadHeaderState {
@@ -5706,7 +6177,8 @@ impl App {
                 archived,
                 pinned,
                 muted,
-                pinned_message: pinned_message.as_ref(),
+                pinned_messages,
+                can_unpin: self.can_pin_org_messages(thread.or(self.open_thread.as_ref())),
                 show_back: self.aside_compact,
             },
             sender,
@@ -5887,51 +6359,142 @@ impl App {
     }
 
     fn thread_chrome(&self, thread: &ChatThread) -> ui::ThreadChrome {
-        let key = self
-            .thread_ref
-            .as_ref()
-            .map(ThreadRef::key)
-            .unwrap_or_default();
-        let pinned_message = self.prefs.pinned_message_id(&key);
-        let mut reactions = HashMap::new();
-        for message in &thread.messages {
-            let emojis = self.prefs.reactions_for(&key, message.id);
-            if !emojis.is_empty() {
-                reactions.insert(message.id, emojis);
-            }
-        }
         ui::ThreadChrome {
-            pinned_message,
-            reactions,
+            pinned_ids: thread.pinned.iter().map(|message| message.id).collect(),
+            can_pin: self.can_pin_org_messages(Some(thread)),
             people: thread_people(thread, self.user.as_ref().map(|user| &user.user)),
             bubbles: self.bubble_width.clone(),
         }
     }
 
+    fn can_pin_org_messages(&self, thread: Option<&ChatThread>) -> bool {
+        matches!(self.thread_ref, Some(ThreadRef::Org { .. }))
+            && thread.is_some_and(|thread| {
+                thread.is_maintainer_for(self.user.as_ref().map(|user| user.user.id.as_str()))
+            })
+    }
+
     fn pin_thread_message(&mut self, id: i64, sender: &ComponentSender<App>) {
+        if !matches!(self.thread_ref, Some(ThreadRef::Org { .. })) {
+            return;
+        }
+        let Some(thread) = self.open_thread.as_ref() else {
+            return;
+        };
+        if !self.can_pin_org_messages(Some(thread)) {
+            return;
+        }
+        let is_pinned = thread.pinned.iter().any(|message| message.id == id);
+        if is_pinned {
+            self.request_message_pin(id, false, sender);
+            return;
+        }
+        if self.prefs.pin_warning_dismissed {
+            self.request_message_pin(id, true, sender);
+            return;
+        }
+        ui::confirm_pin_org_message(id, sender.input_sender().clone());
+    }
+
+    fn request_message_pin(&mut self, id: i64, pinned: bool, sender: &ComponentSender<App>) {
         let Some(reference) = self.thread_ref.clone() else {
             return;
         };
-        let pinned = self.prefs.toggle_message_pin(&reference.key(), id);
-        self.toast(if pinned {
-            "Pinned message."
-        } else {
-            "Unpinned message."
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let key = reference.key();
+        let sender2 = sender.clone();
+        relm4::spawn(async move {
+            sender2.input(AppMsg::ThreadPinsLoaded(
+                key,
+                pinned,
+                client.set_message_pinned(id, pinned).await,
+            ));
         });
-        self.thread_header_stamp.clear();
-        self.fill_open_thread_header(self.open_thread.as_ref(), sender.input_sender().clone());
     }
 
     fn toggle_message_reaction(&mut self, id: i64, emoji: &str, sender: &ComponentSender<App>) {
         let Some(reference) = self.thread_ref.clone() else {
             return;
         };
-        self.prefs.toggle_reaction(&reference.key(), id, emoji);
-        let emojis = self.prefs.reactions_for(&reference.key(), id);
+        let Some(me) = self.user.as_ref().map(|user| user.user.id.clone()) else {
+            return;
+        };
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let Some(thread) = self.open_thread.as_mut() else {
+            return;
+        };
+        let mut adding = true;
+        let mut next = None;
+        for message in thread.messages.iter_mut().chain(thread.pinned.iter_mut()) {
+            if message.id != id {
+                continue;
+            }
+            if let Some(index) = message
+                .reactions
+                .iter()
+                .position(|reaction| reaction.user_id == me && reaction.emoji == emoji)
+            {
+                message.reactions.remove(index);
+                adding = false;
+            } else {
+                message.reactions.push(MessageReaction {
+                    user_id: me.clone(),
+                    emoji: emoji.to_owned(),
+                });
+                adding = true;
+            }
+            next = Some(message.reactions.clone());
+        }
+        let Some(reactions) = next else {
+            return;
+        };
+        let people = thread_people(thread, self.user.as_ref().map(|user| &user.user));
         ui::refresh_message_reactions(
             &self.thread_list,
             id,
-            &emojis,
+            &reactions,
+            Some(me.as_str()),
+            &people,
+            sender.input_sender().clone(),
+        );
+        let key = reference.key();
+        let emoji = emoji.to_owned();
+        let sender2 = sender.clone();
+        relm4::spawn(async move {
+            sender2.input(AppMsg::MessageReactionsLoaded(
+                key,
+                id,
+                client.set_message_reaction(id, &emoji, adding).await,
+            ));
+        });
+    }
+
+    fn set_message_reactions(
+        &mut self,
+        id: i64,
+        reactions: Vec<MessageReaction>,
+        sender: &ComponentSender<App>,
+    ) {
+        let Some(thread) = self.open_thread.as_mut() else {
+            return;
+        };
+        for message in thread.messages.iter_mut().chain(thread.pinned.iter_mut()) {
+            if message.id == id {
+                message.reactions = reactions.clone();
+            }
+        }
+        let me = self.user.as_ref().map(|user| user.user.id.as_str());
+        let people = thread_people(thread, self.user.as_ref().map(|user| &user.user));
+        ui::refresh_message_reactions(
+            &self.thread_list,
+            id,
+            &reactions,
+            me,
+            &people,
             sender.input_sender().clone(),
         );
     }
@@ -5944,14 +6507,23 @@ impl App {
     }
 
     fn is_remote_muted(&self, reference: &ThreadRef) -> bool {
+        if self.thread_ref.as_ref() == Some(reference)
+            && self.open_thread.as_ref().is_some_and(ChatThread::is_muted)
+        {
+            return true;
+        }
+        if self
+            .conversation_for(reference)
+            .is_some_and(ConversationSummary::is_muted)
+        {
+            return true;
+        }
         match reference {
             ThreadRef::Direct { username } => self
                 .muted
                 .iter()
                 .any(|user| user.username.eq_ignore_ascii_case(username)),
-            ThreadRef::Org { .. } => self
-                .conversation_for(reference)
-                .is_some_and(ConversationSummary::is_muted),
+            ThreadRef::Org { .. } => false,
         }
     }
 
@@ -5960,6 +6532,7 @@ impl App {
         self.thread_ref = None;
         self.open_thread = None;
         self.remote_reply = None;
+        self.last_thread_ping = None;
         self.thread_typing.clear();
         self.thread_header_stamp.clear();
         ui::clear_list(&self.thread_list);
@@ -6024,6 +6597,11 @@ impl App {
             }
         }
         self.thread_typing = typing_copy(&thread, self.thread_ref.as_ref());
+        ui::refresh_thread_pins(
+            &self.thread_list,
+            &thread.pinned.iter().map(|message| message.id).collect(),
+            self.can_pin_org_messages(Some(&thread)),
+        );
         let stamp = self.header_stamp(Some(&thread));
         if stamp != self.thread_header_stamp {
             self.fill_open_thread_header(Some(&thread), sender.input_sender().clone());
@@ -6038,6 +6616,12 @@ impl App {
             relm4::spawn(async move {
                 let _ = client.mark_read(&reference, through).await;
             });
+        }
+        if let Some(id) = latest_ping_id(&thread.messages) {
+            if self.last_thread_ping.is_some_and(|previous| id > previous) && !thread.is_muted() {
+                ui::play_notification_sound();
+            }
+            self.last_thread_ping = Some(self.last_thread_ping.unwrap_or(0).max(id));
         }
         self.open_thread = Some(thread);
         if opened {
@@ -6115,26 +6699,28 @@ impl App {
     }
 
     fn mute_open_remote(&mut self, sender: &ComponentSender<App>) {
-        let Some(ThreadRef::Direct { username }) = self.thread_ref.clone() else {
+        let Some(reference) = self.thread_ref.clone() else {
             return;
         };
-        let muted = self.is_remote_muted(&ThreadRef::Direct {
-            username: username.clone(),
-        });
+        let muted = self.is_remote_muted(&reference);
         let Some(client) = self.client.clone() else {
             return;
         };
+        self.apply_local_mute(&reference, !muted);
+        self.thread_header_stamp.clear();
+        self.fill_open_thread_header(self.open_thread.as_ref(), sender.input_sender().clone());
         self.begin_busy();
         let sender2 = sender.clone();
         relm4::spawn(async move {
-            sender2.input(AppMsg::ThreadActionDone(if muted {
-                client.unmute(&username).await.map(|()| "Unmuted.".into())
-            } else {
-                client
-                    .mute(&username)
-                    .await
-                    .map(|()| "Muted. You won't see their commits or hear from them.".into())
-            }));
+            sender2.input(AppMsg::ThreadActionDone(
+                client.set_remote_muted(&reference, !muted).await.map(|_| {
+                    if muted {
+                        "Unmuted.".into()
+                    } else {
+                        "Muted. You won't hear new messages from this remote.".into()
+                    }
+                }),
+            ));
         });
     }
 
@@ -6186,6 +6772,175 @@ impl App {
                 client.mutes().await,
                 client.blocks().await,
             ));
+        });
+    }
+
+    fn automatic_translation(&self) -> bool {
+        self.user_settings
+            .as_ref()
+            .map(|settings| settings.automatic_translation)
+            .unwrap_or(true)
+    }
+
+    fn translation_language_code(&self) -> String {
+        self.user_settings
+            .as_ref()
+            .and_then(|settings| settings.translation_language.as_deref())
+            .map(str::trim)
+            .filter(|code| !code.is_empty())
+            .map(str::to_owned)
+            .unwrap_or_else(device_language)
+    }
+
+    fn who_to_follow_after(&self) -> Option<usize> {
+        if !self.prefs.show_who_to_follow || self.aside_visible() {
+            return None;
+        }
+        if self.visible != "log" || self.nav.log().is_none() {
+            return None;
+        }
+        ui::who_to_follow_index(self.log_commits.len())
+    }
+
+    fn maybe_refresh_who_to_follow(&mut self, sender: &ComponentSender<App>) {
+        if self.who_to_follow_after().is_some() {
+            self.refresh_visible_feed(sender, true);
+        }
+    }
+
+    fn patch_settings(&mut self, patch: impl FnOnce(&mut UserSettings)) {
+        patch(self.user_settings.get_or_insert_with(UserSettings::default));
+    }
+
+    fn is_muted(&self, username: &str) -> bool {
+        self.muted
+            .iter()
+            .any(|user| user.username.eq_ignore_ascii_case(username))
+    }
+
+    fn is_blocked(&self, username: &str) -> bool {
+        self.blocked
+            .iter()
+            .any(|user| user.username.eq_ignore_ascii_case(username))
+    }
+
+    fn load_user_preview(&mut self, username: &str, sender: &ComponentSender<App>) {
+        let key = UserPreview::key(username);
+        if key.is_empty() || self.user_card.cached(&key).is_some() {
+            return;
+        }
+        if !self.user_preview_loading.insert(key) {
+            return;
+        }
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let username = username.to_owned();
+        let sender2 = sender.clone();
+        relm4::spawn(async move {
+            sender2.input(AppMsg::UserPreviewLoaded(
+                username.clone(),
+                client.user_preview(&username).await,
+            ));
+        });
+    }
+
+    fn load_user_settings(&self, sender: &ComponentSender<App>) {
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let sender2 = sender.clone();
+        relm4::spawn(async move {
+            sender2.input(AppMsg::UserSettingsLoaded(client.user_settings().await));
+        });
+    }
+
+    fn translate_commit(&mut self, id: &str, sender: &ComponentSender<App>) {
+        self.showing_original.remove(id);
+        self.requested_translation.insert(id.to_owned());
+        if self
+            .translations
+            .get(id)
+            .is_some_and(CommitTranslation::shows_translation)
+        {
+            self.refresh_visible_feed(sender, true);
+            return;
+        }
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        if !self.translation_loading.insert(id.to_owned()) {
+            return;
+        }
+        self.refresh_visible_feed(sender, true);
+        let language = self.translation_language_code();
+        let id = id.to_owned();
+        let sender2 = sender.clone();
+        relm4::spawn(async move {
+            sender2.input(AppMsg::CommitTranslated(
+                id.clone(),
+                client.translate_commit(&id, &language).await,
+            ));
+        });
+    }
+
+    fn queue_auto_translations_visible(&mut self, sender: &ComponentSender<App>) {
+        let mut commits = match self.visible {
+            "profile" => self.profile_commits.clone(),
+            "commit" => {
+                let mut all = self.ancestors.clone();
+                if let Some(commit) = &self.open_commit {
+                    all.push(commit.clone());
+                }
+                all.extend(self.thread_replies.iter().cloned());
+                all
+            }
+            "log" => self.log_commits.clone(),
+            _ => Vec::new(),
+        };
+        for replies in self.nested_replies.values() {
+            commits.extend(replies.iter().cloned());
+        }
+        self.queue_auto_translations(&commits, sender);
+    }
+
+    fn queue_auto_translations(&mut self, commits: &[Commit], sender: &ComponentSender<App>) {
+        if !self.automatic_translation() || self.user_settings.is_none() {
+            return;
+        }
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let me_id = self.user.as_ref().map(|user| user.user.id.clone());
+        let language = self.translation_language_code();
+        let mut ids = Vec::new();
+        for commit in commits {
+            if ids.len() >= 8 {
+                break;
+            }
+            if commit.is_own(me_id.as_deref()) {
+                continue;
+            }
+            if commit.body.as_ref().is_none_or(|body| body.is_empty()) {
+                continue;
+            }
+            if self.translations.contains_key(&commit.id) {
+                continue;
+            }
+            if !self.translation_loading.insert(commit.id.clone()) {
+                continue;
+            }
+            ids.push(commit.id.clone());
+        }
+        if ids.is_empty() {
+            return;
+        }
+        let sender2 = sender.clone();
+        relm4::spawn(async move {
+            for id in ids {
+                let result = client.translate_commit(&id, &language).await;
+                sender2.input(AppMsg::CommitTranslated(id, result));
+            }
         });
     }
 
@@ -6406,6 +7161,30 @@ fn is_text_input(widget: &gtk::Widget) -> bool {
         || widget.ancestor(gtk::Entry::static_type()).is_some()
 }
 
+fn device_language() -> String {
+    std::env::var("LC_ALL")
+        .ok()
+        .or_else(|| std::env::var("LC_MESSAGES").ok())
+        .or_else(|| std::env::var("LANG").ok())
+        .and_then(|value| language_code(&value))
+        .or_else(|| {
+            glib::language_names()
+                .into_iter()
+                .find_map(|name| language_code(&name))
+        })
+        .unwrap_or_else(|| "en".to_owned())
+}
+
+fn language_code(name: &str) -> Option<String> {
+    let code = name
+        .split(['_', '-', '.', '@'])
+        .next()
+        .unwrap_or(name)
+        .trim()
+        .to_ascii_lowercase();
+    (code.len() == 2 && code.chars().all(|c| c.is_ascii_alphabetic())).then_some(code)
+}
+
 fn poll_clipboard(sender: &ComponentSender<App>) {
     let Some(display) = gtk::gdk::Display::default() else {
         return;
@@ -6524,6 +7303,14 @@ fn feed_column_width(visible: &str, shell_compact: bool) -> i32 {
     }
 }
 
+fn feed_column_width_request(visible: &str, shell_compact: bool) -> i32 {
+    if feed_column_fills(shell_compact) {
+        -1
+    } else {
+        feed_column_width(visible, shell_compact)
+    }
+}
+
 fn feed_column_fills(shell_compact: bool) -> bool {
     shell_compact
 }
@@ -6570,6 +7357,14 @@ fn nav_is_collapsed(sidebar_collapsed: Option<bool>, nav_compact: bool) -> bool 
     sidebar_collapsed.unwrap_or(nav_compact)
 }
 
+fn latest_ping_id(messages: &[Message]) -> Option<i64> {
+    messages
+        .iter()
+        .filter(|message| message.event.as_deref() == Some("ping"))
+        .map(|message| message.id)
+        .max()
+}
+
 #[cfg(test)]
 fn commit_button_expands(sidebar_collapsed: Option<bool>, nav_compact: bool) -> bool {
     !nav_is_collapsed(sidebar_collapsed, nav_compact)
@@ -6599,6 +7394,38 @@ mod shell_tests {
     }
 
     #[test]
+    fn latest_ping_is_the_newest_ping_event() {
+        assert_eq!(
+            latest_ping_id(&[
+                Message {
+                    id: 1,
+                    event: Some("ping".into()),
+                    ..Message::default()
+                },
+                Message {
+                    id: 2,
+                    body: Some("hi".into()),
+                    ..Message::default()
+                },
+                Message {
+                    id: 4,
+                    event: Some("ping".into()),
+                    ..Message::default()
+                },
+            ]),
+            Some(4)
+        );
+        assert_eq!(
+            latest_ping_id(&[Message {
+                id: 3,
+                body: Some("hi".into()),
+                ..Message::default()
+            }]),
+            None
+        );
+    }
+
+    #[test]
     fn feed_stays_capped_until_the_sidebars_are_gone() {
         assert_eq!(feed_column_width("log", false), 620);
         assert_eq!(feed_column_width("profile", false), 620);
@@ -6614,6 +7441,10 @@ mod shell_tests {
             ["dn-main", "remotes"]
         );
         assert_eq!(feed_column_classes("log", true), ["dn-main", "fluid"]);
+        assert_eq!(feed_column_width_request("log", false), 620);
+        assert_eq!(feed_column_width_request("profile", false), 620);
+        assert_eq!(feed_column_width_request("remotes", false), 940);
+        assert_eq!(feed_column_width_request("log", true), -1);
     }
 
     #[test]
@@ -6628,6 +7459,14 @@ mod shell_tests {
         assert!(nav_shows_search(false, true, false));
         assert!(!nav_shows_search(false, false, true));
         assert!(!nav_shows_search(false, false, false));
+    }
+
+    #[test]
+    fn device_language_code_takes_the_first_two_letters() {
+        assert_eq!(language_code("en_US.UTF-8").as_deref(), Some("en"));
+        assert_eq!(language_code("pt-BR").as_deref(), Some("pt"));
+        assert_eq!(language_code("C").as_deref(), None);
+        assert_eq!(language_code("POSIX").as_deref(), None);
     }
 
     #[test]

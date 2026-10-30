@@ -178,19 +178,19 @@ fn commit_and_message_mentions_decode() {
     )
     .unwrap();
     assert_eq!(
-        commit.mentions.as_ref().unwrap().get("original").unwrap(),
+        commit.mentions().unwrap().get("original").unwrap(),
         "019a2b3c-4d5e-7f60-8a9b-0c1d2e3f4a5b"
     );
     let none: devnull_api::Commit =
         serde_json::from_str(r#"{"id": "c2", "body": "plain", "mentions": null}"#).unwrap();
-    assert!(none.mentions.is_none());
+    assert!(none.mentions().is_none());
     let message: devnull_api::Message =
         serde_json::from_str(r#"{"id": 1, "body": "Hi @nuno", "mentions": {"nuno": "u1"}}"#)
             .unwrap();
     assert_eq!(message.mentions.unwrap().get("nuno").unwrap(), "u1");
     let empty: devnull_api::Commit =
         serde_json::from_str(r#"{"id": "c3", "mentions": []}"#).unwrap();
-    assert!(empty.mentions.is_none());
+    assert!(empty.mentions().is_none());
 }
 
 #[test]

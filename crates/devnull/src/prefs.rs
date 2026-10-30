@@ -47,6 +47,9 @@ pub struct Prefs {
     #[serde(default)]
     pub pinned_messages: HashMap<String, i64>,
     #[serde(default)]
+    pub pin_warning_dismissed: bool,
+    #[serde(default)]
+    #[allow(dead_code)]
     pub message_reactions: HashMap<String, Vec<String>>,
 }
 
@@ -64,6 +67,7 @@ impl Default for Prefs {
             chat_docked: false,
             pinned_remotes: Vec::new(),
             pinned_messages: HashMap::new(),
+            pin_warning_dismissed: false,
             message_reactions: HashMap::new(),
         }
     }
@@ -130,48 +134,12 @@ impl Prefs {
         }
     }
 
-    pub fn pinned_message_id(&self, key: &str) -> Option<i64> {
-        self.pinned_messages.get(key).copied()
-    }
-
-    pub fn toggle_message_pin(&mut self, key: &str, id: i64) -> bool {
-        if self.pinned_messages.get(key) == Some(&id) {
-            self.pinned_messages.remove(key);
-            self.save();
-            false
-        } else {
-            self.pinned_messages.insert(key.to_owned(), id);
-            self.save();
-            true
+    pub fn dismiss_pin_warning(&mut self) {
+        if self.pin_warning_dismissed {
+            return;
         }
-    }
-
-    fn reaction_key(thread: &str, id: i64) -> String {
-        format!("{thread}:{id}")
-    }
-
-    pub fn reactions_for(&self, thread: &str, id: i64) -> Vec<String> {
-        self.message_reactions
-            .get(&Self::reaction_key(thread, id))
-            .cloned()
-            .unwrap_or_default()
-    }
-
-    pub fn toggle_reaction(&mut self, thread: &str, id: i64, emoji: &str) -> bool {
-        let key = Self::reaction_key(thread, id);
-        let list = self.message_reactions.entry(key.clone()).or_default();
-        if let Some(index) = list.iter().position(|known| known == emoji) {
-            list.remove(index);
-            if list.is_empty() {
-                self.message_reactions.remove(&key);
-            }
-            self.save();
-            false
-        } else {
-            list.push(emoji.to_owned());
-            self.save();
-            true
-        }
+        self.pin_warning_dismissed = true;
+        self.persist();
     }
 
     pub fn apply(&self) {

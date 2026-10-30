@@ -133,6 +133,58 @@ menubutton.dn-mobile-header-btn > button {
   padding: 6px;
 }
 
+.dn-user-card {
+  padding: 0;
+}
+
+.dn-user-card-body {
+  padding: 16px;
+  min-width: 272px;
+}
+
+.dn-user-card-name {
+  font-weight: 600;
+  font-size: 16px;
+}
+
+.dn-user-card-bio {
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.dn-user-card-avatar,
+button.dn-user-card-avatar {
+  padding: 0;
+  min-width: 0;
+  min-height: 0;
+  border-radius: 0;
+}
+
+.dn-user-card-follow,
+button.dn-user-card-follow,
+button.suggested-action.dn-user-card-follow {
+  min-width: 96px;
+  min-height: 32px;
+}
+
+.dn-user-card-menu {
+  padding: 4px;
+  min-width: 180px;
+}
+
+.dn-user-card-live,
+button.dn-user-card-live {
+  padding: 8px 10px;
+  min-height: 0;
+  border-radius: 8px;
+  background-color: @dn_wash;
+}
+
+.dn-user-card-watch {
+  font-weight: 600;
+  color: @dn_primary;
+}
+
 .dn-user-popover button.dn-nav-btn {
   min-height: 32px;
   padding: 8px 10px;
@@ -1362,11 +1414,29 @@ menubutton.dn-thread-menu > button {
 .dn-pinned-bar {
   padding: 8px 16px;
   border-top: 1px solid @dn_hairline;
+  border-radius: 0;
+  min-height: 0;
 }
 
 .dn-pinned-bar .dn-name {
   font-size: 12px;
   font-weight: 600;
+}
+
+.dn-pinned-panel {
+  min-width: 280px;
+}
+
+.dn-pinned-panel-head {
+  padding: 8px 12px;
+}
+
+.dn-pinned-item {
+  padding: 8px 12px;
+}
+
+.dn-flash .dn-message-bubble {
+  box-shadow: 0 0 0 2px @accent_bg_color;
 }
 
 .dn-member-stack {
@@ -1410,18 +1480,47 @@ button.dn-destructive-item {
   border-bottom: none;
 }
 
-.dn-remote-input,
-overlay.dn-remote-input,
-scrolledwindow.dn-remote-input {
+.dn-remote-row {
   min-height: 40px;
-  border: 1px solid @dn_hairline;
-  border-radius: 8px;
-  background-color: @dn_surface;
 }
 
-overlay.dn-remote-input scrolledwindow {
+.dn-remote-input,
+overlay.dn-remote-input {
   min-height: 40px;
+  padding: 0;
   border: none;
+  border-radius: 8px;
+  background-color: @dn_surface;
+  box-shadow: inset 0 0 0 1px @dn_hairline;
+}
+
+overlay.dn-remote-input scrolledwindow,
+overlay.dn-remote-input scrolledwindow > scrollbar,
+overlay.dn-remote-input scrolledwindow > undershoot,
+overlay.dn-remote-input scrolledwindow > overshoot {
+  min-height: 0;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background-color: transparent;
+  box-shadow: none;
+}
+
+.dn-remote-input textview.dn-composer-text,
+overlay.dn-remote-input textview.dn-composer-text {
+  padding: 10px 12px;
+  font-size: 15px;
+  line-height: 1.25;
+  background-color: transparent;
+}
+
+.dn-remote-input textview.dn-composer-text > text,
+overlay.dn-remote-input textview.dn-composer-text > text,
+.dn-remote-input textview.dn-composer-text text {
+  padding: 0;
+  min-height: 0;
+  font-size: 15px;
+  line-height: 1.25;
   background-color: transparent;
 }
 
@@ -1429,6 +1528,7 @@ overlay.dn-remote-input scrolledwindow {
   color: @dn_ink_muted;
   padding: 0 12px;
   font-size: 15px;
+  line-height: 1.25;
 }
 
 .dn-remote-reply {
@@ -1436,11 +1536,14 @@ overlay.dn-remote-input scrolledwindow {
 }
 
 .dn-remote-composer .dn-icon-btn,
-.dn-remote-composer button.dn-icon-btn {
+.dn-remote-composer button.dn-icon-btn,
+.dn-remote-composer button.dn-composer-icon {
   min-width: 40px;
   min-height: 40px;
+  max-height: 40px;
   padding: 0;
   margin: 0;
+  border: none;
   border-radius: 8px;
 }
 
@@ -1448,10 +1551,12 @@ overlay.dn-remote-input scrolledwindow {
 button.dn-push-btn,
 button.suggested-action.dn-push-btn {
   min-height: 40px;
-  min-width: 56px;
-  padding: 0 12px;
+  max-height: 40px;
+  min-width: 80px;
+  padding: 0 16px;
   margin: 0;
-  border-radius: 6px;
+  border: none;
+  border-radius: 8px;
   font-size: 13px;
 }
 
@@ -1553,6 +1658,12 @@ button.dn-reaction-chip {
   border: 1px solid @dn_hairline;
   background-color: @dn_surface;
   font-size: 13px;
+}
+
+.dn-reaction-chip.mine,
+button.dn-reaction-chip.mine {
+  border-color: @accent_bg_color;
+  background-color: alpha(@accent_bg_color, 0.16);
 }
 
 .dn-reaction-pick,
@@ -2485,6 +2596,10 @@ entry.dn-omnibox-entry > text {
   margin-bottom: 6px;
 }
 
+.dn-rail-avatar .dn-live-avatar-wrap {
+  margin-bottom: 8px;
+}
+
 .dn-live-ring {
   padding: 2px;
   border-radius: 9999px;
@@ -2582,6 +2697,41 @@ button.dn-aside-stat:hover .dn-aside-stat-label {
   padding: 4px 0;
 }
 
+.dn-who-log {
+  padding: 0;
+}
+
+.dn-who-log-inner {
+  padding: 16px 16px 16px 0;
+  border-bottom: 1px solid @dn_hairline;
+}
+
+.dn-who-log-list {
+  border: 1px solid @dn_hairline;
+  border-radius: 8px;
+  background-color: @dn_surface;
+}
+
+.dn-who-log-item {
+  padding: 12px;
+  border-bottom: 1px solid @dn_hairline;
+}
+
+.dn-who-log-item:last-child {
+  border-bottom: none;
+}
+
+.dn-translation-notice {
+  margin-top: 4px;
+}
+
+.dn-translation-original,
+button.dn-translation-original {
+  min-height: 0;
+  padding: 0;
+  color: @dn_primary;
+}
+
 .dn-search-user {
   padding: 10px 16px;
 }
@@ -2598,6 +2748,11 @@ button.suggested-action {
   color: @dn_primary_ink;
   border-radius: 6px;
   min-height: 36px;
+}
+
+button.suggested-action.dn-push-btn {
+  min-height: 40px;
+  max-height: 40px;
 }
 
 button.dn-commit-btn {
@@ -2818,7 +2973,7 @@ window.dark .dn-inbox-search entry,
 window.dark .dn-remote-input,
 window.dark overlay.dn-remote-input,
 window.dark scrolledwindow.dn-remote-input {
-  border-color: #2a2a2d;
+  box-shadow: inset 0 0 0 1px #2a2a2d;
   background-color: #18181a;
 }
 
@@ -3054,6 +3209,30 @@ window.dark .dn-aside-links {
 
 window.dark .dn-aside-follow {
   border-color: #2a2a2d;
+}
+
+window.dark .dn-user-card-live,
+window.dark button.dn-user-card-live {
+  background-color: #1c1c1f;
+}
+
+window.dark .dn-user-card-watch {
+  color: #7aa2f7;
+}
+
+window.dark .dn-who-log-inner,
+window.dark .dn-who-log-list,
+window.dark .dn-who-log-item {
+  border-color: #2a2a2d;
+}
+
+window.dark .dn-who-log-list {
+  background-color: #18181a;
+}
+
+window.dark .dn-translation-original,
+window.dark button.dn-translation-original {
+  color: #7aa2f7;
 }
 
 window.dark .dn-aside-toast {

@@ -80,8 +80,31 @@ pub struct User {
     pub has_sponsors_listing: Option<bool>,
     #[serde(default)]
     pub timezone: Option<String>,
+    #[serde(default)]
+    pub followed_by_following_count: Option<i64>,
     #[serde(default, deserialize_with = "deserialize_opt_live")]
     pub live: Option<LiveStream>,
+}
+
+impl User {
+    pub fn suggestion_reason(&self) -> Option<String> {
+        if let Some(count) = self.followed_by_following_count.filter(|count| *count > 0) {
+            return Some(format!("Followed by {count} you follow"));
+        }
+        match self.followers_count.unwrap_or(0) {
+            0 => None,
+            1 => Some("1 follower".into()),
+            count => Some(format!("{count} followers")),
+        }
+    }
+
+    pub fn bio_line(&self) -> Option<&str> {
+        self.bio
+            .as_deref()
+            .map(str::trim)
+            .filter(|bio| !bio.is_empty())
+            .and_then(|bio| bio.lines().map(str::trim).find(|line| !line.is_empty()))
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -90,6 +113,10 @@ pub struct LiveStream {
     pub url: String,
     #[serde(default)]
     pub thumbnail_url: Option<String>,
+    #[serde(default)]
+    pub platform: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_opt_datetime")]
+    pub ends_at: Option<DateTime<Utc>>,
 }
 
 fn deserialize_opt_live<'de, D>(deserializer: D) -> Result<Option<LiveStream>, D::Error>
@@ -106,7 +133,7 @@ where
             } else {
                 Some(LiveStream {
                     url,
-                    thumbnail_url: None,
+                    ..Default::default()
                 })
             }
         }
@@ -114,6 +141,15 @@ where
             .ok()
             .filter(|stream| !stream.url.is_empty()),
     })
+}
+
+impl LiveStream {
+    pub fn is_current(&self) -> bool {
+        match self.ends_at {
+            Some(ends_at) => ends_at > Utc::now(),
+            None => !self.url.is_empty(),
+        }
+    }
 }
 
 impl User {
@@ -127,6 +163,7 @@ impl User {
     pub fn live_url(&self) -> Option<&str> {
         self.live
             .as_ref()
+            .filter(|stream| stream.is_current())
             .map(|stream| stream.url.as_str())
             .filter(|url| !url.is_empty())
     }
@@ -175,6 +212,272 @@ fn github_login_from_url(url: &str) -> Option<&str> {
         .or_else(|| url.strip_prefix("http://www.github.com/"))?;
     let login = rest.split('/').next()?;
     (!login.is_empty()).then_some(login)
+}
+
+/// A GitHub organization that commits can mention, as `/api/v1/organizations/{handle}` returns it.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct Organization {
+    #[serde(default, alias = "username")]
+    pub handle: String,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
+    #[serde(default)]
+    pub bio: Option<String>,
+    #[serde(default)]
+    pub location: Option<String>,
+    #[serde(default)]
+    pub website: Option<String>,
+    #[serde(default)]
+    pub github_url: Option<String>,
+    #[serde(default)]
+    pub html_url: Option<String>,
+    #[serde(default)]
+    pub lane: Option<Lane>,
+    #[serde(default, deserialize_with = "deserialize_vec")]
+    pub admins: Vec<User>,
+}
+
+impl Organization {
+    pub fn display_name(&self) -> &str {
+        match &self.name {
+            Some(name) if !name.trim().is_empty() => name,
+            _ => &self.handle,
+        }
+    }
+
+    pub fn html_url(&self, base: &str) -> String {
+        self.html_url
+            .clone()
+            .unwrap_or_else(|| format!("{}/@{}", base.trim_end_matches('/'), self.handle))
+    }
+
+    pub fn github_url(&self) -> String {
+        self.github_url.clone().unwrap_or_else(|| {
+            if self.handle.is_empty() {
+                String::new()
+            } else {
+                format!("https://github.com/{}", self.handle)
+            }
+        })
+    }
+
+    pub fn from_value(value: serde_json::Value) -> Result<Self, serde_json::Error> {
+        let data = value.get("data").cloned().unwrap_or(value.clone());
+        let mut organization: Organization = serde_json::from_value(data.clone())?;
+        if organization.handle.trim().is_empty() {
+            if let Some(handle) = data
+                .get("username")
+                .and_then(serde_json::Value::as_str)
+                .or_else(|| value.get("handle").and_then(serde_json::Value::as_str))
+            {
+                organization.handle = handle.to_owned();
+            }
+        }
+        if organization.lane.is_none() {
+            organization.lane = value
+                .get("lane")
+                .cloned()
+                .or_else(|| data.get("lane").cloned())
+                .and_then(|lane| serde_json::from_value(lane).ok());
+        }
+        if organization.admins.is_empty() {
+            let admins = value
+                .get("admins")
+                .cloned()
+                .or_else(|| data.get("admins").cloned())
+                .unwrap_or(serde_json::Value::Null);
+            organization.admins = User::list_from_value(admins);
+        }
+        Ok(organization)
+    }
+
+    pub fn list_from_value(value: &serde_json::Value) -> Vec<Self> {
+        let data = value.get("data").unwrap_or(value);
+        let items = data
+            .as_array()
+            .or_else(|| data.get("organizations").and_then(serde_json::Value::as_array))
+            .or_else(|| value.get("organizations").and_then(|orgs| {
+                orgs.as_array()
+                    .or_else(|| orgs.get("data").and_then(serde_json::Value::as_array))
+            }));
+        items
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| serde_json::from_value::<Organization>(item.clone()).ok())
+                    .filter(|organization| !organization.handle.trim().is_empty())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// Composer `@` suggestions: developers first, then known organizations.
+#[derive(Debug, Clone, Default)]
+pub struct MentionSuggestions {
+    pub users: Vec<User>,
+    pub organizations: Vec<Organization>,
+}
+
+impl MentionSuggestions {
+    pub fn from_value(value: serde_json::Value) -> Self {
+        let organizations = value
+            .get("organizations")
+            .map(Organization::list_from_value)
+            .unwrap_or_default();
+        Self {
+            users: User::list_from_value(value),
+            organizations,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.users.is_empty() && self.organizations.is_empty()
+    }
+}
+
+/// Captured `@handle`s in a commit: developers and GitHub organizations, from either
+/// handle→id maps or the signed API's mention positions array.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct MentionMaps {
+    pub users: Option<HashMap<String, String>>,
+    pub organizations: Option<HashMap<String, String>>,
+}
+
+impl MentionMaps {
+    fn from_values(
+        mentions: Option<&serde_json::Value>,
+        organization_mentions: Option<&serde_json::Value>,
+    ) -> Self {
+        let (users, orgs_in_mentions) = split_mention_value(mentions, false);
+        let (_, orgs) = split_mention_value(organization_mentions, true);
+        Self {
+            users,
+            organizations: merge_mention_maps(orgs_in_mentions, orgs),
+        }
+    }
+}
+
+impl Serialize for MentionMaps {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(2))?;
+        map.serialize_entry("mentions", &self.users)?;
+        map.serialize_entry("organization_mentions", &self.organizations)?;
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for MentionMaps {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(Deserialize)]
+        struct Raw {
+            #[serde(default)]
+            mentions: Option<serde_json::Value>,
+            #[serde(default)]
+            organization_mentions: Option<serde_json::Value>,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        Ok(Self::from_values(
+            raw.mentions.as_ref(),
+            raw.organization_mentions.as_ref(),
+        ))
+    }
+}
+
+fn split_mention_value(
+    value: Option<&serde_json::Value>,
+    object_is_org: bool,
+) -> (Option<HashMap<String, String>>, Option<HashMap<String, String>>) {
+    match value {
+        None | Some(serde_json::Value::Null) => (None, None),
+        Some(serde_json::Value::Object(map)) => {
+            let parsed = map_from_mention_object(map);
+            if object_is_org {
+                (None, Some(parsed))
+            } else {
+                (Some(parsed), None)
+            }
+        }
+        Some(serde_json::Value::Array(items)) if items.is_empty() => (None, None),
+        Some(serde_json::Value::Array(items)) => {
+            let mut users = HashMap::new();
+            let mut organizations = HashMap::new();
+            for item in items {
+                let Some(handle) = mention_handle(item) else {
+                    continue;
+                };
+                let id = mention_id(item);
+                if mention_is_organization(item) {
+                    organizations.insert(handle, id);
+                } else {
+                    users.insert(handle, id);
+                }
+            }
+            (Some(users), Some(organizations).filter(|map| !map.is_empty()))
+        }
+        Some(_) => (None, None),
+    }
+}
+
+fn merge_mention_maps(
+    left: Option<HashMap<String, String>>,
+    right: Option<HashMap<String, String>>,
+) -> Option<HashMap<String, String>> {
+    match (left, right) {
+        (None, right) => right,
+        (left, None) => left,
+        (Some(mut left), Some(right)) => {
+            for (handle, id) in right {
+                left.entry(handle).or_insert(id);
+            }
+            Some(left)
+        }
+    }
+}
+
+fn map_from_mention_object(map: &serde_json::Map<String, serde_json::Value>) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for (key, item) in map {
+        if let Some(id) = item.as_str() {
+            out.insert(key.to_ascii_lowercase(), id.to_owned());
+        } else if let Some(id) = mention_id_opt(item) {
+            out.insert(key.to_ascii_lowercase(), id);
+        }
+    }
+    out
+}
+
+fn mention_handle(item: &serde_json::Value) -> Option<String> {
+    item.get("handle")
+        .or_else(|| item.get("username"))
+        .and_then(serde_json::Value::as_str)
+        .map(|handle| handle.trim().to_ascii_lowercase())
+        .filter(|handle| !handle.is_empty())
+}
+
+fn mention_id(item: &serde_json::Value) -> String {
+    mention_id_opt(item).unwrap_or_default()
+}
+
+fn mention_id_opt(item: &serde_json::Value) -> Option<String> {
+    item.get("id")
+        .and_then(|value| {
+            value
+                .as_str()
+                .map(str::to_owned)
+                .or_else(|| value.as_i64().map(|id| id.to_string()))
+                .or_else(|| value.as_u64().map(|id| id.to_string()))
+        })
+        .filter(|id| !id.is_empty())
+}
+
+fn mention_is_organization(item: &serde_json::Value) -> bool {
+    item.get("kind")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|kind| kind.eq_ignore_ascii_case("organization"))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -250,6 +553,113 @@ impl CurrentUser {
     pub fn chosen_lane(&self) -> Option<&Lane> {
         self.preferred_lane.as_ref().or(self.user.lane.as_ref())
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserSettings {
+    #[serde(default)]
+    pub timezone: Option<String>,
+    #[serde(default)]
+    pub show_local_time: bool,
+    #[serde(default, alias = "translationLanguage")]
+    pub translation_language: Option<String>,
+    #[serde(default = "default_true", alias = "automaticTranslation")]
+    pub automatic_translation: bool,
+    #[serde(default, alias = "translationLanguages")]
+    pub translation_languages: Vec<TranslationLanguage>,
+}
+
+impl Default for UserSettings {
+    fn default() -> Self {
+        Self {
+            timezone: None,
+            show_local_time: false,
+            translation_language: None,
+            automatic_translation: true,
+            translation_languages: Vec::new(),
+        }
+    }
+}
+
+fn default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct TranslationLanguage {
+    #[serde(default)]
+    pub code: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default, alias = "native_name", alias = "nativeName")]
+    pub native_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct CommitTranslation {
+    #[serde(default)]
+    pub language: String,
+    #[serde(default)]
+    pub source_language: Option<String>,
+    #[serde(default)]
+    pub source_name: Option<String>,
+    #[serde(default)]
+    pub available: bool,
+    #[serde(default)]
+    pub body: Option<String>,
+}
+
+impl CommitTranslation {
+    pub fn from_value(value: serde_json::Value) -> Self {
+        let root = value
+            .get("translation")
+            .or_else(|| value.get("data").and_then(|data| data.get("translation")))
+            .or_else(|| value.get("data"))
+            .unwrap_or(&value);
+        let body = root
+            .get("translated")
+            .and_then(segments_text)
+            .or_else(|| {
+                root.get("translated")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            });
+        Self {
+            language: root
+                .get("language")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            source_language: root
+                .get("source_language")
+                .or_else(|| root.get("sourceLanguage"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            source_name: root
+                .get("source_name")
+                .or_else(|| root.get("sourceName"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+            available: json_bool(root, "available").unwrap_or(false),
+            body,
+        }
+    }
+
+    pub fn shows_translation(&self) -> bool {
+        self.available && self.body.as_ref().is_some_and(|body| !body.is_empty())
+    }
+}
+
+fn segments_text(value: &serde_json::Value) -> Option<String> {
+    let segments = value
+        .get("body_segments")
+        .or_else(|| value.get("bodySegments"))
+        .and_then(serde_json::Value::as_array)?;
+    let text = segments
+        .iter()
+        .filter_map(|segment| segment.get("text").and_then(serde_json::Value::as_str))
+        .collect::<String>();
+    if text.is_empty() { None } else { Some(text) }
 }
 
 impl User {
@@ -408,6 +818,50 @@ impl Profile {
             .html_url
             .clone()
             .unwrap_or_else(|| format!("{}/@{}", base.trim_end_matches('/'), self.user.username))
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct UserPreview {
+    pub user: User,
+    pub is_following: bool,
+    pub follows_you: bool,
+    pub is_muting: bool,
+    pub is_blocking: bool,
+    pub is_unavailable: bool,
+}
+
+impl UserPreview {
+    pub fn from_profile(profile: Profile) -> Self {
+        Self {
+            is_following: profile.is_following,
+            follows_you: profile.follows_you,
+            is_muting: profile.is_muting,
+            is_blocking: false,
+            is_unavailable: false,
+            user: profile.user,
+        }
+    }
+
+    pub fn from_user(user: User) -> Self {
+        let is_following = user.is_followed_by_me();
+        let follows_you = user.follows_you.unwrap_or(false);
+        Self {
+            is_following,
+            follows_you,
+            is_muting: false,
+            is_blocking: false,
+            is_unavailable: false,
+            user,
+        }
+    }
+
+    pub fn username(&self) -> &str {
+        &self.user.username
+    }
+
+    pub fn key(username: &str) -> String {
+        username.trim().to_ascii_lowercase()
     }
 }
 
@@ -607,6 +1061,20 @@ fn json_vec<T: serde::de::DeserializeOwned>(
         .and_then(|v| serde_json::from_value(v).ok())
 }
 
+fn json_message_list(value: &serde_json::Value) -> Vec<Message> {
+    let items = value
+        .as_array()
+        .or_else(|| value.get("data").and_then(serde_json::Value::as_array));
+    items
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| serde_json::from_value(item.clone()).ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn json_users(value: &serde_json::Value, key: &str) -> Option<Vec<User>> {
     users_from_array(value.get(key)?)
 }
@@ -695,6 +1163,16 @@ where
             .collect(),
         Some(_) => Vec::new(),
     })
+}
+
+fn deserialize_reactions<'de, D>(deserializer: D) -> Result<Vec<MessageReaction>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value
+        .map(|value| MessageReaction::from_list(&value))
+        .unwrap_or_default())
 }
 
 fn value_as_string(value: &serde_json::Value) -> Option<String> {
@@ -868,12 +1346,20 @@ pub struct Commit {
     pub quoted_commit: Option<Box<Commit>>,
     #[serde(default)]
     pub parent: Option<Box<Commit>>,
-    /// Captured `@username` → user id, lowercased keys. Only these mentions are linkified.
-    #[serde(default, deserialize_with = "deserialize_mentions")]
-    pub mentions: Option<HashMap<String, String>>,
+    /// Captured `@handle`s: developers and GitHub organizations.
+    #[serde(default, flatten)]
+    pub captured: MentionMaps,
 }
 
 impl Commit {
+    pub fn mentions(&self) -> Option<&HashMap<String, String>> {
+        self.captured.users.as_ref()
+    }
+
+    pub fn organization_mentions(&self) -> Option<&HashMap<String, String>> {
+        self.captured.organizations.as_ref()
+    }
+
     pub fn is_deleted(&self) -> bool {
         self.deleted_at.is_some() && self.body.is_none()
     }
@@ -1075,6 +1561,12 @@ pub struct Notification {
     pub unread_count: Option<i64>,
     #[serde(default, deserialize_with = "deserialize_opt_commit")]
     pub commit: Option<Commit>,
+    #[serde(default, deserialize_with = "deserialize_opt_i64")]
+    pub level: Option<i64>,
+    #[serde(default)]
+    pub rank: Option<String>,
+    #[serde(default)]
+    pub rank_description: Option<String>,
 }
 
 impl Notification {
@@ -1095,11 +1587,29 @@ impl Notification {
             "reply" | "replied" => format!("{actor} replied to your commit"),
             "quote" | "quoted" => format!("{actor} quoted your commit"),
             "mention" | "mentioned" => format!("{actor} mentioned you"),
+            "first_commit" => format!("{actor} made their first commit"),
+            "leveled_up" => self.level_up_title(),
             "approved" => "Your commit was approved.".into(),
             "rejected" => "Your commit was rejected.".into(),
             other if !other.is_empty() => format!("{actor}: {other}"),
             _ => format!("{actor} notified you"),
         }
+    }
+
+    pub fn level_up_title(&self) -> String {
+        match (
+            self.level,
+            self.rank.as_deref().filter(|rank| !rank.is_empty()),
+        ) {
+            (Some(level), Some(rank)) => format!("You reached level {level}: {rank}."),
+            _ => "You leveled up.".into(),
+        }
+    }
+
+    pub fn level_chip(&self) -> Option<String> {
+        let level = self.level?;
+        let rank = self.rank.as_deref().filter(|rank| !rank.is_empty())?;
+        Some(format!("Lv. {level} · {rank}"))
     }
 
     pub fn kind(&self) -> &str {
@@ -1339,7 +1849,7 @@ impl NotificationFilter {
     pub fn empty_detail(self) -> &'static str {
         match self {
             Self::All => {
-                "Nothing here yet. Follows, stars, replies, quotes, mentions, and moderation updates for your commits will show up here."
+                "Nothing here yet. Follows, stars, replies, quotes, mentions, level-ups, and moderation updates for your commits will show up here."
             }
             Self::Replies => {
                 "No replies yet. When someone replies to one of your commits, it shows up here."
@@ -1425,8 +1935,41 @@ pub struct Message {
     pub subject: Option<User>,
     #[serde(default, deserialize_with = "deserialize_opt_ok")]
     pub user: Option<User>,
+    #[serde(default, deserialize_with = "deserialize_reactions")]
+    pub reactions: Vec<MessageReaction>,
     #[serde(default, deserialize_with = "deserialize_opt_datetime")]
     pub created_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct MessageReaction {
+    #[serde(default, deserialize_with = "deserialize_stringish")]
+    pub user_id: String,
+    #[serde(default)]
+    pub emoji: String,
+}
+
+impl MessageReaction {
+    pub fn from_list(value: &serde_json::Value) -> Vec<Self> {
+        let raw = value
+            .get("reactions")
+            .or_else(|| value.get("data").and_then(|data| data.get("reactions")))
+            .unwrap_or(value);
+        let items = raw
+            .as_array()
+            .or_else(|| raw.get("data").and_then(serde_json::Value::as_array));
+        items
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|item| serde_json::from_value(item.clone()).ok())
+                    .filter(|reaction: &Self| {
+                        !reaction.emoji.trim().is_empty() && !reaction.user_id.is_empty()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1461,7 +2004,11 @@ pub struct ConversationSummary {
     pub last_message_at: Option<DateTime<Utc>>,
     #[serde(default, alias = "unread", alias = "unread_count")]
     pub ahead: i64,
-    #[serde(default)]
+    #[serde(
+        default,
+        alias = "lastIncomingMessageId",
+        deserialize_with = "deserialize_opt_i64"
+    )]
     pub last_incoming_message_id: Option<i64>,
     #[serde(default)]
     pub is_archived: bool,
@@ -1578,6 +2125,45 @@ impl ConversationSummary {
         self.muted_until_at.is_some_and(|until| until > Utc::now())
     }
 
+    pub fn arrival_id(&self, me_id: Option<&str>) -> i64 {
+        if let Some(id) = self.last_incoming_message_id.filter(|id| *id > 0) {
+            return id;
+        }
+        let Some(message) = &self.last_message else {
+            return 0;
+        };
+        let mine = me_id.is_some_and(|me| {
+            message.user_id.as_deref() == Some(me)
+                || message.user.as_ref().is_some_and(|user| user.id == me)
+        });
+        if mine {
+            0
+        } else {
+            message.id
+        }
+    }
+
+    pub fn should_alert_arrival(
+        &self,
+        previous_incoming: i64,
+        reading: bool,
+        me_id: Option<&str>,
+    ) -> bool {
+        let incoming = self.arrival_id(me_id);
+        if previous_incoming <= 0 || incoming <= previous_incoming || self.ahead <= 0 {
+            return false;
+        }
+        if self.is_muted() {
+            return false;
+        }
+        let ping = self
+            .last_message
+            .as_ref()
+            .and_then(|message| message.event.as_deref())
+            == Some("ping");
+        !reading || ping
+    }
+
     pub fn matches_query(&self, query: &str, me: Option<&User>) -> bool {
         let needle = query.trim().trim_start_matches('@').to_lowercase();
         if needle.is_empty() {
@@ -1652,6 +2238,13 @@ pub fn event_line(
         Some("promoted") => format!("{actor} made {subject} a maintainer"),
         Some("demoted") => format!("{actor} made {subject} a contributor"),
         Some("inherited") => format!("{actor} inherited maintainer"),
+        Some("ping") => format!("{actor} sent a ping"),
+        Some("call_started") => format!("{actor} started a call"),
+        Some("call_answered") => format!("{actor} answered the call"),
+        Some("call_cancelled") => format!("{actor} cancelled the call"),
+        Some("call_declined") => format!("{actor} declined the call"),
+        Some("call_failed") => format!("{actor} couldn't answer the call"),
+        Some("call_missed") => format!("missed call from {actor}"),
         _ => body.unwrap_or_default().to_owned(),
     }
 }
@@ -1760,9 +2353,54 @@ pub struct ChatThread {
     pub partner_typing: bool,
     #[serde(default, deserialize_with = "deserialize_vec")]
     pub typing: Vec<String>,
+    #[serde(default, deserialize_with = "deserialize_vec")]
+    pub pinned: Vec<Message>,
+    #[serde(default)]
+    pub role: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_opt_datetime")]
+    pub muted_until_at: Option<DateTime<Utc>>,
 }
 
 impl ChatThread {
+    pub fn pinned_from_value(value: &serde_json::Value) -> Vec<Message> {
+        if let Some(pinned) = value.get("pinned") {
+            return json_message_list(pinned);
+        }
+        if let Some(data) = value.get("data") {
+            if let Some(pinned) = data.get("pinned") {
+                return json_message_list(pinned);
+            }
+            if data.is_array() {
+                return json_message_list(data);
+            }
+        }
+        Vec::new()
+    }
+
+    pub fn is_muted(&self) -> bool {
+        self.muted_until_at.is_some_and(|until| until > Utc::now())
+    }
+
+    pub fn is_maintainer_for(&self, user_id: Option<&str>) -> bool {
+        if self
+            .role
+            .as_deref()
+            .is_some_and(|role| role.eq_ignore_ascii_case("maintainer"))
+        {
+            return true;
+        }
+        let Some(user_id) = user_id.filter(|id| !id.is_empty()) else {
+            return false;
+        };
+        self.members.iter().any(|member| {
+            member.user.id == user_id
+                && member
+                    .role
+                    .as_deref()
+                    .is_some_and(|role| role.eq_ignore_ascii_case("maintainer"))
+        })
+    }
+
     pub fn from_value(value: serde_json::Value) -> Self {
         let root = value
             .get("data")
@@ -1776,6 +2414,12 @@ impl ChatThread {
             .into_iter()
             .filter_map(|item| serde_json::from_value(item).ok())
             .collect();
+        let pinned = Self::pinned_from_value(&value);
+        let role = root
+            .get("role")
+            .and_then(serde_json::Value::as_str)
+            .filter(|role| !role.is_empty())
+            .map(str::to_owned);
         Self {
             messages,
             has_older: json_bool(root, "has_older")
@@ -1815,6 +2459,9 @@ impl ChatThread {
                         .collect()
                 })
                 .unwrap_or_default(),
+            pinned,
+            role,
+            muted_until_at: json_datetime(root, &["muted_until_at", "mutedUntilAt"]),
         }
     }
 }
@@ -1869,6 +2516,13 @@ impl ThreadRef {
         match self {
             Self::Direct { username } => username.clone(),
             Self::Org { id, .. } => format!("org:{id}"),
+        }
+    }
+
+    pub fn html_url(&self, base: &str) -> String {
+        match self {
+            Self::Direct { username } => format!("{base}/remotes/@{username}"),
+            Self::Org { id, .. } => format!("{base}/remotes/orgs/{id}"),
         }
     }
 }
@@ -2279,6 +2933,68 @@ mod unread_count_tests {
     }
 
     #[test]
+    fn live_stream_reads_platform_and_end_time() {
+        let user: User = serde_json::from_value(json!({
+            "id": "1",
+            "handle": "nuno",
+            "live": {
+                "url": "https://www.twitch.tv/nuno",
+                "thumbnail_url": "https://example.com/thumb.jpg",
+                "platform": "twitch",
+                "ends_at": "2099-01-01T00:00:00Z"
+            }
+        }))
+        .unwrap();
+        let live = user.live.as_ref().expect("live object");
+        assert_eq!(live.platform.as_deref(), Some("twitch"));
+        assert!(live.ends_at.is_some());
+        assert!(user.is_live());
+    }
+
+    #[test]
+    fn expired_live_stream_is_not_live() {
+        let user: User = serde_json::from_value(json!({
+            "id": "1",
+            "handle": "nuno",
+            "live": {
+                "url": "https://www.twitch.tv/nuno",
+                "platform": "twitch",
+                "ends_at": "2020-01-01T00:00:00Z"
+            }
+        }))
+        .unwrap();
+        assert!(!user.is_live());
+        assert_eq!(user.live_url(), None);
+    }
+
+    #[test]
+    fn first_commit_notification_names_the_actor() {
+        let notice = Notification {
+            kind: Some("first_commit".into()),
+            actor: Some(User {
+                username: "ada".into(),
+                name: Some("Ada".into()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert_eq!(notice.title(), "Ada made their first commit");
+    }
+
+    #[test]
+    fn leveled_up_notification_names_the_rank() {
+        let notice = Notification {
+            kind: Some("leveled_up".into()),
+            level: Some(4),
+            rank: Some("maintainer".into()),
+            rank_description: Some("You keep the lights on.".into()),
+            ..Default::default()
+        };
+        assert_eq!(notice.title(), "You reached level 4: maintainer.");
+        assert_eq!(notice.level_chip().as_deref(), Some("Lv. 4 · maintainer"));
+    }
+
+    #[test]
     fn live_following_list_reads_wrapped_users() {
         let users = User::list_from_value(json!({
             "data": [{
@@ -2327,6 +3043,138 @@ mod unread_count_tests {
         }))
         .unwrap();
         assert!(user.is_followed_by_me());
+    }
+
+    #[test]
+    fn suggestion_reason_prefers_people_you_follow() {
+        let user = User {
+            followed_by_following_count: Some(3),
+            followers_count: Some(12),
+            bio: Some("  ships rust\nand cakes".into()),
+            ..User::default()
+        };
+        assert_eq!(
+            user.suggestion_reason().as_deref(),
+            Some("Followed by 3 you follow")
+        );
+        assert_eq!(user.bio_line(), Some("ships rust"));
+        let popular = User {
+            followers_count: Some(1),
+            ..User::default()
+        };
+        assert_eq!(popular.suggestion_reason().as_deref(), Some("1 follower"));
+    }
+
+    #[test]
+    fn user_preview_carries_follow_flags_from_the_profile() {
+        let preview = UserPreview::from_user(User {
+            username: "ada".into(),
+            is_followed: Some(false),
+            follows_you: Some(true),
+            ..User::default()
+        });
+        assert!(!preview.is_following);
+        assert!(preview.follows_you);
+        assert_eq!(UserPreview::key("Ada"), "ada");
+    }
+
+    #[test]
+    fn organization_reads_handle_and_additional_admins() {
+        let organization = Organization::from_value(json!({
+            "data": {
+                "handle": "laravel",
+                "name": "Laravel",
+                "avatar_url": "https://example.com/laravel.png",
+                "bio": "The PHP framework",
+                "location": "United States",
+                "website": "https://laravel.com",
+                "github_url": "https://github.com/laravel",
+                "html_url": "https://dev-null.sh/@laravel"
+            },
+            "lane": 1,
+            "admins": [{ "id": "u1", "handle": "taylorotwell", "name": "Taylor Otwell" }]
+        }))
+        .unwrap();
+        assert_eq!(organization.handle, "laravel");
+        assert_eq!(organization.display_name(), "Laravel");
+        assert_eq!(organization.lane, Some(Lane::Palette(1)));
+        assert_eq!(organization.admins[0].username, "taylorotwell");
+        assert_eq!(
+            organization.html_url("https://dev-null.sh"),
+            "https://dev-null.sh/@laravel"
+        );
+    }
+
+    #[test]
+    fn commit_mentions_split_organizations_from_maps_and_positions() {
+        let mapped: Commit = serde_json::from_value(json!({
+            "id": "c1",
+            "mentions": { "nuno": "u1" },
+            "organization_mentions": { "Laravel": "o1" }
+        }))
+        .unwrap();
+        assert_eq!(mapped.mentions().unwrap().get("nuno").unwrap(), "u1");
+        assert_eq!(
+            mapped.organization_mentions().unwrap().get("laravel").unwrap(),
+            "o1"
+        );
+
+        let positioned: Commit = serde_json::from_value(json!({
+            "id": "c2",
+            "mentions": [
+                { "handle": "nuno", "offset": 0, "length": 5, "kind": "user" },
+                { "handle": "laravel", "offset": 8, "length": 8, "kind": "organization" }
+            ]
+        }))
+        .unwrap();
+        assert_eq!(positioned.mentions().unwrap().get("nuno").unwrap(), "");
+        assert_eq!(
+            positioned
+                .organization_mentions()
+                .unwrap()
+                .get("laravel")
+                .unwrap(),
+            ""
+        );
+        assert!(positioned.mentions().unwrap().get("laravel").is_none());
+    }
+
+    #[test]
+    fn mention_suggestions_read_users_then_organizations() {
+        let suggestions = MentionSuggestions::from_value(json!({
+            "data": [{ "id": "u1", "handle": "nuno", "name": "Nuno Maduro" }],
+            "organizations": [{ "handle": "laravel", "name": "Laravel" }]
+        }));
+        assert_eq!(suggestions.users[0].username, "nuno");
+        assert_eq!(suggestions.organizations[0].handle, "laravel");
+    }
+
+    #[test]
+    fn user_settings_default_to_automatic_translation() {
+        let empty: UserSettings = serde_json::from_value(json!({})).unwrap();
+        assert!(empty.automatic_translation);
+        assert!(UserSettings::default().automatic_translation);
+    }
+
+    #[test]
+    fn commit_translation_reads_body_segments() {
+        let translation = CommitTranslation::from_value(json!({
+            "translation": {
+                "language": "en",
+                "source_language": "de",
+                "source_name": "German",
+                "available": true,
+                "translated": {
+                    "body_segments": [
+                        { "text": "Good " },
+                        { "text": "morning" }
+                    ]
+                }
+            }
+        }));
+        assert_eq!(translation.source_name.as_deref(), Some("German"));
+        assert_eq!(translation.body.as_deref(), Some("Good morning"));
+        assert!(translation.shows_translation());
     }
 
     #[test]
@@ -2509,6 +3357,21 @@ mod remotes_tests {
             .key(),
             "org:org-1"
         );
+        assert_eq!(
+            ThreadRef::Direct {
+                username: "ada".into()
+            }
+            .html_url("https://dev-null.sh"),
+            "https://dev-null.sh/remotes/@ada"
+        );
+        assert_eq!(
+            ThreadRef::Org {
+                id: "org-1".into(),
+                name: Some("core".into())
+            }
+            .html_url("https://dev-null.sh"),
+            "https://dev-null.sh/remotes/orgs/org-1"
+        );
     }
 
     #[test]
@@ -2536,6 +3399,62 @@ mod remotes_tests {
     }
 
     #[test]
+    fn call_events_name_who_started_or_missed() {
+        let ada = User {
+            username: "ada".into(),
+            ..User::default()
+        };
+        assert_eq!(
+            event_preview(&Message {
+                event: Some("call_started".into()),
+                user: Some(ada.clone()),
+                ..Message::default()
+            }),
+            "@ada started a call"
+        );
+        assert_eq!(
+            event_preview(&Message {
+                event: Some("call_answered".into()),
+                user: Some(ada.clone()),
+                ..Message::default()
+            }),
+            "@ada answered the call"
+        );
+        assert_eq!(
+            event_preview(&Message {
+                event: Some("call_cancelled".into()),
+                user: Some(ada.clone()),
+                ..Message::default()
+            }),
+            "@ada cancelled the call"
+        );
+        assert_eq!(
+            event_preview(&Message {
+                event: Some("call_declined".into()),
+                user: Some(ada.clone()),
+                ..Message::default()
+            }),
+            "@ada declined the call"
+        );
+        assert_eq!(
+            event_preview(&Message {
+                event: Some("call_failed".into()),
+                user: Some(ada.clone()),
+                ..Message::default()
+            }),
+            "@ada couldn't answer the call"
+        );
+        assert_eq!(
+            event_preview(&Message {
+                event: Some("call_missed".into()),
+                user: Some(ada),
+                ..Message::default()
+            }),
+            "missed call from @ada"
+        );
+    }
+
+    #[test]
     fn thread_parses_pull_receipts() {
         let thread = ChatThread::from_value(serde_json::json!({
             "messages": [],
@@ -2549,5 +3468,139 @@ mod remotes_tests {
         assert_eq!(thread.partner_read_through_id, 12);
         assert!(thread.partner_read_at.is_some());
         assert_eq!(thread.members[0].read_through_id, 9);
+    }
+
+    #[test]
+    fn thread_parses_org_pins_and_the_viewer_role() {
+        let thread = ChatThread::from_value(serde_json::json!({
+            "role": "maintainer",
+            "messages": [{ "id": 1, "body": "hi" }],
+            "pinned": [
+                { "id": 4, "body": "keep this", "user": { "id": "1", "username": "ada" } },
+                { "broken": true },
+                { "id": "7", "body": "and this" }
+            ],
+            "members": [{
+                "user": { "id": "2", "username": "grace" },
+                "role": "contributor"
+            }]
+        }));
+        assert_eq!(thread.role.as_deref(), Some("maintainer"));
+        assert!(thread.is_maintainer_for(None));
+        assert_eq!(thread.pinned.len(), 2);
+        assert_eq!(thread.pinned[0].id, 4);
+        assert_eq!(thread.pinned[1].id, 7);
+        let contributor = ChatThread {
+            members: vec![Member {
+                user: User {
+                    id: "2".into(),
+                    username: "grace".into(),
+                    ..User::default()
+                },
+                role: Some("contributor".into()),
+                ..Member::default()
+            }],
+            ..ChatThread::default()
+        };
+        assert!(!contributor.is_maintainer_for(Some("2")));
+        let by_member = ChatThread {
+            members: vec![Member {
+                user: User {
+                    id: "2".into(),
+                    username: "grace".into(),
+                    ..User::default()
+                },
+                role: Some("maintainer".into()),
+                ..Member::default()
+            }],
+            ..ChatThread::default()
+        };
+        assert!(by_member.is_maintainer_for(Some("2")));
+        assert!(!by_member.is_maintainer_for(Some("1")));
+    }
+
+    #[test]
+    fn pin_payload_reads_a_wrapped_collection() {
+        let pinned = ChatThread::pinned_from_value(&serde_json::json!({
+            "pinned": { "data": [{ "id": 9, "body": "note" }] },
+            "reactions_version": 3
+        }));
+        assert_eq!(pinned.len(), 1);
+        assert_eq!(pinned[0].id, 9);
+        let nested = ChatThread::pinned_from_value(&serde_json::json!({
+            "data": { "pinned": [{ "id": 2, "body": "hi" }] }
+        }));
+        assert_eq!(nested[0].id, 2);
+    }
+
+    #[test]
+    fn conversation_mute_and_arrival_alerts() {
+        let muted = ConversationSummary {
+            last_incoming_message_id: Some(8),
+            ahead: 1,
+            muted_until_at: Some(Utc::now() + chrono::Duration::hours(1)),
+            ..ConversationSummary::default()
+        };
+        assert!(muted.is_muted());
+        assert!(!muted.should_alert_arrival(4, false, None));
+
+        let incoming = ConversationSummary {
+            last_incoming_message_id: Some(8),
+            ahead: 1,
+            last_message: Some(Message {
+                id: 8,
+                body: Some("hey".into()),
+                ..Message::default()
+            }),
+            ..ConversationSummary::default()
+        };
+        assert!(incoming.should_alert_arrival(4, false, None));
+        assert!(!incoming.should_alert_arrival(0, false, None));
+        assert!(!incoming.should_alert_arrival(4, true, None));
+        assert!(!incoming.should_alert_arrival(8, false, None));
+
+        let ping = ConversationSummary {
+            last_incoming_message_id: Some(9),
+            ahead: 1,
+            last_message: Some(Message {
+                id: 9,
+                event: Some("ping".into()),
+                ..Message::default()
+            }),
+            ..ConversationSummary::default()
+        };
+        assert!(ping.should_alert_arrival(4, true, None));
+    }
+
+    #[test]
+    fn chat_thread_reads_muted_until() {
+        let thread = ChatThread::from_value(serde_json::json!({
+            "messages": [],
+            "muted_until_at": "2099-01-01T00:00:00Z"
+        }));
+        assert!(thread.is_muted());
+    }
+
+    #[test]
+    fn message_parses_reactions() {
+        let thread = ChatThread::from_value(serde_json::json!({
+            "messages": [{
+                "id": 4,
+                "body": "shipped",
+                "reactions": [
+                    { "user_id": "1", "emoji": "❤️" },
+                    { "user_id": "2", "emoji": "❤️" },
+                    { "user_id": "1", "emoji": "😂" },
+                    { "broken": true }
+                ]
+            }]
+        }));
+        assert_eq!(thread.messages[0].reactions.len(), 3);
+        assert_eq!(thread.messages[0].reactions[0].emoji, "❤️");
+        let listed = MessageReaction::from_list(&serde_json::json!({
+            "reactions": { "data": [{ "user_id": "9", "emoji": "✅" }] }
+        }));
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].user_id, "9");
     }
 }
