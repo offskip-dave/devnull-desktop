@@ -25,6 +25,10 @@ fn http() -> &'static reqwest::Client {
     })
 }
 
+fn ui_context() -> glib::MainContext {
+    glib::MainContext::default()
+}
+
 fn cached(url: &str) -> Option<glib::Bytes> {
     cache().lock().ok()?.get(url).cloned()
 }
@@ -56,6 +60,8 @@ pub fn absolute_url(url: &str) -> Option<String> {
     let url = url.trim();
     if url.starts_with("https://") || url.starts_with("http://") {
         Some(url.to_owned())
+    } else if let Some(rest) = url.strip_prefix("//") {
+        Some(format!("https://{rest}"))
     } else if url.starts_with('/') {
         Some(format!(
             "{}{url}",
@@ -103,39 +109,78 @@ fn texture_from_svg(bytes: &glib::Bytes) -> Option<gdk::Texture> {
     Some(gdk::Texture::for_pixbuf(&loader.pixbuf()?))
 }
 
-fn fetch_then(url: Option<&str>, done: impl FnOnce(glib::Bytes) + Send + 'static) {
-    let Some(url) = url.and_then(absolute_url) else {
-        return;
-    };
-    if let Some(bytes) = cached(&url) {
+fn apply_bytes(url: &str, done: impl FnOnce(glib::Bytes) + Send + 'static) {
+    if let Some(bytes) = cached(url) {
         done(bytes);
         return;
     }
+    let url = url.to_owned();
+    let ctx = ui_context();
     relm4::spawn(async move {
         let Some(bytes) = fetch(&url).await else {
             return;
         };
-        // `g_idle_add` uses the calling thread's default context. Tokio workers
-        // never poll one, so the picture would never show. Invoke the GTK loop.
-        glib::MainContext::default().invoke(move || done(bytes));
+        ctx.invoke(move || done(bytes));
     });
 }
 
 pub fn bind_avatar(avatar: &adw::Avatar, url: Option<&str>) {
+    let Some(url) = url.and_then(absolute_url) else {
+        return;
+    };
+    reapply_avatar(avatar, &url);
     let weak = glib::SendWeakRef::from(avatar.downgrade());
-    fetch_then(url, move |bytes| {
+    apply_bytes(&url, move |bytes| {
+        let Some(texture) = avatar_texture(&bytes) else {
+            return;
+        };
         let Some(avatar) = weak.upgrade() else {
             return;
         };
+        avatar.set_custom_image(Some(&texture));
+        avatar.queue_draw();
+    });
+}
+
+pub fn reapply_avatar(avatar: &adw::Avatar, url: &str) {
+    let Some(url) = absolute_url(url) else {
+        return;
+    };
+    let Some(bytes) = cached(&url) else {
+        return;
+    };
+    let Some(texture) = avatar_texture(&bytes) else {
+        return;
+    };
+    avatar.set_custom_image(Some(&texture));
+    avatar.queue_draw();
+}
+
+fn avatar_texture(bytes: &glib::Bytes) -> Option<gdk::Texture> {
+    let loader = PixbufLoader::new();
+    if loader.write(bytes.as_ref()).is_ok() && loader.close().is_ok() {
+        if let Some(pixbuf) = loader.pixbuf() {
+            return Some(gdk::Texture::for_pixbuf(&pixbuf));
+        }
+    }
+    texture_from_bytes(bytes)
+}
+
+fn apply_texture(url: Option<&str>, done: impl FnOnce(gdk::Texture) + Send + 'static) {
+    let Some(url) = url.and_then(absolute_url) else {
+        return;
+    };
+    apply_bytes(&url, move |bytes| {
         if let Some(texture) = texture_from_bytes(&bytes) {
-            avatar.set_custom_image(Some(&texture));
+            done(texture);
         }
     });
 }
 
 pub fn fetch_into(url: &str, done: impl FnOnce(Option<glib::Bytes>) + Send + 'static) {
+    let ctx = ui_context();
     let Some(url) = absolute_url(url) else {
-        glib::MainContext::default().invoke(move || done(None));
+        ctx.invoke(move || done(None));
         return;
     };
     if let Some(bytes) = cached(&url) {
@@ -144,7 +189,7 @@ pub fn fetch_into(url: &str, done: impl FnOnce(Option<glib::Bytes>) + Send + 'st
     }
     relm4::spawn(async move {
         let bytes = fetch(&url).await;
-        glib::MainContext::default().invoke(move || done(bytes));
+        ctx.invoke(move || done(bytes));
     });
 }
 
@@ -159,11 +204,8 @@ pub fn bind_fitted_picture(
 ) {
     let pic = glib::SendWeakRef::from(picture.downgrade());
     let frame = frame.map(|frame| glib::SendWeakRef::from(frame.downgrade()));
-    fetch_then(url, move |bytes| {
+    apply_texture(url, move |texture| {
         let Some(picture) = pic.upgrade() else {
-            return;
-        };
-        let Some(texture) = texture_from_bytes(&bytes) else {
             return;
         };
         picture.set_paintable(Some(&texture));

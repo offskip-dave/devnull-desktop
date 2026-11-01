@@ -1046,6 +1046,19 @@ button.dn-nav-commit {
   color: var(--dn_ink_muted);
 }
 
+.dn-author-menu {
+  padding: 4px;
+}
+
+button.dn-author-choice {
+  padding: 6px 8px;
+  border-radius: 8px;
+}
+
+button.dn-author-choice.active {
+  background-color: var(--dn_wash);
+}
+
 .dn-commit-bar-btn {
   min-width: 32px;
   min-height: 32px;
@@ -1733,6 +1746,17 @@ button.dn-reaction-pick {
 .dn-inbox-row .dn-inbox-meta,
 .dn-inbox-row .dn-inbox-preview {
   line-height: 1.2;
+}
+
+.dn-avatar-face {
+  border-radius: 9999px;
+  min-width: 0;
+  min-height: 0;
+  background-color: transparent;
+}
+
+.dn-avatar-photo {
+  border-radius: 9999px;
 }
 
 .dn-avatar-ring {
@@ -2584,6 +2608,23 @@ entry.dn-omnibox-entry > text {
   padding-top: 4px;
 }
 
+.dn-aside-avatar {
+  min-width: 48px;
+  min-height: 48px;
+}
+
+.dn-aside-who {
+  min-height: 0;
+}
+
+.dn-aside-who .dn-name,
+.dn-aside-who .dn-handle,
+.dn-aside-handle {
+  min-height: 0;
+  padding: 0;
+  line-height: 1.2;
+}
+
 .dn-aside-follow {
   padding-top: 20px;
   padding-bottom: 20px;
@@ -2679,10 +2720,6 @@ entry.dn-omnibox-entry > text {
 
 .dn-aside-stats {
   margin-top: 4px;
-}
-
-.dn-aside-handle {
-  min-height: 16px;
 }
 
 button.dn-aside-stat {
@@ -2793,6 +2830,13 @@ headerbar {
   background-color: var(--dn_shell);
   color: var(--dn_ink);
   border-bottom: 1px solid var(--dn_hairline);
+}
+
+headerbar.dn-macos-header {
+  background-color: var(--dn_shell);
+  color: var(--dn_ink);
+  min-width: 0;
+  box-shadow: none;
 }
 
 link {
@@ -3304,9 +3348,15 @@ window.dark button.dn-unfollow:hover {
   min-width: 360px;
 }
 
+.dn-shortcuts-grid {
+  margin-top: 8px;
+}
+
 .dn-shortcut-heading {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   color: var(--dn_ink_muted);
   padding-bottom: 4px;
 }

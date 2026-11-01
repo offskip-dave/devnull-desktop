@@ -24,3 +24,6 @@ syntect = { version = "5", default-features = false, features = ["parsing", "def
 tokio.workspace = true
 uuid.workspace = true
 url.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc = "0.2"

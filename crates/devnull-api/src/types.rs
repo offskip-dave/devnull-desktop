@@ -32,15 +32,31 @@ impl Lane {
     }
 }
 
+/// Who a commit or profile is from. The API’s `author.type` is `user` or `organization`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileType {
+    #[default]
+    User,
+    Organization,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct User {
     #[serde(default, deserialize_with = "deserialize_stringish")]
     pub id: String,
+    #[serde(
+        default,
+        rename = "type",
+        alias = "kind",
+        deserialize_with = "deserialize_profile_type"
+    )]
+    pub kind: ProfileType,
     #[serde(default, alias = "handle")]
     pub username: String,
     #[serde(default)]
     pub name: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "avatar")]
     pub avatar_url: Option<String>,
     #[serde(default)]
     pub bio: Option<String>,
@@ -87,6 +103,10 @@ pub struct User {
 }
 
 impl User {
+    pub fn is_organization(&self) -> bool {
+        self.kind == ProfileType::Organization
+    }
+
     pub fn suggestion_reason(&self) -> Option<String> {
         if let Some(count) = self.followed_by_following_count.filter(|count| *count > 0) {
             return Some(format!("Followed by {count} you follow"));
@@ -177,6 +197,26 @@ impl User {
             .as_deref()
             .and_then(github_login_from_url)
             .unwrap_or(&self.username)
+    }
+
+    /// Profile photo, or GitHub's avatar CDN when `/me` omitted `avatar_url`.
+    pub fn avatar_src(&self) -> Option<String> {
+        if let Some(url) = self
+            .avatar_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|url| !url.is_empty())
+        {
+            return Some(url.to_owned());
+        }
+        let login = self.github_login();
+        if login.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "https://avatars.githubusercontent.com/{login}?s=96"
+            ))
+        }
     }
 
     pub fn is_followed_by_me(&self) -> bool {
@@ -271,6 +311,24 @@ impl Organization {
                 format!("https://github.com/{}", self.handle)
             }
         })
+    }
+
+    pub fn from_author(user: &User) -> Self {
+        Self {
+            id: user.id.clone(),
+            handle: user.username.clone(),
+            name: user.name.clone(),
+            avatar_url: user.avatar_url.clone(),
+            bio: user.bio.clone(),
+            location: user.location.clone(),
+            website: user.website.clone(),
+            github_url: user.github_url.clone(),
+            html_url: user.html_url.clone(),
+            lane: user.lane.clone(),
+            followers_count: user.followers_count,
+            is_following: user.is_followed_by_me(),
+            ..Default::default()
+        }
     }
 
     pub fn from_value(value: serde_json::Value) -> Result<Self, serde_json::Error> {
@@ -521,7 +579,8 @@ fn mention_id_opt(item: &serde_json::Value) -> Option<String> {
 }
 
 fn mention_is_organization(item: &serde_json::Value) -> bool {
-    item.get("kind")
+    item.get("type")
+        .or_else(|| item.get("kind"))
         .and_then(serde_json::Value::as_str)
         .is_some_and(|kind| kind.eq_ignore_ascii_case("organization"))
 }
@@ -572,6 +631,11 @@ pub struct CurrentUser {
     pub github_synced_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub timezone: Option<String>,
+    /// Organizations the user can post as. Empty until `/me` sends them.
+    #[serde(default, deserialize_with = "deserialize_vec")]
+    pub organizations: Vec<User>,
+    #[serde(default, alias = "canPostAsOrganization")]
+    pub can_post_as_organization: bool,
 }
 
 impl CurrentUser {
@@ -606,6 +670,14 @@ impl CurrentUser {
 
     pub fn chosen_lane(&self) -> Option<&Lane> {
         self.preferred_lane.as_ref().or(self.user.lane.as_ref())
+    }
+
+    pub fn org_ids(&self) -> Vec<String> {
+        self.organizations
+            .iter()
+            .flat_map(|org| [org.id.clone(), org.username.clone()])
+            .filter(|id| !id.is_empty())
+            .collect()
     }
 }
 
@@ -1229,6 +1301,17 @@ where
     }))
 }
 
+fn deserialize_profile_type<'de, D>(deserializer: D) -> Result<ProfileType, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = Option::<String>::deserialize(deserializer)?;
+    Ok(match value.as_deref().map(str::trim) {
+        Some(kind) if kind.eq_ignore_ascii_case("organization") => ProfileType::Organization,
+        _ => ProfileType::User,
+    })
+}
+
 fn deserialize_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
 where
     D: Deserializer<'de>,
@@ -1554,6 +1637,27 @@ impl Commit {
         }
     }
 
+    pub fn is_organization(&self) -> bool {
+        self.author.as_ref().is_some_and(User::is_organization)
+    }
+
+    /// The signed-in person wrote it, or it is from an organization they belong to.
+    pub fn is_owned_by(&self, me: Option<&str>, org_ids: &[String]) -> bool {
+        if self.is_own(me) {
+            return true;
+        }
+        let Some(author) = self
+            .author
+            .as_ref()
+            .filter(|author| author.is_organization())
+        else {
+            return false;
+        };
+        org_ids.iter().any(|id| {
+            (!author.id.is_empty() && id == &author.id) || id.eq_ignore_ascii_case(&author.username)
+        })
+    }
+
     pub fn list_from_value(value: serde_json::Value) -> Vec<Self> {
         json_list(&value)
             .cloned()
@@ -1744,33 +1848,70 @@ pub struct Notification {
     pub rank: Option<String>,
     #[serde(default)]
     pub rank_description: Option<String>,
+    /// Set when a member is hearing about their organization's commit or mention.
+    #[serde(default)]
+    pub organization: Option<Organization>,
 }
 
 impl Notification {
+    pub fn organization_handle(&self) -> Option<&str> {
+        self.organization
+            .as_ref()
+            .map(|organization| organization.handle.as_str())
+            .filter(|handle| !handle.is_empty())
+    }
+
+    fn whose_commit(&self) -> String {
+        match self.organization_handle() {
+            Some(handle) => format!("@{handle}'s"),
+            None => "your".into(),
+        }
+    }
+
+    pub fn action(&self) -> String {
+        let whose = self.whose_commit();
+        match self.kind() {
+            "follow" | "followed" => "followed you".into(),
+            "star" | "starred" => format!("starred {whose} commit"),
+            "reply" | "replied" => format!("replied to {whose} commit"),
+            "quote" | "quoted" => format!("quoted {whose} commit"),
+            "mention" | "mentioned" => match self.organization_handle() {
+                Some(handle) => format!("mentioned @{handle}"),
+                None => "mentioned you".into(),
+            },
+            "first_commit" => "made their first commit".into(),
+            "leveled_up" => self.level_up_title(),
+            "approved" => format!(
+                "{} commit was approved.",
+                if self.organization_handle().is_some() {
+                    whose
+                } else {
+                    "Your".into()
+                }
+            ),
+            "rejected" => format!(
+                "{} commit was rejected.",
+                if self.organization_handle().is_some() {
+                    whose
+                } else {
+                    "Your".into()
+                }
+            ),
+            other if !other.is_empty() => other.to_owned(),
+            _ => "notified you".into(),
+        }
+    }
+
     pub fn title(&self) -> String {
+        if matches!(self.kind(), "approved" | "rejected" | "leveled_up") {
+            return self.action();
+        }
         let actor = self
             .actor
             .as_ref()
             .map(User::display_name)
             .unwrap_or("someone");
-        let kind = self
-            .kind
-            .as_deref()
-            .or(self.reason.as_deref())
-            .unwrap_or("");
-        match kind {
-            "follow" | "followed" => format!("{actor} followed you"),
-            "star" | "starred" => format!("{actor} starred your commit"),
-            "reply" | "replied" => format!("{actor} replied to your commit"),
-            "quote" | "quoted" => format!("{actor} quoted your commit"),
-            "mention" | "mentioned" => format!("{actor} mentioned you"),
-            "first_commit" => format!("{actor} made their first commit"),
-            "leveled_up" => self.level_up_title(),
-            "approved" => "Your commit was approved.".into(),
-            "rejected" => "Your commit was rejected.".into(),
-            other if !other.is_empty() => format!("{actor}: {other}"),
-            _ => format!("{actor} notified you"),
-        }
+        format!("{actor} {}", self.action())
     }
 
     pub fn level_up_title(&self) -> String {
@@ -3079,6 +3220,51 @@ mod unread_count_tests {
         assert_eq!(user.unread_notifications(), 4);
         assert!(user.remotes_on());
         assert_eq!(user.unread_remotes(), 2);
+        assert!(!user.can_post_as_organization);
+        assert!(user.organizations.is_empty());
+    }
+
+    #[test]
+    fn commit_author_can_be_an_organization() {
+        let commit: Commit = serde_json::from_value(json!({
+            "id": "c1",
+            "author": {
+                "id": "org_1",
+                "type": "organization",
+                "handle": "laravel",
+                "name": "Laravel",
+                "avatar_url": "https://example.com/laravel.png"
+            }
+        }))
+        .unwrap();
+        let author = commit.author.as_ref().expect("author");
+        assert!(author.is_organization());
+        assert_eq!(author.username, "laravel");
+        assert!(commit.is_organization());
+        assert!(commit.is_owned_by(Some("member"), &["org_1".into()]));
+        assert!(!commit.is_own(Some("member")));
+        assert!(!commit.is_owned_by(Some("member"), &["other".into()]));
+    }
+
+    #[test]
+    fn current_user_reads_organizations_to_post_as() {
+        let user: CurrentUser = serde_json::from_value(json!({
+            "id": "u1",
+            "handle": "nuno",
+            "canPostAsOrganization": true,
+            "organizations": [{
+                "id": "org_1",
+                "type": "organization",
+                "handle": "laravel",
+                "name": "Laravel"
+            }]
+        }))
+        .unwrap();
+        assert!(user.can_post_as_organization);
+        assert_eq!(user.organizations[0].username, "laravel");
+        assert!(user.organizations[0].is_organization());
+        assert!(user.org_ids().contains(&"org_1".to_string()));
+        assert!(user.org_ids().contains(&"laravel".to_string()));
     }
 
     #[test]
@@ -3117,6 +3303,28 @@ mod unread_count_tests {
         }))
         .unwrap();
         assert_eq!(user.username, "local_dev");
+    }
+
+    #[test]
+    fn avatar_falls_back_to_the_github_png() {
+        let with_url: User = serde_json::from_value(json!({
+            "handle": "nuno",
+            "avatar_url": "https://example.com/nuno.png"
+        }))
+        .unwrap();
+        assert_eq!(
+            with_url.avatar_src().as_deref(),
+            Some("https://example.com/nuno.png")
+        );
+        let from_github: User = serde_json::from_value(json!({
+            "handle": "nuno",
+            "github_url": "https://github.com/nunomaduro"
+        }))
+        .unwrap();
+        assert_eq!(
+            from_github.avatar_src().as_deref(),
+            Some("https://avatars.githubusercontent.com/nunomaduro?s=96")
+        );
     }
 
     #[test]
@@ -3184,6 +3392,40 @@ mod unread_count_tests {
             ..Default::default()
         };
         assert_eq!(notice.title(), "Ada made their first commit");
+    }
+
+    #[test]
+    fn organization_notifications_are_worded_as_the_organization() {
+        let org = Organization {
+            handle: "laravel".into(),
+            ..Organization::default()
+        };
+        let actor = User {
+            username: "taylor".into(),
+            name: Some("Taylor".into()),
+            ..User::default()
+        };
+        let reply = Notification {
+            kind: Some("replied".into()),
+            actor: Some(actor.clone()),
+            organization: Some(org.clone()),
+            ..Default::default()
+        };
+        assert_eq!(reply.action(), "replied to @laravel's commit");
+        assert_eq!(reply.title(), "Taylor replied to @laravel's commit");
+        let mention = Notification {
+            kind: Some("mentioned".into()),
+            actor: Some(actor),
+            organization: Some(org.clone()),
+            ..Default::default()
+        };
+        assert_eq!(mention.action(), "mentioned @laravel");
+        let approved = Notification {
+            kind: Some("approved".into()),
+            organization: Some(org),
+            ..Default::default()
+        };
+        assert_eq!(approved.title(), "@laravel's commit was approved.");
     }
 
     #[test]

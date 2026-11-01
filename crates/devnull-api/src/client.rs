@@ -189,6 +189,7 @@ impl Client {
             .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn create_commit(
         &self,
         body: &str,
@@ -197,6 +198,7 @@ impl Client {
         images: Vec<Upload>,
         poll: Option<(Vec<String>, i64)>,
         scheduled_at: Option<&str>,
+        author: Option<&str>,
     ) -> Result<Commit, ApiError> {
         let mut payload = serde_json::json!({ "body": body });
         if let Some(parent) = parent_id {
@@ -213,6 +215,9 @@ impl Client {
         }
         if let Some(at) = scheduled_at {
             payload["scheduled_at"] = serde_json::json!(at);
+        }
+        if let Some(handle) = author.map(str::trim).filter(|handle| !handle.is_empty()) {
+            payload["author"] = serde_json::json!(handle);
         }
         if images.is_empty() {
             self.send_json(Method::POST, "commits", &[], &payload).await
@@ -639,6 +644,28 @@ impl Client {
             &[("cursor", cursor)],
         )
         .await
+    }
+
+    pub async fn organization_commits(
+        &self,
+        handle: &str,
+        cursor: Option<&str>,
+    ) -> Result<Page<Commit>, ApiError> {
+        match self
+            .get(
+                &format!("organizations/{handle}/commits"),
+                &[("cursor", cursor)],
+            )
+            .await
+        {
+            Ok(page) => Ok(page),
+            Err(err) if err.status == 404 => Ok(Page {
+                data: Vec::new(),
+                links: None,
+                meta: None,
+            }),
+            Err(err) => Err(err),
+        }
     }
 
     pub async fn follow_organization(&self, handle: &str) -> Result<(), ApiError> {

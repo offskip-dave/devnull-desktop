@@ -69,6 +69,8 @@ pub enum AppMsg {
     SignOut,
     Select(Nav),
     OpenMe,
+    ComposerAvatar,
+    PostAs(Option<String>),
     OpenSettings,
     SettingsTab(SettingsTab),
     SetTheme(Theme),
@@ -219,6 +221,7 @@ pub enum AppMsg {
     FollowUser(String, bool),
     UserFollowed(String, bool),
     RefreshSuggested,
+    RefreshMeAvatars,
     PreviewUser(String),
     UserPreviewLoaded(String, Result<UserPreview, ApiError>),
     MuteUser(String),
@@ -324,6 +327,7 @@ pub struct App {
     showing_original: HashSet<String>,
     requested_translation: HashSet<String>,
     translation_loading: HashSet<String>,
+    auto_translate_retry_at: Option<Instant>,
     live_following: Vec<User>,
     muted: Vec<User>,
     blocked: Vec<User>,
@@ -387,6 +391,8 @@ pub struct App {
     stars: HashMap<String, (bool, i64)>,
     pasteis: HashMap<String, i64>,
     composer_avatar: gtk::Box,
+    author_menu: gtk::Popover,
+    composer_as: Option<User>,
     composer_rail: gtk::Overlay,
     composer_rail_area: gtk::DrawingArea,
     staged_paint: Rc<RefCell<ui::StagedPaint>>,
@@ -414,7 +420,7 @@ pub struct App {
     emoji: ui::EmojiSuggest,
     mentions: ui::MentionSuggest,
     mention_gen: u64,
-    mention_timeout: Option<glib::SourceId>,
+    mention_timeout: Rc<RefCell<Option<glib::SourceId>>>,
     paste_entry: gtk::Entry,
     omnibox: ui::SearchOmnibox,
     omnibox_gen: u64,
@@ -471,6 +477,7 @@ pub enum ProfileFeed {
     Commits,
     Replies,
     Readme,
+    Mentions,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -527,9 +534,23 @@ impl SimpleComponent for App {
         add_css_class: "dn-window",
         set_icon_name: Some(APP_ID),
 
-        #[name = "shell_overlay"]
-        gtk::Overlay {
+        gtk::Box {
+            set_orientation: gtk::Orientation::Vertical,
+            set_hexpand: true,
+            set_vexpand: true,
+
+            gtk::HeaderBar {
+                add_css_class: "dn-macos-header",
+                set_show_title_buttons: true,
+                set_decoration_layout: Some("close,minimize,maximize:"),
+                set_visible: cfg!(target_os = "macos"),
+            },
+
+            #[name = "shell_overlay"]
+            gtk::Overlay {
             set_overflow: gtk::Overflow::Visible,
+            set_hexpand: true,
+            set_vexpand: true,
             #[wrap(Some)]
             set_child = &gtk::Box {
                     set_orientation: gtk::Orientation::Horizontal,
@@ -579,7 +600,7 @@ impl SimpleComponent for App {
                                     set_orientation: gtk::Orientation::Horizontal,
                                     set_spacing: 8,
                                     gtk::Image {
-                                        #[watch]
+                                        add_css_class: "dn-mark",
                                         set_from_file: Some(ui::mark_path(ui::adw_is_dark())),
                                         set_pixel_size: 28,
                                     },
@@ -958,7 +979,7 @@ impl SimpleComponent for App {
                                     set_orientation: gtk::Orientation::Horizontal,
                                     set_spacing: 8,
                                     gtk::Image {
-                                        #[watch]
+                                        add_css_class: "dn-mark",
                                         set_from_file: Some(ui::mark_path(ui::adw_is_dark())),
                                         set_pixel_size: 24,
                                     },
@@ -1996,20 +2017,24 @@ impl SimpleComponent for App {
                                         set_child = &gtk::Box {
                                             set_orientation: gtk::Orientation::Horizontal,
                                             set_spacing: 12,
+                                            set_valign: gtk::Align::Center,
                                             #[local_ref]
                                             aside_avatar -> gtk::Box {
                                                 add_css_class: "dn-aside-avatar",
                                                 set_overflow: gtk::Overflow::Visible,
-                                                set_valign: gtk::Align::Start,
+                                                set_valign: gtk::Align::Center,
                                             },
                                             gtk::Box {
                                                 set_orientation: gtk::Orientation::Vertical,
-                                                set_spacing: 2,
+                                                set_spacing: 0,
                                                 set_hexpand: true,
+                                                set_valign: gtk::Align::Center,
+                                                add_css_class: "dn-aside-who",
                                                 gtk::Label {
                                                     #[watch]
                                                     set_label: &model.me_name(),
                                                     set_xalign: 0.0,
+                                                    set_valign: gtk::Align::Center,
                                                     add_css_class: "dn-name",
                                                     set_hexpand: true,
                                                 },
@@ -2017,6 +2042,7 @@ impl SimpleComponent for App {
                                                 aside_handle -> gtk::Box {
                                                     set_orientation: gtk::Orientation::Horizontal,
                                                     set_spacing: 6,
+                                                    set_valign: gtk::Align::Center,
                                                     add_css_class: "dn-aside-handle",
                                                 },
                                             },
@@ -2202,6 +2228,7 @@ impl SimpleComponent for App {
                     },
             }
         }
+        }
     }
     }
 
@@ -2213,6 +2240,7 @@ impl SimpleComponent for App {
         let _ = APP_SENDER.set(sender.input_sender().clone());
 
         ui::register_icons();
+        crate::macos::set_dock_icon();
 
         let composer = gtk::TextView::new();
         composer.set_wrap_mode(gtk::WrapMode::WordChar);
@@ -2358,6 +2386,7 @@ impl SimpleComponent for App {
             showing_original: HashSet::new(),
             requested_translation: HashSet::new(),
             translation_loading: HashSet::new(),
+            auto_translate_retry_at: None,
             live_following: Vec::new(),
             muted: Vec::new(),
             blocked: Vec::new(),
@@ -2417,6 +2446,8 @@ impl SimpleComponent for App {
             stars: HashMap::new(),
             pasteis: HashMap::new(),
             composer_avatar: gtk::Box::new(gtk::Orientation::Horizontal, 0),
+            author_menu: gtk::Popover::new(),
+            composer_as: None,
             composer_rail: gtk::Overlay::new(),
             composer_rail_area: gtk::DrawingArea::new(),
             staged_paint: Rc::new(RefCell::new(ui::StagedPaint::new())),
@@ -2448,7 +2479,7 @@ impl SimpleComponent for App {
             emoji,
             mentions,
             mention_gen: 0,
-            mention_timeout: None,
+            mention_timeout: Rc::new(RefCell::new(None)),
             paste_entry,
             omnibox: ui::SearchOmnibox::new(sender.input_sender().clone()),
             omnibox_gen: 0,
@@ -2521,6 +2552,7 @@ impl SimpleComponent for App {
         let thread_header = &model.thread_header;
         let thread_scroll = &model.thread_scroll;
         let widgets = view_output!();
+        crate::macos::decorate_window(&root);
         model.bubble_width.bind(&widgets.thread_width_probe);
         ui::pin_profile_hero(&model.profile_list, &model.profile_hero);
         widgets
@@ -2554,7 +2586,7 @@ impl SimpleComponent for App {
         avatar_press.set_button(1);
         let avatar_sender = sender.clone();
         avatar_press.connect_released(move |_, _, _, _| {
-            avatar_sender.input(AppMsg::OpenMe);
+            avatar_sender.input(AppMsg::ComposerAvatar);
         });
         model.composer_avatar.add_css_class("dn-composer-avatar");
         model
@@ -2572,6 +2604,10 @@ impl SimpleComponent for App {
         model.composer_avatar.set_visible(false);
         model.composer_avatar.add_controller(avatar_press);
         model.composer_avatar.set_cursor_from_name(Some("pointer"));
+        model.author_menu.set_parent(&model.composer_avatar);
+        model.author_menu.set_autohide(true);
+        model.author_menu.set_has_arrow(true);
+        model.author_menu.set_position(gtk::PositionType::Bottom);
         model.composer_rail_area = ui::bind_staged_rail(&model.composer_rail, &model.staged_paint);
         model.composer_rail.set_vexpand(false);
         model.composer_rail.add_overlay(&model.composer_avatar);
@@ -2741,10 +2777,11 @@ impl SimpleComponent for App {
     fn update(&mut self, msg: Self::Input, sender: ComponentSender<Self>) {
         match msg {
             AppMsg::Restore => {
-                if let Some(uri) = PENDING_URI
+                let uri = PENDING_URI
                     .get()
                     .and_then(|m| m.lock().ok().and_then(|mut g| g.take()))
-                {
+                    .or_else(auth::take_callback_uri);
+                if let Some(uri) = uri {
                     if let Some((pkce, _)) = auth::load_pending() {
                         self.pending = Some(pkce);
                         self.phase = Phase::WaitingForBrowser;
@@ -3109,15 +3146,15 @@ impl SimpleComponent for App {
                 self.end_busy();
                 match muted {
                     Ok(users) => self.muted = users,
-                    Err(err) => self.toast(&err.message),
+                    Err(err) if self.visible == "settings" => self.toast_unless_limited(&err),
+                    Err(_) => {}
                 }
                 match blocked {
                     Ok(users) => self.blocked = users,
-                    Err(err) => {
-                        if self.muted.is_empty() {
-                            self.toast(&err.message);
-                        }
+                    Err(err) if self.visible == "settings" && self.muted.is_empty() => {
+                        self.toast_unless_limited(&err);
                     }
+                    Err(_) => {}
                 }
                 if self.visible == "settings" {
                     self.render_settings(&sender);
@@ -3304,6 +3341,24 @@ impl SimpleComponent for App {
                     sender.input(AppMsg::OpenProfile(user.username().to_owned()));
                 }
             }
+            AppMsg::ComposerAvatar => {
+                if self.can_post_as() {
+                    self.author_menu.popup();
+                } else if let Some(user) = &self.user {
+                    sender.input(AppMsg::OpenProfile(user.username().to_owned()));
+                }
+            }
+            AppMsg::PostAs(handle) => {
+                self.composer_as = handle.and_then(|handle| {
+                    self.user.as_ref().and_then(|user| {
+                        user.organizations
+                            .iter()
+                            .find(|org| org.username.eq_ignore_ascii_case(&handle))
+                            .cloned()
+                    })
+                });
+                self.refresh_me_avatars();
+            }
             AppMsg::StartRemote => {
                 let Some(profile) = &self.profile else {
                     return;
@@ -3446,9 +3501,14 @@ impl SimpleComponent for App {
                         "fatal: could not load this log",
                         &err.message,
                     ));
-                    self.fail(err);
+                    if err.is_rate_limited() {
+                        self.auto_translate_retry_at =
+                            Some(Instant::now() + Duration::from_secs(60));
+                    } else {
+                        self.fail(err);
+                    }
                 } else {
-                    self.toast(&err.message);
+                    self.toast_unless_limited(&err);
                 }
             }
             AppMsg::LoadMore => {
@@ -3503,10 +3563,19 @@ impl SimpleComponent for App {
                 if let Some(client) = self.client.clone() {
                     self.begin_busy();
                     let sender2 = sender.clone();
+                    let author = self.posting_as_handle();
                     relm4::spawn(async move {
                         sender2.input(AppMsg::CommitCreated(
                             client
-                                .create_commit(&body, None, Some(&id), Vec::new(), None, None)
+                                .create_commit(
+                                    &body,
+                                    None,
+                                    Some(&id),
+                                    Vec::new(),
+                                    None,
+                                    None,
+                                    author.as_deref(),
+                                )
                                 .await,
                         ));
                     });
@@ -3558,8 +3627,15 @@ impl SimpleComponent for App {
                         }
                     }
                     Err(err) => {
+                        if err.is_rate_limited() {
+                            self.translation_loading.clear();
+                            self.auto_translate_retry_at =
+                                Some(Instant::now() + Duration::from_secs(60));
+                        }
+                        if self.requested_translation.contains(&id) {
+                            self.toast(&err.message);
+                        }
                         self.translations.entry(id).or_default();
-                        self.toast(&err.message);
                     }
                 }
             }
@@ -3752,6 +3828,7 @@ impl SimpleComponent for App {
                 self.user_card.dismiss();
                 self.visible = "profile";
                 self.profile = None;
+                self.profile_tab = ProfileFeed::Commits;
                 self.profile_readme = None;
                 self.profile_bar_scrolled = false;
                 self.load_organization(&sender, handle);
@@ -3763,6 +3840,19 @@ impl SimpleComponent for App {
             }
             AppMsg::ProfileTab(tab) => {
                 if self.organization.is_some() {
+                    if !matches!(tab, ProfileFeed::Commits | ProfileFeed::Mentions) {
+                        return;
+                    }
+                    let same = self.profile_tab == tab;
+                    self.profile_tab = tab;
+                    self.render_profile(&sender);
+                    if !same {
+                        if let Some(handle) =
+                            self.organization.as_ref().map(|org| org.handle.clone())
+                        {
+                            self.load_organization(&sender, handle);
+                        }
+                    }
                     return;
                 }
                 let same = self.profile_tab == tab;
@@ -3781,6 +3871,7 @@ impl SimpleComponent for App {
                             self.load_profile(&sender, username, tab == ProfileFeed::Replies);
                         }
                     }
+                    ProfileFeed::Mentions => {}
                 }
             }
             AppMsg::ProfileReadmeLoaded(username, result) => {
@@ -3826,7 +3917,7 @@ impl SimpleComponent for App {
                 }
                 match self.profile_tab {
                     ProfileFeed::Readme => self.load_readme(&sender),
-                    _ => {
+                    ProfileFeed::Commits | ProfileFeed::Replies | ProfileFeed::Mentions => {
                         self.queue_auto_translations_visible(&sender);
                         self.render_profile_feed(&sender, false);
                         let ids = reply_preview_ids(&self.profile_commits);
@@ -4124,6 +4215,7 @@ impl SimpleComponent for App {
             }
             AppMsg::AppearanceChanged => {
                 self.refresh_me_avatars();
+                ui::refresh_mark_images(self.wordmark_btn.upcast_ref());
                 if self.visible == "profile" {
                     self.render_profile(&sender);
                     if self.profile_tab == ProfileFeed::Readme {
@@ -4173,7 +4265,7 @@ impl SimpleComponent for App {
             }
             AppMsg::ReportSubmitted(Err(err)) => self.fail(err),
             AppMsg::ShowShortcuts => {
-                let dialog = ui::shortcuts_dialog();
+                let dialog = ui::shortcuts_dialog(self.remotes_on());
                 dialog.present(Some(&self.log_scroll));
                 ui::apply_pointer_cursors(&dialog);
             }
@@ -4306,6 +4398,7 @@ impl SimpleComponent for App {
                     }
                 }
             }
+            AppMsg::RefreshMeAvatars => self.refresh_me_avatars(),
             AppMsg::RefreshSuggested => {
                 if let Some(client) = self.client.clone() {
                     ui::fill_suggestion_skeletons(&self.suggested_list);
@@ -4555,10 +4648,19 @@ impl SimpleComponent for App {
                 if let Some(client) = self.client.clone() {
                     self.begin_busy();
                     let sender2 = sender.clone();
+                    let author = self.posting_as_handle();
                     relm4::spawn(async move {
                         sender2.input(AppMsg::CommitCreated(
                             client
-                                .create_commit(&body, Some(&parent), None, Vec::new(), None, None)
+                                .create_commit(
+                                    &body,
+                                    Some(&parent),
+                                    None,
+                                    Vec::new(),
+                                    None,
+                                    None,
+                                    author.as_deref(),
+                                )
                                 .await,
                         ));
                     });
@@ -4603,6 +4705,7 @@ impl SimpleComponent for App {
                         std::mem::take(&mut self.composer_images)
                     };
                     let sender2 = sender.clone();
+                    let author = self.posting_as_handle();
                     self.begin_busy();
                     relm4::spawn(async move {
                         sender2.input(AppMsg::CommitCreated(
@@ -4614,6 +4717,7 @@ impl SimpleComponent for App {
                                     images,
                                     poll,
                                     scheduled.as_deref(),
+                                    author.as_deref(),
                                 )
                                 .await,
                         ));
@@ -4631,6 +4735,8 @@ impl SimpleComponent for App {
                 self.composer_schedule = false;
                 self.composer_preview = false;
                 self.composer_len = 0;
+                self.composer_as = None;
+                self.refresh_me_avatars();
                 self.sync_image_previews(&sender);
                 self.sync_composer_ring();
                 let hash = commit
@@ -5219,9 +5325,7 @@ impl SimpleComponent for App {
                     sender.input(AppMsg::LoadMore);
                 }
             }
-            AppMsg::OpenWeb(url) => {
-                let _ = gio::AppInfo::launch_default_for_uri(&url, None::<&gio::AppLaunchContext>);
-            }
+            AppMsg::OpenWeb(url) => open_web(&url),
         }
     }
 
@@ -5538,6 +5642,11 @@ impl App {
             suggested: self.suggested.clone(),
             following: self.following.clone(),
             user_card: Some(self.user_card.clone()),
+            org_ids: self
+                .user
+                .as_ref()
+                .map(CurrentUser::org_ids)
+                .unwrap_or_default(),
         }
     }
 
@@ -5711,10 +5820,12 @@ impl App {
         self.reset_profile_list();
         if self.profile_commits.is_empty() {
             if let Some(organization) = &self.organization {
-                self.profile_list.append(&ui::root_row(&format!(
-                    "Nobody has mentioned @{} yet.",
-                    organization.handle
-                )));
+                let empty = if self.profile_tab == ProfileFeed::Mentions {
+                    format!("Nobody has mentioned @{} yet.", organization.handle)
+                } else {
+                    format!("@{} hasn't committed yet.", organization.handle)
+                };
+                self.profile_list.append(&ui::root_row(&empty));
             }
             return;
         }
@@ -5733,10 +5844,14 @@ impl App {
             0,
         );
         let end = if let Some(organization) = &self.organization {
-            format!(
-                "That's the first commit mentioning @{}.",
-                organization.handle
-            )
+            if self.profile_tab == ProfileFeed::Mentions {
+                format!(
+                    "That's the first commit mentioning @{}.",
+                    organization.handle
+                )
+            } else {
+                format!("That's @{}'s first commit.", organization.handle)
+            }
         } else {
             let username = self
                 .profile
@@ -5765,7 +5880,18 @@ impl App {
     }
 
     fn set_user(&mut self, user: Option<CurrentUser>) {
+        self.composer_as = self.composer_as.take().filter(|selected| {
+            user.as_ref().is_some_and(|current| {
+                current
+                    .organizations
+                    .iter()
+                    .any(|org| org.username.eq_ignore_ascii_case(&selected.username))
+            })
+        });
         self.user = user;
+        if let Some(sender) = APP_SENDER.get() {
+            sender.emit(AppMsg::RefreshMeAvatars);
+        }
         if let Some(user) = &self.user {
             self.unread_notifications = user.unread_notifications();
             self.unread_remotes = user.unread_remotes();
@@ -5787,18 +5913,47 @@ impl App {
 
     fn refresh_me_avatars(&self) {
         let user = self.user.as_ref().map(|u| &u.user);
-        ui::fill_avatar(&self.composer_avatar, user, 40, false);
+        let composer_face = self.composer_as.as_ref().or(user);
         self.composer_avatar.set_visible(user.is_some());
-        ui::fill_avatar(&self.aside_avatar, user, 48, false);
+        ui::fill_author_avatar(&self.composer_avatar, composer_face, 40, false);
+        self.composer_avatar
+            .set_tooltip_text(Some(if self.can_post_as() {
+                "Post as"
+            } else {
+                "Your profile"
+            }));
         if let Some(sender) = APP_SENDER.get() {
+            if let Some(current) = &self.user {
+                ui::fill_author_menu(
+                    &self.author_menu,
+                    Some(&current.user),
+                    &current.organizations,
+                    self.composer_as.as_ref(),
+                    sender.clone(),
+                );
+            }
             ui::fill_aside_you(&self.aside_handle, &self.aside_stats, user, sender.clone());
         }
+        ui::fill_avatar(&self.aside_avatar, user, 48, false);
         ui::fill_avatar(&self.nav_avatar, user, 36, false);
         ui::fill_avatar(&self.header_avatar, user, 32, false);
         self.user_menu.set_user(user);
         self.header_user_menu.set_user(user);
-        ui::set_staged_user(&self.staged_paint, &self.composer_rail_area, user);
+        ui::set_staged_user(&self.staged_paint, &self.composer_rail_area, composer_face);
         self.sync_composer_ring();
+    }
+
+    fn can_post_as(&self) -> bool {
+        self.user
+            .as_ref()
+            .is_some_and(|user| user.can_post_as_organization && !user.organizations.is_empty())
+    }
+
+    fn posting_as_handle(&self) -> Option<String> {
+        self.composer_as
+            .as_ref()
+            .map(|org| org.username.clone())
+            .filter(|handle| !handle.is_empty())
     }
 
     fn render_suggestions(&self, sender: &ComponentSender<App>) {
@@ -5893,31 +6048,31 @@ impl App {
             return;
         };
         self.mentions.prepare(view);
-        if let Some(id) = self.mention_timeout.take() {
-            id.remove();
+        if let Some(id) = self.mention_timeout.borrow_mut().take() {
+            ui::try_remove_source(id);
         }
         self.mention_gen = self.mention_gen.wrapping_add(1);
         let gen = self.mention_gen;
         let (reply, quote, org) = self.mention_context();
         let sender2 = sender.clone();
-        self.mention_timeout = Some(glib::timeout_add_local_once(
-            Duration::from_millis(140),
-            move || {
-                relm4::spawn(async move {
-                    sender2.input(AppMsg::MentionsLoaded(
-                        gen,
-                        client
-                            .mention_suggestions(
-                                &query,
-                                reply.as_deref(),
-                                quote.as_deref(),
-                                org.as_deref(),
-                            )
-                            .await,
-                    ));
-                });
-            },
-        ));
+        let slot = self.mention_timeout.clone();
+        let id = glib::timeout_add_local_once(Duration::from_millis(140), move || {
+            slot.borrow_mut().take();
+            relm4::spawn(async move {
+                sender2.input(AppMsg::MentionsLoaded(
+                    gen,
+                    client
+                        .mention_suggestions(
+                            &query,
+                            reply.as_deref(),
+                            quote.as_deref(),
+                            org.as_deref(),
+                        )
+                        .await,
+                ));
+            });
+        });
+        *self.mention_timeout.borrow_mut() = Some(id);
     }
 
     fn mention_context(&self) -> (Option<String>, Option<String>, Option<String>) {
@@ -5933,7 +6088,7 @@ impl App {
         } else {
             self.replying_to.clone()
         };
-        (reply, None, None)
+        (reply, None, self.posting_as_handle())
     }
 
     fn mention_query(&self, view: &gtk::TextView) -> Option<String> {
@@ -6113,6 +6268,10 @@ impl App {
             self.connections_orgs_expanded,
             self.connections_orgs_cursor.is_some(),
             self.user.as_ref().map(|user| user.username()),
+            self.user.as_ref().is_some_and(|user| {
+                user.username()
+                    .eq_ignore_ascii_case(&self.connections_handle)
+            }),
             sender.input_sender().clone(),
         );
     }
@@ -6400,8 +6559,8 @@ impl App {
                     }
                     Err(err) if err.status == 404 => {
                         let organization = client.organization(&username).await.map(Box::new);
-                        let mentions = client.organization_mentions(&username, None).await;
-                        sender2.input(AppMsg::OrganizationLoaded(organization, mentions));
+                        let commits = client.organization_commits(&username, None).await;
+                        sender2.input(AppMsg::OrganizationLoaded(organization, commits));
                     }
                     Err(err) => {
                         sender2.input(AppMsg::ProfileLoaded(Err(err), Err(ApiError::decode())));
@@ -6414,14 +6573,19 @@ impl App {
     fn load_organization(&mut self, sender: &ComponentSender<App>, handle: String) {
         self.reset_profile_list();
         ui::append_commit_skeletons(&self.profile_list, 3);
+        let mentions = self.profile_tab == ProfileFeed::Mentions;
         let client = self.client.clone().or_else(|| Client::unsigned().ok());
         if let Some(client) = client {
             self.begin_busy();
             let sender2 = sender.clone();
             relm4::spawn(async move {
                 let organization = client.organization(&handle).await.map(Box::new);
-                let mentions = client.organization_mentions(&handle, None).await;
-                sender2.input(AppMsg::OrganizationLoaded(organization, mentions));
+                let commits = if mentions {
+                    client.organization_mentions(&handle, None).await
+                } else {
+                    client.organization_commits(&handle, None).await
+                };
+                sender2.input(AppMsg::OrganizationLoaded(organization, commits));
             });
         }
     }
@@ -6539,6 +6703,7 @@ impl App {
                 &self.profile_hero,
                 organization,
                 self.user.is_some(),
+                self.profile_tab,
                 sender.input_sender().clone(),
             );
         } else if let Some(profile) = &self.profile {
@@ -6593,6 +6758,12 @@ impl App {
         self.show_toast(text, None);
     }
 
+    fn toast_unless_limited(&self, err: &ApiError) {
+        if !err.is_rate_limited() {
+            self.toast(&err.message);
+        }
+    }
+
     fn toast_commit(&self, text: &str, id: String) {
         self.show_toast(text, Some(id));
     }
@@ -6610,7 +6781,7 @@ impl App {
         self.aside_toast.add_css_class("visible");
         self.aside_toast.set_reveal_child(true);
         if let Some(id) = self.toast_hide.borrow_mut().take() {
-            id.remove();
+            ui::try_remove_source(id);
         }
         let revealer = self.aside_toast.downgrade();
         let slot = self.toast_hide.clone();
@@ -7752,6 +7923,12 @@ impl App {
         if !self.automatic_translation() || self.user_settings.is_none() {
             return;
         }
+        if self
+            .auto_translate_retry_at
+            .is_some_and(|until| Instant::now() < until)
+        {
+            return;
+        }
         let Some(client) = self.client.clone() else {
             return;
         };
@@ -8053,6 +8230,17 @@ fn language_code(name: &str) -> Option<String> {
         .trim()
         .to_ascii_lowercase();
     (code.len() == 2 && code.chars().all(|c| c.is_ascii_alphabetic())).then_some(code)
+}
+
+fn open_web(url: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("/usr/bin/open").arg(url).spawn();
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = gio::AppInfo::launch_default_for_uri(url, None::<&gio::AppLaunchContext>);
+    }
 }
 
 fn poll_clipboard(sender: &ComponentSender<App>) {

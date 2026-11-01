@@ -43,6 +43,15 @@ impl ApiError {
     pub fn is_commit_rules(&self) -> bool {
         self.status == 403 && self.message.to_ascii_lowercase().contains("commit")
     }
+
+    /// Laravel's throttle and similar 429 replies. Background work should stay quiet.
+    pub fn is_rate_limited(&self) -> bool {
+        if self.status == 429 {
+            return true;
+        }
+        let message = self.message.to_ascii_lowercase();
+        message.contains("too many attempts") || message.contains("too many requests")
+    }
 }
 
 impl fmt::Display for ApiError {
@@ -89,5 +98,27 @@ pub fn from_body(status: u16, data: &[u8]) -> ApiError {
         status,
         code,
         message,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ApiError;
+
+    #[test]
+    fn rate_limit_matches_laravel_copy() {
+        let err = ApiError {
+            status: 429,
+            code: None,
+            message: "Too Many Attempts.".into(),
+        };
+        assert!(err.is_rate_limited());
+        let copy = ApiError {
+            status: 200,
+            code: None,
+            message: "Too many attempts.".into(),
+        };
+        assert!(copy.is_rate_limited());
+        assert!(!ApiError::network().is_rate_limited());
     }
 }

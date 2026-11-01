@@ -37,7 +37,7 @@ When `FLATPAK_ID` is set, the app skips writing a user desktop file; the package
 
 A cargo-run session on Linux also writes `~/.local/share/applications/sh.devnull.Client.desktop` pointing at the current binary, then tries `update-desktop-database`, `xdg-mime`, and `xdg-settings` so a browser can return after GitHub approval. The desktop file passes `%u` into the same binary; GApplication uniqueness forwards that URI to the waiting window. A second process also writes `~/.local/share/sh.devnull.Client/callback.uri` so redeem still works if the session bus is missing.
 
-On macOS, launch compiles `~/Library/Application Support/sh.devnull.Client/DevNull Callback.app` (AppleScript + `devnull://` URL types) and registers it with Launch Services. The helper writes the same callback file, then starts the binary. If the browser still swallows the redirect, paste the callback URL on the sign-in page.
+On macOS, launch compiles `~/Library/Application Support/sh.devnull.Client/DevNull Callback.app` (AppleScript + `devnull://` URL types), registers it with Launch Services, and sets it as the default handler for `devnull://`. The first-party Mac app (`/Applications/DevNull.app`) claims the same scheme for `devnull://mac/auth`; without claiming it, GitHub's `devnull://linux/auth` callback never reaches this GTK client. The helper only writes the callback file — the waiting window polls it. If the browser still swallows the redirect, paste the callback URL on the sign-in page.
 
 ## AppStream
 

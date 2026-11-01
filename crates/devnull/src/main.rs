@@ -2,6 +2,7 @@ mod app;
 mod body;
 mod emoji;
 mod images;
+mod macos;
 mod prefs;
 mod ui;
 
@@ -49,6 +50,7 @@ fn take_uri_from_args(args: &[std::ffi::OsString]) {
 
 fn main() {
     take_uri_from_args(&std::env::args_os().collect::<Vec<_>>());
+    crate::macos::prepare_backend();
     let _ = devnull_auth::register_url_handler();
 
     // RelmApp::new calls gtk/adw init so a display exists before CSS is loaded.
@@ -59,6 +61,9 @@ fn main() {
     });
 
     let gtk_app = relm4::main_application();
+    gtk_app.connect_startup(|_| {
+        crate::macos::install_app_actions();
+    });
     gtk_app.set_flags(
         gtk_app.flags()
             | gio::ApplicationFlags::HANDLES_COMMAND_LINE

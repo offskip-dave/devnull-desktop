@@ -166,24 +166,28 @@ DBusActivatable=false
 #[cfg(target_os = "macos")]
 mod macos {
     use super::AuthError;
+    use core_foundation::base::TCFType;
+    use core_foundation::string::{CFString, CFStringRef};
+
+    const HANDLER_BUNDLE_ID: &str = "sh.devnull.Client.url-handler";
+
+    #[link(name = "CoreServices", kind = "framework")]
+    extern "C" {
+        fn LSSetDefaultHandlerForURLScheme(scheme: CFStringRef, handler: CFStringRef) -> i32;
+    }
 
     pub fn register() -> Result<(), AuthError> {
-        let exe = std::env::current_exe().map_err(|_| AuthError::Handler)?;
         let support = crate::data_dir();
         std::fs::create_dir_all(&support).map_err(|_| AuthError::Handler)?;
         let callback = support.join("callback.uri");
         let script_path = support.join("url-handler.applescript");
         let bundle = support.join("DevNull Callback.app");
-        let script = format!(
-            "\
-on open location this_URL
-  do shell script \"mkdir -p \" & quoted form of {support} & \" && /usr/bin/printf %s \" & quoted form of this_URL & \" > \" & quoted form of {callback}
-  do shell script quoted form of {exe} & \" \" & quoted form of this_URL
-end open location
-",
-            exe = applescript_string(&exe.display().to_string()),
-            support = applescript_string(&support.display().to_string()),
-            callback = applescript_string(&callback.display().to_string()),
+        // Write the callback file only. Launching this GTK binary opens a second
+        // window (no D-Bus uniqueness on macOS). The waiting window polls the file.
+        // Claiming the scheme matters: the first-party Mac app also owns `devnull://`.
+        let script = handler_script(
+            &support.display().to_string(),
+            &callback.display().to_string(),
         );
         std::fs::write(&script_path, script).map_err(|_| AuthError::Handler)?;
         let status = std::process::Command::new("osacompile")
@@ -200,7 +204,31 @@ end open location
             .args(["-f"])
             .arg(&bundle)
             .status();
+        claim_url_scheme();
         Ok(())
+    }
+
+    fn handler_script(support: &str, callback: &str) -> String {
+        format!(
+            "\
+on open location this_URL
+  do shell script \"/bin/mkdir -p \" & quoted form of {support} & \" && /usr/bin/printf '%s' \" & quoted form of this_URL & \" > \" & quoted form of {callback}
+end open location
+",
+            support = applescript_string(support),
+            callback = applescript_string(callback),
+        )
+    }
+
+    fn claim_url_scheme() {
+        let scheme = CFString::new("devnull");
+        let handler = CFString::new(HANDLER_BUNDLE_ID);
+        unsafe {
+            LSSetDefaultHandlerForURLScheme(
+                scheme.as_concrete_TypeRef(),
+                handler.as_concrete_TypeRef(),
+            );
+        }
     }
 
     fn applescript_string(s: &str) -> String {
@@ -234,5 +262,23 @@ end open location
             }
         }
         let _ = std::fs::write(path, text);
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn helper_script_writes_the_callback_and_does_not_launch_the_binary() {
+            let script = handler_script(
+                "/Users/me/Library/Application Support/sh.devnull.Client",
+                "/Users/me/Library/Application Support/sh.devnull.Client/callback.uri",
+            );
+            assert!(script.contains("on open location"));
+            assert!(script.contains("callback.uri"));
+            assert!(script.contains("/usr/bin/printf '%s'"));
+            assert!(!script.contains("devnull \""));
+            assert!(!script.contains("current_exe"));
+        }
     }
 }

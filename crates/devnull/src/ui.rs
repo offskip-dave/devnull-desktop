@@ -57,6 +57,8 @@ pub struct FeedCtx {
     pub suggested: Vec<User>,
     pub following: HashSet<String>,
     pub user_card: Option<Rc<UserCard>>,
+    /// Organization ids and handles the signed-in person can post as.
+    pub org_ids: Vec<String>,
 }
 
 #[derive(Clone, Default)]
@@ -245,10 +247,18 @@ fn apply_feed_hover(list: &gtk::ListBox, hover: &FeedHover) {
     }
 }
 
+pub fn try_remove_source(id: glib::SourceId) {
+    // timeout_add_local_once already drops the source when it fires. glib 0.22
+    // panics if we remove that id again.
+    unsafe {
+        let _ = glib::ffi::g_source_remove(id.as_raw());
+    }
+}
+
 pub fn clear_feed_hover(list: &gtk::ListBox) {
     let state = feed_hover(list);
     if let Some(id) = state.borrow_mut().leave.take() {
-        id.remove();
+        try_remove_source(id);
     }
     let mut hover = state.borrow_mut();
     hover.commit = None;
@@ -259,7 +269,7 @@ pub fn clear_feed_hover(list: &gtk::ListBox) {
 
 fn cancel_leave(state: &Rc<RefCell<FeedHover>>) {
     if let Some(id) = state.borrow_mut().leave.take() {
-        id.remove();
+        try_remove_source(id);
     }
 }
 
@@ -558,7 +568,7 @@ impl UserCard {
 
     fn cancel(slot: &RefCell<Option<glib::SourceId>>) {
         if let Some(id) = slot.borrow_mut().take() {
-            id.remove();
+            try_remove_source(id);
         }
     }
 
@@ -700,8 +710,19 @@ pub fn preview_follow_label(following: bool, follows_you: bool) -> &'static str 
 }
 
 fn bind_user_preview(widget: &impl IsA<gtk::Widget>, user: &User, ctx: &FeedCtx) {
+    if user.is_organization() {
+        return;
+    }
     if let Some(card) = &ctx.user_card {
         card.bind(widget, user, ctx.sender.clone(), ctx.me_id.clone());
+    }
+}
+
+fn emit_open_author_handle(sender: &Sender<AppMsg>, handle: String, organization: bool) {
+    if organization {
+        sender.emit(AppMsg::OpenOrganization(handle));
+    } else {
+        sender.emit(AppMsg::OpenProfile(handle));
     }
 }
 
@@ -985,6 +1006,37 @@ pub fn register_icons() {
         return;
     };
     gtk::IconTheme::for_display(&display).add_search_path(resources_dir().join("icons"));
+}
+
+pub fn app_icon_path() -> &'static str {
+    static PATH: OnceLock<String> = OnceLock::new();
+    PATH.get_or_init(|| {
+        resources_dir()
+            .join("icons/hicolor/scalable/apps/sh.devnull.Client.svg")
+            .to_string_lossy()
+            .into_owned()
+    })
+}
+
+pub fn refresh_mark_images(root: &gtk::Widget) {
+    let path = mark_path(adw_is_dark());
+    fn walk(widget: &gtk::Widget, path: &str) {
+        if let Ok(image) = widget.clone().downcast::<gtk::Image>() {
+            if image.has_css_class("dn-mark") {
+                image.set_from_file(Some(path));
+            }
+        }
+        let mut child = widget.first_child();
+        while let Some(node) = child {
+            walk(&node, path);
+            child = node.next_sibling();
+        }
+    }
+    if let Some(window) = root.root() {
+        walk(window.upcast_ref(), path);
+    } else {
+        walk(root, path);
+    }
 }
 
 pub fn mark_path(dark: bool) -> &'static str {
@@ -1378,12 +1430,22 @@ pub fn bind_window_scroll(
 
 pub fn apply_pointer_cursors(widget: &impl IsA<gtk::Widget>) {
     walk_pointer(widget.upcast_ref());
+    crate::macos::track_cursors(widget);
 }
 
 fn walk_pointer(widget: &gtk::Widget) {
-    if widget.is::<gtk::Button>() {
+    if widget.is::<gtk::Button>()
+        || widget.is::<gtk::CheckButton>()
+        || widget.is::<gtk::MenuButton>()
+        || widget.is::<gtk::Switch>()
+        || widget.is::<gtk::DropDown>()
+    {
         pointer(widget);
-    } else if widget.is::<gtk::TextView>() || widget.is::<gtk::Entry>() {
+    } else if widget.is::<gtk::TextView>()
+        || widget.is::<gtk::Entry>()
+        || widget.is::<gtk::SearchEntry>()
+        || widget.is::<gtk::PasswordEntry>()
+    {
         widget.set_cursor_from_name(Some("text"));
     }
     let mut child = widget.first_child();
@@ -1820,7 +1882,7 @@ fn rail_area(
         RailKind::Nested { .. }
         | RailKind::Commit {
             reply_tail: true, ..
-        } => -1,
+        } => 0,
         RailKind::Day | RailKind::Segment | RailKind::Dashed => 1,
         _ => 64,
     });
@@ -2038,7 +2100,7 @@ fn fill_rail_overlay(
     sizer.set_vexpand(true);
     overlay.set_child(Some(&sizer));
     area.set_content_width(width);
-    area.set_content_height(-1);
+    area.set_content_height(0);
     area.set_size_request(width, -1);
     area.set_halign(gtk::Align::Fill);
     area.set_valign(gtk::Align::Fill);
@@ -2098,10 +2160,12 @@ fn reply_avatar_node(user: Option<&User>, sender: Sender<AppMsg>) -> gtk::Widget
     btn.set_valign(gtk::Align::Start);
     btn.set_margin_top((REPLY_NODE_Y as i32 - (REPLY_AVATAR + REPLY_AVATAR_RING) / 2).max(0));
     btn.set_can_focus(false);
-    btn.set_child(Some(&avatar_widget(user, REPLY_AVATAR, true)));
-    if let Some(username) = user.map(|u| u.username.clone()) {
+    btn.set_child(Some(&author_avatar_widget(user, REPLY_AVATAR, true)));
+    if let Some(author) = user {
+        let handle = author.username.clone();
+        let organization = author.is_organization();
         btn.connect_clicked(move |_| {
-            sender.emit(AppMsg::OpenProfile(username.clone()));
+            emit_open_author_handle(&sender, handle.clone(), organization);
         });
     }
     btn.upcast()
@@ -2138,10 +2202,12 @@ fn rail_avatar_node(user: Option<&User>, sender: Sender<AppMsg>) -> gtk::Widget 
     btn.set_valign(gtk::Align::Start);
     btn.set_margin_top(RAIL_AVATAR_TOP);
     btn.set_can_focus(false);
-    btn.set_child(Some(&avatar_widget(user, RAIL_AVATAR, true)));
-    if let Some(username) = user.map(|u| u.username.clone()) {
+    btn.set_child(Some(&author_avatar_widget(user, RAIL_AVATAR, true)));
+    if let Some(author) = user {
+        let handle = author.username.clone();
+        let organization = author.is_organization();
         btn.connect_clicked(move |_| {
-            sender.emit(AppMsg::OpenProfile(username.clone()));
+            emit_open_author_handle(&sender, handle.clone(), organization);
         });
     }
     btn.upcast()
@@ -2405,12 +2471,150 @@ pub fn set_staged_fill(area: &gtk::DrawingArea, paint: &Rc<RefCell<StagedPaint>>
 }
 
 pub fn fill_avatar(box_: &gtk::Box, user: Option<&User>, size: i32, ring: bool) {
+    let Some(user) = user else {
+        while let Some(child) = box_.first_child() {
+            box_.remove(&child);
+        }
+        return;
+    };
+    if rebind_avatar(box_, user, size) {
+        return;
+    }
     while let Some(child) = box_.first_child() {
         box_.remove(&child);
     }
-    if user.is_some() {
-        box_.append(&avatar_widget(user, size, ring));
+    let avatar = avatar_widget(Some(user), size, ring);
+    avatar.set_valign(gtk::Align::Center);
+    box_.append(&avatar);
+}
+
+fn rebind_avatar(box_: &gtk::Box, user: &User, size: i32) -> bool {
+    let Some(root) = box_.first_child() else {
+        return false;
+    };
+    let Some(av) = find_widget::<adw::Avatar>(&root) else {
+        return false;
+    };
+    av.set_text(Some(user.display_name()));
+    av.set_size(size);
+    av.set_size_request(size, size);
+    let url = user.avatar_src();
+    images::bind_avatar(&av, url.as_deref());
+    if let Some(url) = url.as_deref() {
+        images::reapply_avatar(&av, url);
     }
+    true
+}
+
+fn find_widget<T: IsA<gtk::Widget>>(root: &gtk::Widget) -> Option<T> {
+    if let Ok(found) = root.clone().downcast::<T>() {
+        return Some(found);
+    }
+    let children = root.observe_children();
+    for i in 0..children.n_items() {
+        let Some(item) = children.item(i) else {
+            continue;
+        };
+        let Ok(widget) = item.downcast::<gtk::Widget>() else {
+            continue;
+        };
+        if let Some(found) = find_widget::<T>(&widget) {
+            return Some(found);
+        }
+    }
+    None
+}
+
+pub fn fill_author_avatar(box_: &gtk::Box, user: Option<&User>, size: i32, ring: bool) {
+    if user.is_some_and(User::is_organization) {
+        while let Some(child) = box_.first_child() {
+            box_.remove(&child);
+        }
+        box_.append(&author_avatar_widget(user, size, ring));
+        return;
+    }
+    fill_avatar(box_, user, size, ring);
+}
+
+pub fn author_avatar_widget(author: Option<&User>, size: i32, ring: bool) -> gtk::Widget {
+    match author {
+        Some(user) if user.is_organization() => {
+            org_avatar_widget(&Organization::from_author(user), size, ring)
+        }
+        other => avatar_widget(other, size, ring),
+    }
+}
+
+pub fn fill_author_menu(
+    menu: &gtk::Popover,
+    me: Option<&User>,
+    orgs: &[User],
+    selected: Option<&User>,
+    sender: Sender<AppMsg>,
+) {
+    let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    list.add_css_class("dn-author-menu");
+    if let Some(me) = me {
+        let mine = selected.map(User::is_organization) != Some(true);
+        list.append(&author_menu_row(
+            me,
+            mine,
+            None,
+            sender.clone(),
+            menu.clone(),
+        ));
+    }
+    for org in orgs {
+        let active =
+            selected.is_some_and(|selected| selected.username.eq_ignore_ascii_case(&org.username));
+        list.append(&author_menu_row(
+            org,
+            active,
+            Some(org.username.clone()),
+            sender.clone(),
+            menu.clone(),
+        ));
+    }
+    menu.set_child(Some(&list));
+}
+
+fn author_menu_row(
+    user: &User,
+    active: bool,
+    handle: Option<String>,
+    sender: Sender<AppMsg>,
+    menu: gtk::Popover,
+) -> gtk::Button {
+    let btn = gtk::Button::new();
+    btn.add_css_class("flat");
+    btn.add_css_class("dn-author-choice");
+    if active {
+        btn.add_css_class("active");
+    }
+    pointer(&btn);
+    let inner = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    inner.append(&author_avatar_widget(Some(user), 24, false));
+    let col = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let name = gtk::Label::new(Some(user.display_name()));
+    name.add_css_class("dn-name");
+    name.set_xalign(0.0);
+    col.append(&name);
+    let at = gtk::Label::new(Some(&format!("@{}", user.username)));
+    at.add_css_class("dn-handle");
+    at.set_xalign(0.0);
+    col.append(&at);
+    inner.append(&col);
+    btn.set_child(Some(&inner));
+    btn.set_tooltip_text(Some(if handle.is_some() {
+        "Post as this organization"
+    } else {
+        "Post as yourself"
+    }));
+    btn.connect_clicked(move |_| {
+        menu.popdown();
+        sender.emit(AppMsg::PostAs(handle.clone()));
+    });
+    btn
 }
 
 pub fn fill_aside_you(
@@ -2432,6 +2636,7 @@ pub fn fill_aside_you(
     let at = gtk::Label::new(Some(&format!("@{}", user.username)));
     at.add_css_class("dn-handle");
     at.set_xalign(0.0);
+    at.set_valign(gtk::Align::Center);
     handle.append(&at);
 
     let commits = user.commits_count.unwrap_or(0);
@@ -2610,19 +2815,25 @@ fn with_org_ring(face: gtk::Box, size: i32, hex: &str) -> gtk::Widget {
 pub fn avatar_widget(user: Option<&User>, size: i32, ring: bool) -> gtk::Widget {
     let name = user.map(User::display_name);
     let av = adw::Avatar::new(size, name, true);
-    images::bind_avatar(&av, user.and_then(|u| u.avatar_url.as_deref()));
     av.add_css_class("dn-avatar");
+    av.set_size_request(size, size);
+    let url = user.and_then(User::avatar_src);
+    images::bind_avatar(&av, url.as_deref());
+    if let Some(url) = url {
+        av.connect_map(move |av| images::reapply_avatar(av, &url));
+    }
+    let face: gtk::Widget = av.upcast();
     if user.is_some_and(User::is_live) {
-        return live_avatar_chrome(av, user);
+        return live_avatar_chrome(face, user);
     }
     if ring {
-        with_lane_ring(av, size, &lane_color(user, adw_is_dark()))
+        with_lane_ring(face, size, &lane_color(user, adw_is_dark()))
     } else {
-        av.upcast()
+        face
     }
 }
 
-fn with_lane_ring(av: adw::Avatar, size: i32, hex: &str) -> gtk::Widget {
+fn with_lane_ring(face: impl IsA<gtk::Widget>, size: i32, hex: &str) -> gtk::Widget {
     let pad = 8;
     let wrap = gtk::Overlay::new();
     wrap.add_css_class("dn-avatar-ring");
@@ -2641,13 +2852,14 @@ fn with_lane_ring(av: adw::Avatar, size: i32, hex: &str) -> gtk::Widget {
         cairo.stroke().ok();
     });
     wrap.set_child(Some(&ring));
-    av.set_halign(gtk::Align::Center);
-    av.set_valign(gtk::Align::Center);
-    wrap.add_overlay(&av);
+    let face: gtk::Widget = face.upcast();
+    face.set_halign(gtk::Align::Center);
+    face.set_valign(gtk::Align::Center);
+    wrap.add_overlay(&face);
     wrap.upcast()
 }
 
-fn live_avatar_chrome(av: adw::Avatar, user: Option<&User>) -> gtk::Widget {
+fn live_avatar_chrome(face: impl IsA<gtk::Widget>, user: Option<&User>) -> gtk::Widget {
     let overlay = gtk::Overlay::new();
     overlay.add_css_class("dn-live-avatar-wrap");
     overlay.set_overflow(gtk::Overflow::Visible);
@@ -2659,7 +2871,7 @@ fn live_avatar_chrome(av: adw::Avatar, user: Option<&User>) -> gtk::Widget {
     let ring = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     ring.add_css_class("dn-live-ring");
     ring.set_valign(gtk::Align::Center);
-    ring.append(&av);
+    ring.append(&face);
     overlay.set_child(Some(&ring));
     let badge = live_badge();
     badge.set_halign(gtk::Align::Center);
@@ -3321,11 +3533,12 @@ pub fn commit_row(
         let handle = gtk::Label::new(Some(&format!("@{}", author.username)));
         handle.add_css_class("dn-handle");
         identity.append(&handle);
-        let username = author.username.clone();
+        let handle = author.username.clone();
+        let organization = author.is_organization();
         let profile_sender = sender.clone();
         let click = gtk::GestureClick::new();
         click.connect_released(move |_, _, _, _| {
-            profile_sender.emit(AppMsg::OpenProfile(username.clone()));
+            emit_open_author_handle(&profile_sender, handle.clone(), organization);
         });
         identity.add_controller(click);
         if let Some(enabled) = ctx.hover.as_ref() {
@@ -3392,6 +3605,7 @@ pub fn commit_row(
             commit,
             poll,
             ctx.me_id.as_deref(),
+            &ctx.org_ids,
             ctx.sender.clone(),
             false,
         ));
@@ -3563,25 +3777,31 @@ fn commit_actions(commit: &Commit, ctx: &FeedCtx, focused: bool) -> gtk::Box {
     star.add_css_class("dn-star");
     pointer(&star);
     paint_star(&star, starred, count);
-    let id = commit.id.clone();
-    let star_sender = ctx.sender.clone();
-    let starred_cell = Rc::new(Cell::new(starred));
-    let count_cell = Rc::new(Cell::new(count));
-    star.connect_clicked(move |btn| {
-        let next = !starred_cell.get();
-        let next_count = if next {
-            count_cell.get() + 1
-        } else {
-            count_cell.get().saturating_sub(1)
-        };
-        starred_cell.set(next);
-        count_cell.set(next_count);
-        paint_star(btn, next, next_count);
-        star_sender.emit(AppMsg::ToggleStar(id.clone(), next, next_count));
-    });
+    let owned = commit.is_owned_by(ctx.me_id.as_deref(), &ctx.org_ids);
+    if owned {
+        star.set_sensitive(false);
+        star.set_tooltip_text(Some("You can't star your own commit"));
+    } else {
+        let id = commit.id.clone();
+        let star_sender = ctx.sender.clone();
+        let starred_cell = Rc::new(Cell::new(starred));
+        let count_cell = Rc::new(Cell::new(count));
+        star.connect_clicked(move |btn| {
+            let next = !starred_cell.get();
+            let next_count = if next {
+                count_cell.get() + 1
+            } else {
+                count_cell.get().saturating_sub(1)
+            };
+            starred_cell.set(next);
+            count_cell.set(next_count);
+            paint_star(btn, next, next_count);
+            star_sender.emit(AppMsg::ToggleStar(id.clone(), next, next_count));
+        });
+    }
     meta.append(&star);
 
-    if ctx.pasteis_mode {
+    if ctx.pasteis_mode && !commit.is_organization() {
         let n = ctx
             .pasteis
             .get(&commit.id)
@@ -3594,8 +3814,7 @@ fn commit_actions(commit: &Commit, ctx: &FeedCtx, focused: bool) -> gtk::Box {
         } else {
             format!("{n} pastéis")
         }));
-        let own = commit.is_own(ctx.me_id.as_deref());
-        let read_only = own
+        let read_only = owned
             || commit
                 .status
                 .as_deref()
@@ -3678,7 +3897,7 @@ fn commit_actions(commit: &Commit, ctx: &FeedCtx, focused: bool) -> gtk::Box {
     });
     meta.append(&link);
 
-    if can_report(commit, ctx.me_id.as_deref()) {
+    if can_report(commit, ctx.me_id.as_deref(), &ctx.org_ids) {
         let report = icon_only_button("dn-flag-symbolic", "Report commit", false);
         report.add_css_class("dn-action");
         report.add_css_class("dn-secondary");
@@ -3692,9 +3911,9 @@ fn commit_actions(commit: &Commit, ctx: &FeedCtx, focused: bool) -> gtk::Box {
     meta
 }
 
-fn can_report(commit: &Commit, me_id: Option<&str>) -> bool {
+fn can_report(commit: &Commit, me_id: Option<&str>, org_ids: &[String]) -> bool {
     me_id.is_some()
-        && !commit.is_own(me_id)
+        && !commit.is_owned_by(me_id, org_ids)
         && !commit.is_deleted()
         && commit.status.as_deref().unwrap_or("approved") == "approved"
 }
@@ -3735,7 +3954,7 @@ fn quoted_commit_widget(quoted: Option<&Commit>, sender: Sender<AppMsg>) -> gtk:
         Some(commit) => {
             let head = gtk::Box::new(gtk::Orientation::Horizontal, 6);
             if let Some(author) = &commit.author {
-                head.append(&avatar_widget(Some(author), 20, false));
+                head.append(&author_avatar_widget(Some(author), 20, false));
                 let name = gtk::Label::new(Some(author.display_name()));
                 name.add_css_class("dn-name");
                 head.append(&name);
@@ -3761,6 +3980,7 @@ fn quoted_commit_widget(quoted: Option<&Commit>, sender: Sender<AppMsg>) -> gtk:
                     commit,
                     poll,
                     None,
+                    &[],
                     sender.clone(),
                     true,
                 ));
@@ -3781,6 +4001,7 @@ fn commit_poll_widget(
     commit: &Commit,
     poll: &Poll,
     me_id: Option<&str>,
+    org_ids: &[String],
     sender: Sender<AppMsg>,
     is_static: bool,
 ) -> gtk::Widget {
@@ -3796,7 +4017,8 @@ fn commit_poll_widget(
     });
     root.add_controller(claim);
 
-    let can_vote = !is_static && poll.can_vote(me_id, commit);
+    let can_vote =
+        !is_static && poll.can_vote(me_id, commit) && !commit.is_owned_by(me_id, org_ids);
     if poll.shows_results() {
         for option in &poll.options {
             root.append(&poll_result_row(option));
@@ -4040,7 +4262,7 @@ pub fn paint_new_posts(button: &gtk::Button, count: u32, authors: &[User], away:
         let stack = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         stack.add_css_class("dn-new-posts-avatars");
         for (index, author) in authors.iter().take(3).enumerate() {
-            let avatar = avatar_widget(Some(author), 22, false);
+            let avatar = author_avatar_widget(Some(author), 22, false);
             avatar.add_css_class("dn-new-posts-avatar");
             if index > 0 {
                 avatar.set_margin_start(-8);
@@ -4661,40 +4883,14 @@ fn notification_and_rest(people: &[&User], others: i64, action: &str) -> String 
     others_and_action(others, action)
 }
 
-fn notification_action(kind: &str) -> &str {
-    match kind {
-        "follow" | "followed" => "followed you",
-        "star" | "starred" => "starred your commit",
-        "reply" | "replied" => "replied to your commit",
-        "quote" | "quoted" => "quoted your commit",
-        "mention" | "mentioned" => "mentioned you",
-        "first_commit" => "made their first commit",
-        "leveled_up" => "leveled up",
-        other if !other.is_empty() => other,
-        _ => "notified you",
-    }
-}
-
 fn notification_headline_row(item: &Notification) -> gtk::Widget {
     let kind = item.kind();
-    if matches!(kind, "approved" | "rejected") {
-        let title = gtk::Label::new(Some(&format!(
-            "Your commit was {}.",
-            if kind == "approved" {
-                "approved"
-            } else {
-                "rejected"
-            }
-        )));
+    if matches!(kind, "approved" | "rejected" | "leveled_up") {
+        let title = gtk::Label::new(Some(&item.action()));
         shrink_label(&title);
         return title.upcast();
     }
-    if kind == "leveled_up" {
-        let title = gtk::Label::new(Some(&item.level_up_title()));
-        shrink_label(&title);
-        return title.upcast();
-    }
-    let action = notification_action(kind);
+    let action = item.action();
     let actor = item.actor.as_ref().or(item.actors.first());
     let others = item.other_actors();
     let people = item.people();
@@ -4706,7 +4902,7 @@ fn notification_headline_row(item: &Notification) -> gtk::Widget {
     name.set_xalign(0.0);
     line.append(&name);
     if others > 0 {
-        let rest = gtk::Label::new(Some(&notification_and_rest(&people, others, action)));
+        let rest = gtk::Label::new(Some(&notification_and_rest(&people, others, &action)));
         rest.set_xalign(0.0);
         rest.set_wrap(true);
         rest.set_wrap_mode(pango::WrapMode::WordChar);
@@ -4720,7 +4916,7 @@ fn notification_headline_row(item: &Notification) -> gtk::Widget {
             handle.set_xalign(0.0);
             line.append(&handle);
         }
-        let verb = gtk::Label::new(Some(action));
+        let verb = gtk::Label::new(Some(&action));
         verb.set_xalign(0.0);
         verb.set_wrap(true);
         verb.set_wrap_mode(pango::WrapMode::WordChar);
@@ -4758,7 +4954,7 @@ fn notification_avatars(item: &Notification) -> gtk::Widget {
         ));
     }
     for (index, actor) in shown.iter().enumerate().rev() {
-        let avatar = avatar_widget(Some(actor), size, false);
+        let avatar = author_avatar_widget(Some(actor), size, false);
         avatar.set_halign(gtk::Align::Start);
         avatar.set_valign(gtk::Align::Center);
         avatar.set_margin_start(index as i32 * step);
@@ -7207,6 +7403,7 @@ pub fn fill_organization_hero(
     hero: &gtk::Box,
     organization: &Organization,
     signed_in: bool,
+    tab: ProfileFeed,
     sender: Sender<AppMsg>,
 ) {
     while let Some(child) = hero.first_child() {
@@ -7374,7 +7571,18 @@ pub fn fill_organization_hero(
     tabs.add_css_class("dn-profile-tabs");
     tabs.set_hexpand(true);
     tabs.set_homogeneous(true);
-    tabs.append(&profile_tab("Mentions", true, ProfileFeed::Commits, sender));
+    tabs.append(&profile_tab(
+        "Commits",
+        tab == ProfileFeed::Commits,
+        ProfileFeed::Commits,
+        sender.clone(),
+    ));
+    tabs.append(&profile_tab(
+        "Mentions",
+        tab == ProfileFeed::Mentions,
+        ProfileFeed::Mentions,
+        sender,
+    ));
     hero.append(&tabs);
 }
 
@@ -9190,7 +9398,9 @@ fn activity_graph(activity: &Activity, lane_hex: &str, sender: Sender<AppMsg>) -
         if width <= 1 {
             return;
         }
-        let height = activity_layout(year, n_cells, f64::from(width)).height();
+        let height = activity_layout(year, n_cells, f64::from(width))
+            .height()
+            .max(0);
         if area.content_height() != height {
             area.set_content_height(height);
         }
@@ -9838,7 +10048,7 @@ impl HoverPopover {
 
     fn cancel(slot: &RefCell<Option<glib::SourceId>>) {
         if let Some(id) = slot.borrow_mut().take() {
-            id.remove();
+            try_remove_source(id);
         }
     }
 
@@ -10641,6 +10851,7 @@ pub fn fill_connections(
     orgs_expanded: bool,
     more_orgs: bool,
     me: Option<&str>,
+    own_profile: bool,
     sender: Sender<AppMsg>,
 ) {
     clear_list(list);
@@ -10685,11 +10896,27 @@ pub fn fill_connections(
         }
     }
     for user in users {
-        list.append(&connection_user_row(user, me, sender.clone()));
+        list.append(&connection_user_row(
+            user,
+            me,
+            kind,
+            own_profile,
+            sender.clone(),
+        ));
     }
 }
 
-fn connection_user_row(user: &User, me: Option<&str>, sender: Sender<AppMsg>) -> gtk::ListBoxRow {
+pub fn shows_follows_you_chip(kind: ConnectionsKind, own_profile: bool, follows_you: bool) -> bool {
+    kind == ConnectionsKind::Followers && !own_profile && follows_you
+}
+
+fn connection_user_row(
+    user: &User,
+    me: Option<&str>,
+    kind: ConnectionsKind,
+    own_profile: bool,
+    sender: Sender<AppMsg>,
+) -> gtk::ListBoxRow {
     let row = gtk::ListBoxRow::new();
     row.set_activatable(true);
     let inner = gtk::Box::new(gtk::Orientation::Horizontal, 12);
@@ -10701,12 +10928,19 @@ fn connection_user_row(user: &User, me: Option<&str>, sender: Sender<AppMsg>) ->
     let name = gtk::Label::new(Some(user.display_name()));
     name.add_css_class("dn-name");
     name.set_xalign(0.0);
+    name.set_tooltip_text(Some(user.display_name()));
     col.append(&name);
     let handle_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     handle_row.append(&handle_dot(Some(user)));
     let handle = gtk::Label::new(Some(&format!("@{}", user.username)));
     handle.add_css_class("dn-handle");
+    handle.set_tooltip_text(Some(&format!("@{}", user.username)));
     handle_row.append(&handle);
+    if shows_follows_you_chip(kind, own_profile, user.follows_you.unwrap_or(false)) {
+        let chip = gtk::Label::new(Some("Follows you"));
+        chip.add_css_class("dn-profile-chip");
+        handle_row.append(&chip);
+    }
     col.append(&handle_row);
     inner.append(&col);
     let own = me.is_some_and(|me| me.eq_ignore_ascii_case(&user.username));
@@ -12180,11 +12414,11 @@ pub fn compose_dialog() -> (adw::Dialog, gtk::Box) {
     (dialog, host)
 }
 
-pub fn shortcuts_dialog() -> adw::Dialog {
+pub fn shortcuts_dialog(has_remotes: bool) -> adw::Dialog {
     let dialog = adw::Dialog::new();
     dialog.set_title("Keyboard shortcuts");
-    dialog.set_content_width(480);
-    dialog.set_content_height(560);
+    dialog.set_content_width(780);
+    dialog.set_content_height(520);
     dialog.set_follows_content_size(false);
 
     let toolbar = adw::ToolbarView::new();
@@ -12200,24 +12434,27 @@ pub fn shortcuts_dialog() -> adw::Dialog {
     outer.set_margin_start(16);
     outer.set_margin_end(16);
     let intro = gtk::Label::new(Some(
-        "They work anywhere except while you're typing. Composer shortcuts apply while writing.",
+        "They work anywhere except while you're typing. Commit and preview work in the composer.",
     ));
     intro.set_wrap(true);
     intro.set_xalign(0.0);
     intro.add_css_class("dn-muted");
     outer.append(&intro);
-    for (title, shortcuts) in SHORTCUT_GROUPS {
-        let group = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        group.add_css_class("dn-shortcut-group");
-        let heading = gtk::Label::new(Some(title));
-        heading.add_css_class("dn-shortcut-heading");
-        heading.set_xalign(0.0);
-        group.append(&heading);
-        for (keys, label) in *shortcuts {
-            group.append(&shortcut_row(keys, label));
-        }
-        outer.append(&group);
-    }
+    let columns = gtk::Box::new(gtk::Orientation::Horizontal, 32);
+    columns.set_homogeneous(true);
+    columns.add_css_class("dn-shortcuts-grid");
+    let go_to = go_to_shortcuts(has_remotes);
+    let commits = gtk::Box::new(gtk::Orientation::Vertical, 24);
+    commits.append(&shortcut_group("Commits", SHORTCUT_COMMITS));
+    let go = gtk::Box::new(gtk::Orientation::Vertical, 24);
+    go.append(&shortcut_group("Go to", &go_to));
+    let write = gtk::Box::new(gtk::Orientation::Vertical, 24);
+    write.append(&shortcut_group("Write", SHORTCUT_WRITE));
+    write.append(&shortcut_group("Anywhere", SHORTCUT_ANYWHERE));
+    columns.append(&commits);
+    columns.append(&go);
+    columns.append(&write);
+    outer.append(&columns);
     scroll.set_child(Some(&outer));
     toolbar.set_content(Some(&scroll));
     dialog.set_child(Some(&toolbar));
@@ -12227,63 +12464,87 @@ pub fn shortcuts_dialog() -> adw::Dialog {
 
 type ShortcutChord = &'static [&'static str];
 type ShortcutRow = (ShortcutChord, &'static str);
-type ShortcutGroup = (&'static str, &'static [ShortcutRow]);
 
-const SHORTCUT_GROUPS: &[ShortcutGroup] = &[
-    (
-        "Navigate",
-        &[
-            (&["j"], "Next commit"),
-            (&["k"], "Previous commit"),
-            (&["Ctrl", "K"], "Search developers and commits"),
-            (&["/"], "Search developers and commits"),
-            (&["g", "l"], "Go to your log"),
-            (&["g", "e"], "Go to trending"),
-            (&["g", "n"], "Go to notifications"),
-            (&["g", "m"], "Go to remotes"),
-            (&["g", "*"], "Go to starred"),
-            (&["g", "p"], "Go to your profile"),
-            (&["g", "s"], "Go to settings"),
-            (&["?"], "Show this list"),
-        ],
-    ),
-    (
-        "Commit",
-        &[
-            (&["↵"], "Open the focused commit"),
-            (&["y"], "Copy link to the focused commit"),
-            (&["r"], "Reply to commit"),
-            (&["q"], "Quote commit"),
-            (&["o"], "Show or hide replies"),
-            (&["s"], "Star or unstar the focused commit"),
-        ],
-    ),
-    (
-        "Composer",
-        &[
-            (&["c"], "Write a commit"),
-            (&["Ctrl", "↵"], "Commit (in the composer)"),
-            (&["Ctrl", "Shift", "P"], "Preview (in the composer)"),
-        ],
-    ),
+const SHORTCUT_COMMITS: &[ShortcutRow] = &[
+    (&["j"], "Next"),
+    (&["k"], "Previous"),
+    (&["↵"], "Open"),
+    (&["r"], "Reply"),
+    (&["q"], "Quote"),
+    (&["s"], "Star or unstar"),
+    (&["o"], "Show or hide replies"),
+    (&["y"], "Copy link"),
 ];
 
+const SHORTCUT_GO_TO: &[ShortcutRow] = &[
+    (&["g", "l"], "Your log"),
+    (&["g", "e"], "Trending"),
+    (&["g", "p"], "Your profile"),
+    (&["g", "n"], "Notifications"),
+    (&["g", "*"], "Starred"),
+    (&["g", "s"], "Settings"),
+];
+
+const SHORTCUT_WRITE: &[ShortcutRow] = &[
+    (&["c"], "New commit"),
+    (&["Ctrl", "↵"], "Commit"),
+    (&["Ctrl", "Shift", "P"], "Preview"),
+];
+
+const SHORTCUT_ANYWHERE: &[ShortcutRow] = &[(&["?"], "Show this list")];
+
+fn go_to_shortcuts(has_remotes: bool) -> Vec<ShortcutRow> {
+    let mut rows = SHORTCUT_GO_TO.to_vec();
+    if has_remotes {
+        rows.insert(4, (&["g", "m"], "Remotes"));
+    }
+    rows
+}
+
+fn shortcut_group(title: &str, shortcuts: &[ShortcutRow]) -> gtk::Box {
+    let group = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    group.add_css_class("dn-shortcut-group");
+    let heading = gtk::Label::new(Some(title));
+    heading.add_css_class("dn-shortcut-heading");
+    heading.set_xalign(0.0);
+    group.append(&heading);
+    if title == "Anywhere" {
+        group.append(&shortcut_row_chords(&[&["Ctrl", "K"], &["/"]], "Search"));
+    }
+    for (keys, label) in shortcuts {
+        group.append(&shortcut_row(keys, label));
+    }
+    group
+}
+
 fn shortcut_row(keys: &[&str], label: &str) -> gtk::Widget {
+    shortcut_row_chords(&[keys], label)
+}
+
+fn shortcut_row_chords(chords: &[&[&str]], label: &str) -> gtk::Widget {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     row.add_css_class("dn-shortcut");
-    let keys_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-    keys_box.set_valign(gtk::Align::Center);
-    for key in keys {
-        let kbd = gtk::Label::new(Some(key));
-        kbd.add_css_class("dn-kbd");
-        kbd.set_valign(gtk::Align::Center);
-        keys_box.append(&kbd);
-    }
-    row.append(&keys_box);
     let text = gtk::Label::new(Some(label));
     text.set_xalign(0.0);
     text.set_hexpand(true);
     row.append(&text);
+    let keys_box = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    keys_box.set_valign(gtk::Align::Center);
+    for (index, keys) in chords.iter().enumerate() {
+        if index > 0 {
+            let or = gtk::Label::new(Some("or"));
+            or.add_css_class("dn-muted");
+            or.add_css_class("dn-mono");
+            keys_box.append(&or);
+        }
+        for key in *keys {
+            let kbd = gtk::Label::new(Some(key));
+            kbd.add_css_class("dn-kbd");
+            kbd.set_valign(gtk::Align::Center);
+            keys_box.append(&kbd);
+        }
+    }
+    row.append(&keys_box);
     row.upcast()
 }
 
@@ -12707,7 +12968,7 @@ impl SearchOmnibox {
             row.set_activatable(true);
             let inner = gtk::Box::new(gtk::Orientation::Horizontal, 12);
             inner.add_css_class("dn-omnibox-row");
-            inner.append(&avatar_widget(commit.author.as_ref(), 36, false));
+            inner.append(&author_avatar_widget(commit.author.as_ref(), 36, false));
             let col = gtk::Box::new(gtk::Orientation::Vertical, 2);
             let meta = gtk::Box::new(gtk::Orientation::Horizontal, 6);
             if let Some(author) = &commit.author {
@@ -14227,10 +14488,11 @@ mod suggestion_tests {
 
     #[test]
     fn first_commit_and_level_up_use_web_copy() {
-        assert_eq!(
-            notification_action("first_commit"),
-            "made their first commit"
-        );
+        let first = Notification {
+            kind: Some("first_commit".into()),
+            ..Default::default()
+        };
+        assert_eq!(first.action(), "made their first commit");
         assert_eq!(
             notification_icon("first_commit"),
             "dn-git-commit-vertical-symbolic"
@@ -14386,6 +14648,42 @@ mod suggestion_tests {
         assert_eq!(preview_follow_label(false, false), "Follow");
         assert_eq!(preview_follow_label(false, true), "Follow back");
         assert_eq!(preview_follow_label(true, true), "Following");
+    }
+
+    #[test]
+    fn follows_you_chip_only_on_other_people_followers_lists() {
+        assert!(shows_follows_you_chip(
+            ConnectionsKind::Followers,
+            false,
+            true
+        ));
+        assert!(!shows_follows_you_chip(
+            ConnectionsKind::Followers,
+            true,
+            true
+        ));
+        assert!(!shows_follows_you_chip(
+            ConnectionsKind::Following,
+            false,
+            true
+        ));
+        assert!(!shows_follows_you_chip(
+            ConnectionsKind::Followers,
+            false,
+            false
+        ));
+    }
+
+    #[test]
+    fn go_to_shortcuts_hide_remotes_when_they_are_off() {
+        let with = go_to_shortcuts(true);
+        let without = go_to_shortcuts(false);
+        assert!(with
+            .iter()
+            .any(|(keys, label)| { *keys == ["g", "m"].as_slice() && *label == "Remotes" }));
+        assert!(!without
+            .iter()
+            .any(|(keys, _)| *keys == ["g", "m"].as_slice()));
     }
 }
 

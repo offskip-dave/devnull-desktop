@@ -41,7 +41,7 @@ If the browser swallows `devnull://`, paste the callback URL on the sign-in scre
 
 On Linux, launch registers a user desktop file (`Exec=… %u`) for `x-scheme-handler/devnull`. Flatpak ships the handler in the app metadata instead. GApplication uniqueness on the session bus is the usual return path: the waiting window gets the callback as a command-line URI.
 
-Both platforms also write the in-flight PKCE verifier (and a copy of the device key) under the app data dir, and any process that sees `devnull://` writes `callback.uri` for the waiting window to poll. That covers a missing session bus (typical on macOS, possible on Linux). On macOS, launch also compiles a helper `.app` under Application Support that writes the same file, then starts the binary. Paste still works if the browser keeps the callback.
+Both platforms also write the in-flight PKCE verifier (and a copy of the device key) under the app data dir, and any process that sees `devnull://` writes `callback.uri` for the waiting window to poll. That covers a missing session bus (typical on macOS, possible on Linux). On macOS, launch compiles a helper `.app` under Application Support, registers it, and claims `devnull://` so the first-party Mac app does not swallow `devnull://linux/auth`. The helper only writes the callback file; the waiting window polls it. Paste still works if the browser keeps the URL.
 
 ## UI
 
@@ -54,6 +54,8 @@ Both platforms also write the in-flight PKCE verifier (and a copy of the device 
 | `images` | Avatars, uploads, galleries, lightbox |
 | `emoji` | `:` suggestions in composers |
 | `prefs` | Theme, who-to-follow, highlight-on-hover, chat dock, pins, reactions, last-visit markers |
+
+On macOS a `gtk::HeaderBar` (not `AdwToolbarView`) supplies close/minimize/zoom so Quartz can drag and go fullscreen without overflowing the 1280px shell. The dock icon is set from `sh.devnull.Client.svg`. Cmd+Q is `app.quit`.
 
 Layout matches the website shell: 256px nav (80px collapsed), 620px feed (940px on Remotes), 320px aside. Below 768px the feed goes fluid. The feed scrollbar is drawn at the window edge so the pointer can scroll from either sidebar. A profile's sticky bar starts as a name and count, then brings in the avatar and `@handle` once the hero avatar scrolls away. Folded commits that start with a long code block fade the last lines instead of trailing `…`.
 

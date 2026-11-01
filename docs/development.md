@@ -36,6 +36,8 @@ export PKG_CONFIG_PATH="$(brew --prefix)/lib/pkgconfig:$(brew --prefix libffi)/l
 
 Geist is optional. Without it the UI falls back to Adwaita Sans / Adwaita Mono.
 
+On macOS, `cargo run -p devnull --release` is the usable build. Debug GTK on Quartz is slow. Cmd+Q quits; the titlebar traffic lights move, minimize, and zoom/fullscreen the window.
+
 ## Check
 
 CI on `main` / `production` and pull requests runs format, clippy (`-D warnings`), and tests on Ubuntu (`test`) and clippy/tests on macOS (`macos`), both with `--locked`:
