@@ -1,4 +1,8 @@
-//! Device approval for the Linux client: Ed25519 key, PKCE, Secret Service, `devnull://` callbacks.
+//! Device approval for the GTK client: Ed25519 key, PKCE, platform secret store, `devnull://` callbacks.
+
+mod handler;
+mod pending;
+mod store;
 
 use std::collections::HashMap;
 
@@ -9,16 +13,45 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use url::Url;
 
+pub use handler::register_url_handler;
+pub use pending::{
+    clear_pending, data_dir, load_pending, save_pending, take_callback_uri, take_pending,
+    write_callback_uri,
+};
+pub use store::{delete_key, load_key, load_or_create_key, save_key};
+
+/// GApplication / desktop / keyring id. Not the authorize `app_id` (that needs `platform:bundle`).
 pub const APP_ID: &str = "sh.devnull.Client";
+/// Server `app_id`: platform and bundle, e.g. `macos:sh.dev-null.mac`.
+#[cfg(target_os = "macos")]
+pub const AUTH_APP_ID: &str = "macos:sh.devnull.Client";
+#[cfg(not(target_os = "macos"))]
+pub const AUTH_APP_ID: &str = "linux:sh.devnull.Client";
+/// This GTK client's callback. Kept as `linux/auth` on every OS so the server
+/// still recognizes this client (the first-party Mac app uses a different URI).
 pub const REDIRECT_URI: &str = "devnull://linux/auth";
-const KEYRING_LABEL: &str = "/dev/null device key";
-const ATTR_APP: &str = "app";
-const ATTR_ACCOUNT: &str = "account";
 const ACCOUNT: &str = "device-key";
+
+#[cfg(target_os = "macos")]
+pub const APP_NAME: &str = "/dev/null for macOS";
+#[cfg(not(target_os = "macos"))]
+pub const APP_NAME: &str = "/dev/null for Linux";
+
+#[cfg(target_os = "macos")]
+pub const PLATFORM: &str = "macOS";
+#[cfg(not(target_os = "macos"))]
+pub const PLATFORM: &str = "Linux";
 
 #[derive(Debug, Error)]
 pub enum AuthError {
-    #[error("Couldn't open your secret store. Start GNOME Keyring, KWallet, or KeePassXC.")]
+    #[cfg_attr(
+        target_os = "macos",
+        error("Couldn't open the Keychain to store this device key.")
+    )]
+    #[cfg_attr(
+        not(target_os = "macos"),
+        error("Couldn't open your secret store. Start GNOME Keyring, KWallet, or KeePassXC.")
+    )]
     Keyring,
     #[error("The callback URL isn't a /dev/null sign-in.")]
     BadCallback,
@@ -58,11 +91,12 @@ pub fn device_name() -> String {
     let host = hostname::get()
         .ok()
         .and_then(|h| h.into_string().ok())
-        .unwrap_or_else(|| "Linux".into());
-    let name = if host.to_ascii_lowercase().contains("linux") {
+        .unwrap_or_else(|| PLATFORM.into());
+    let needle = PLATFORM.to_ascii_lowercase();
+    let name = if host.to_ascii_lowercase().contains(&needle) {
         host
     } else {
-        format!("{host} Linux")
+        format!("{host} {PLATFORM}")
     };
     name.chars().take(100).collect()
 }
@@ -76,6 +110,8 @@ pub fn authorize_url(key: &DeviceKey, pkce: &Pkce) -> String {
     url.query_pairs_mut()
         .append_pair("fingerprint", &key.fingerprint())
         .append_pair("device_name", &device_name())
+        .append_pair("app_name", APP_NAME)
+        .append_pair("app_id", AUTH_APP_ID)
         .append_pair("code_challenge", &pkce.challenge)
         .append_pair("code_challenge_method", "S256")
         .append_pair("state", &pkce.state)
@@ -90,18 +126,57 @@ pub struct Callback {
     pub error: Option<String>,
 }
 
+fn percent_decode(raw: &str) -> String {
+    let bytes = raw.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Some(value) = std::str::from_utf8(&bytes[i + 1..i + 3])
+                .ok()
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+            {
+                out.push(value);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| raw.to_owned())
+}
+
 pub fn parse_callback(raw: &str) -> Result<Callback, AuthError> {
     let uri = extract_callback(raw).ok_or(AuthError::BadCallback)?;
+    let uri = if uri.contains('?') {
+        uri
+    } else {
+        percent_decode(&uri)
+    };
     let url = Url::parse(&uri).map_err(|_| AuthError::BadCallback)?;
     if url.scheme() != "devnull" {
         return Err(AuthError::BadCallback);
     }
     let host = url.host_str().unwrap_or("");
-    let path = url.path().trim_matches('/');
+    let raw_path = url.path().trim_matches('/');
+    let (path, path_query) = raw_path
+        .split_once('?')
+        .map(|(path, query)| (path, Some(query)))
+        .unwrap_or((raw_path, None));
     if host != "linux" || (path != "auth" && !path.is_empty()) {
         return Err(AuthError::BadCallback);
     }
-    let pairs: HashMap<_, _> = url.query_pairs().into_owned().collect();
+    let mut pairs: HashMap<_, _> = url.query_pairs().into_owned().collect();
+    if pairs.is_empty() {
+        if let Some(query) = path_query.or(url.fragment()) {
+            pairs = Url::parse(&format!("devnull://linux/auth?{query}"))
+                .map_err(|_| AuthError::BadCallback)?
+                .query_pairs()
+                .into_owned()
+                .collect();
+        }
+    }
     Ok(Callback {
         code: pairs.get("code").cloned(),
         state: pairs.get("state").cloned(),
@@ -124,171 +199,6 @@ pub fn extract_callback(text: &str) -> Option<String> {
     }
 }
 
-/// Install a user desktop file so the browser can hand `devnull://` back to this binary.
-pub fn register_url_handler() -> Result<(), AuthError> {
-    if std::env::var_os("FLATPAK_ID").is_some() {
-        return Ok(());
-    }
-    let exe = std::env::current_exe().map_err(|_| AuthError::Handler)?;
-    let apps_dir = data_home().join("applications");
-    std::fs::create_dir_all(&apps_dir).map_err(|_| AuthError::Handler)?;
-    let desktop_path = apps_dir.join("sh.devnull.Client.desktop");
-    let exec = quote_exec(&exe);
-    let desktop = format!(
-        "\
-[Desktop Entry]
-Type=Application
-Name=/dev/null
-Comment=A social network for developers
-Exec={exec} %u
-Icon=sh.devnull.Client
-Terminal=false
-Categories=Network;InstantMessaging;
-MimeType=x-scheme-handler/devnull;
-StartupWMClass=sh.devnull.Client
-DBusActivatable=false
-"
-    );
-    std::fs::write(&desktop_path, desktop).map_err(|_| AuthError::Handler)?;
-
-    let _ = std::process::Command::new("update-desktop-database")
-        .arg(&apps_dir)
-        .status();
-    let _ = std::process::Command::new("xdg-mime")
-        .args([
-            "default",
-            "sh.devnull.Client.desktop",
-            "x-scheme-handler/devnull",
-        ])
-        .status();
-    let _ = std::process::Command::new("xdg-settings")
-        .args([
-            "set",
-            "default-url-scheme-handler",
-            "devnull",
-            "sh.devnull.Client.desktop",
-        ])
-        .status();
-    let _ = std::process::Command::new("gio")
-        .args([
-            "mime",
-            "x-scheme-handler/devnull",
-            "sh.devnull.Client.desktop",
-        ])
-        .status();
-    write_mimeapps_default();
-    Ok(())
-}
-
-fn data_home() -> std::path::PathBuf {
-    xdg_home("XDG_DATA_HOME", ".local/share")
-}
-
-fn config_home() -> std::path::PathBuf {
-    xdg_home("XDG_CONFIG_HOME", ".config")
-}
-
-fn xdg_home(var: &str, fallback: &str) -> std::path::PathBuf {
-    if let Ok(dir) = std::env::var(var) {
-        if !dir.is_empty() {
-            return std::path::PathBuf::from(dir);
-        }
-    }
-    std::path::PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| ".".into())).join(fallback)
-}
-
-fn write_mimeapps_default() {
-    let path = config_home().join("mimeapps.list");
-    let _ = std::fs::create_dir_all(config_home());
-    let mut text = std::fs::read_to_string(&path).unwrap_or_default();
-    const KEY: &str = "x-scheme-handler/devnull=";
-    const LINE: &str = "x-scheme-handler/devnull=sh.devnull.Client.desktop";
-    if let Some(idx) = text.find(KEY) {
-        let end = text[idx..]
-            .find('\n')
-            .map(|i| idx + i)
-            .unwrap_or(text.len());
-        text.replace_range(idx..end, LINE);
-    } else if let Some(section) = text.find("[Default Applications]") {
-        let insert_at = text[section..]
-            .find('\n')
-            .map(|i| section + i + 1)
-            .unwrap_or(text.len());
-        text.insert_str(insert_at, &format!("{LINE}\n"));
-    } else {
-        if !text.is_empty() && !text.ends_with('\n') {
-            text.push('\n');
-        }
-        text.push_str(&format!("\n[Default Applications]\n{LINE}\n"));
-    }
-    let _ = std::fs::write(path, text);
-}
-
-fn quote_exec(path: &std::path::Path) -> String {
-    let raw = path.display().to_string().replace('%', "%%");
-    if raw
-        .chars()
-        .any(|c| c.is_whitespace() || "\"'\\><~|&;$*?#()`".contains(c))
-    {
-        format!("\"{}\"", raw.replace('\\', "\\\\").replace('"', "\\\""))
-    } else {
-        raw
-    }
-}
-
-fn attributes() -> HashMap<&'static str, &'static str> {
-    HashMap::from([(ATTR_APP, APP_ID), (ATTR_ACCOUNT, ACCOUNT)])
-}
-
-pub async fn load_key() -> Result<Option<DeviceKey>, AuthError> {
-    let keyring = oo7::Keyring::new().await.map_err(|_| AuthError::Keyring)?;
-    let items = keyring
-        .search_items(&attributes())
-        .await
-        .map_err(|_| AuthError::Keyring)?;
-    let Some(item) = items.into_iter().next() else {
-        return Ok(None);
-    };
-    let secret = item.secret().await.map_err(|_| AuthError::Keyring)?;
-    let bytes = secret.as_bytes();
-    if bytes.len() != 32 {
-        return Ok(None);
-    }
-    let mut key = [0u8; 32];
-    key.copy_from_slice(bytes);
-    Ok(Some(DeviceKey::from_bytes(&key)))
-}
-
-pub async fn load_or_create_key() -> Result<DeviceKey, AuthError> {
-    if let Some(existing) = load_key().await? {
-        return Ok(existing);
-    }
-    let key = DeviceKey::generate();
-    save_key(&key).await?;
-    Ok(key)
-}
-
-pub async fn save_key(key: &DeviceKey) -> Result<(), AuthError> {
-    let keyring = oo7::Keyring::new().await.map_err(|_| AuthError::Keyring)?;
-    keyring
-        .create_item(KEYRING_LABEL, &attributes(), &key.to_bytes(), true)
-        .await
-        .map_err(|_| AuthError::Keyring)?;
-    Ok(())
-}
-
-pub async fn delete_key() -> Result<(), AuthError> {
-    let keyring = oo7::Keyring::new().await.map_err(|_| AuthError::Keyring)?;
-    let items = keyring
-        .search_items(&attributes())
-        .await
-        .map_err(|_| AuthError::Keyring)?;
-    for item in items {
-        let _ = item.delete().await;
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,6 +206,13 @@ mod tests {
     #[test]
     fn parses_linux_callback() {
         let cb = parse_callback("devnull://linux/auth?code=abc&state=xyz").unwrap();
+        assert_eq!(cb.code.as_deref(), Some("abc"));
+        assert_eq!(cb.state.as_deref(), Some("xyz"));
+    }
+
+    #[test]
+    fn parses_callback_when_query_was_percent_encoded_into_the_path() {
+        let cb = parse_callback("devnull://linux/auth%3Fcode%3Dabc%26state%3Dxyz").unwrap();
         assert_eq!(cb.code.as_deref(), Some("abc"));
         assert_eq!(cb.state.as_deref(), Some("xyz"));
     }
@@ -317,11 +234,54 @@ mod tests {
     }
 
     #[test]
+    fn auth_app_id_is_platform_and_bundle() {
+        assert!(AUTH_APP_ID
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_ascii_lowercase()));
+        assert!(AUTH_APP_ID.contains(':'));
+        let (platform, bundle) = AUTH_APP_ID.split_once(':').unwrap();
+        assert!(platform.chars().all(|c| c.is_ascii_lowercase()));
+        assert_eq!(bundle, APP_ID);
+        assert!(bundle
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')));
+    }
+
+    #[test]
+    fn authorize_url_uses_this_os_app_id() {
+        let url = authorize_url(&DeviceKey::generate(), &Pkce::new());
+        #[cfg(target_os = "linux")]
+        assert!(
+            url.contains("app_id=linux%3Ash.devnull.Client")
+                || url.contains("app_id=linux:sh.devnull.Client"),
+            "Linux authorize app_id must stay linux:sh.devnull.Client: {url}"
+        );
+        #[cfg(target_os = "macos")]
+        assert!(
+            url.contains("app_id=macos%3Ash.devnull.Client")
+                || url.contains("app_id=macos:sh.devnull.Client"),
+            "macOS authorize app_id must stay macos:sh.devnull.Client: {url}"
+        );
+        assert!(url.contains("redirect_uri=devnull%3A%2F%2Flinux%2Fauth"));
+    }
+
+    #[test]
     fn authorize_url_encodes_plus() {
         let key = DeviceKey::generate();
         let pkce = Pkce::new();
         let url = authorize_url(&key, &pkce);
         assert!(url.contains("code_challenge_method=S256"));
+        assert!(url.contains("app_name="));
+        assert!(
+            url.contains("app_id=linux%3Ash.devnull.Client")
+                || url.contains("app_id=macos%3Ash.devnull.Client")
+                || url.contains(&format!("app_id={AUTH_APP_ID}"))
+        );
+        assert!(
+            url.contains(PLATFORM),
+            "authorize URL should name this platform ({PLATFORM}): {url}"
+        );
         assert!(
             url.contains("redirect_uri=devnull%3A%2F%2Flinux%2Fauth")
                 || url.contains("devnull://linux/auth")

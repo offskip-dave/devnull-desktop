@@ -80,7 +80,7 @@ fn body_from(
     };
     let copy_blocks = block_sources(source);
     let mut block_i = 0;
-    for segment in segments(display) {
+    for segment in without_fade_ellipsis(segments(display), &copy_blocks) {
         match segment {
             Segment::Text(text) => prose.push_str(&prose_markup(&text, mentions)),
             Segment::Code(code) => {
@@ -101,12 +101,14 @@ fn body_from(
                     .get(block_i)
                     .map(String::as_str)
                     .unwrap_or(&code);
+                let faded = copy != code;
                 block_i += 1;
                 wrap.append(&code_block(
                     language.as_deref(),
                     filename.as_deref(),
                     &code,
                     copy,
+                    faded,
                 ));
             }
         }
@@ -1333,6 +1335,35 @@ fn prose_label(markup: &str, sender: Option<&Sender<AppMsg>>) -> gtk::Label {
     label
 }
 
+/// A faded truncated code block already shows that it continues, so drop a trailing `…`.
+fn without_fade_ellipsis(mut segs: Vec<Segment>, sources: &[String]) -> Vec<Segment> {
+    let Some(Segment::Text(text)) = segs.last() else {
+        return segs;
+    };
+    if text.trim() != "…" {
+        return segs;
+    }
+    let block_index = segs
+        .iter()
+        .filter(|segment| matches!(segment, Segment::Block { .. }))
+        .count()
+        .saturating_sub(1);
+    let Some(Segment::Block { code, .. }) = segs
+        .iter()
+        .rev()
+        .find(|segment| matches!(segment, Segment::Block { .. }))
+    else {
+        return segs;
+    };
+    if sources
+        .get(block_index)
+        .is_some_and(|source| source != code)
+    {
+        segs.pop();
+    }
+    segs
+}
+
 fn block_sources(text: &str) -> Vec<String> {
     segments(text)
         .into_iter()
@@ -1365,6 +1396,7 @@ fn code_block(
     filename: Option<&str>,
     code: &str,
     source: &str,
+    faded: bool,
 ) -> gtk::Widget {
     let wrap = gtk::Box::new(gtk::Orientation::Vertical, 0);
     wrap.add_css_class("dn-code");
@@ -1406,7 +1438,22 @@ fn code_block(
     body.set_wrap_mode(pango::WrapMode::Char);
     body.set_use_markup(true);
     body.set_markup(&highlight_pango(code, language));
-    wrap.append(&body);
+    if faded {
+        let overlay = gtk::Overlay::new();
+        overlay.set_hexpand(true);
+        overlay.set_overflow(gtk::Overflow::Hidden);
+        overlay.set_child(Some(&body));
+        let fade = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        fade.add_css_class("dn-code-fade");
+        fade.set_hexpand(true);
+        fade.set_valign(gtk::Align::End);
+        fade.set_can_target(false);
+        fade.set_size_request(-1, 48);
+        overlay.add_overlay(&fade);
+        wrap.append(&overlay);
+    } else {
+        wrap.append(&body);
+    }
     wrap.upcast()
 }
 
@@ -1714,7 +1761,10 @@ mod tests {
 
     #[test]
     fn links_usernames_when_mentions_were_not_captured() {
-        let marked = with_mentions("Thanks @ORIGINAL and @futuredev.", CapturedMentions::default());
+        let marked = with_mentions(
+            "Thanks @ORIGINAL and @futuredev.",
+            CapturedMentions::default(),
+        );
         assert!(marked.contains("href=\"mention:original\""));
         assert!(marked.contains("underline=\"none\">@ORIGINAL</span></a>"));
         assert!(marked.contains("href=\"mention:futuredev\""));
@@ -1760,12 +1810,10 @@ mod tests {
     #[test]
     fn mention_trigger_reads_the_handle_before_the_caret() {
         assert_eq!(mention_trigger_at("@"), Some((0, String::new())));
-        assert_eq!(
-            mention_trigger_at("hi @Lara"),
-            Some((3, "Lara".into()))
-        );
+        assert_eq!(mention_trigger_at("hi @Lara"), Some((3, "Lara".into())));
         assert_eq!(mention_trigger_at("email@host"), None);
         assert_eq!(mention_trigger_at("see laravel"), None);
+        assert_eq!(mention_trigger_at("hey @lara-"), Some((4, "lara-".into())));
     }
 
     #[test]
@@ -1930,5 +1978,22 @@ mod tests {
         assert!(matches!(&segs[0], Segment::Text(t) if t == "run "));
         assert!(matches!(&segs[1], Segment::Code(c) if c == "make"));
         assert!(matches!(&segs[2], Segment::Text(t) if t.ends_with('…')));
+    }
+
+    #[test]
+    fn drops_the_ellipsis_after_a_faded_code_block() {
+        let inner = (1..=12)
+            .map(|n| format!("echo {n};"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let body = format!("```php\n{inner}\n```\nNeat.");
+        let preview = excerpt(&body).expect("long code folds");
+        let sources = block_sources(&body);
+        let segs = without_fade_ellipsis(segments(&preview), &sources);
+        assert!(matches!(segs.last(), Some(Segment::Block { .. })));
+        assert!(!matches!(
+            segs.last(),
+            Some(Segment::Text(text)) if text.trim() == "…"
+        ));
     }
 }

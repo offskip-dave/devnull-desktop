@@ -13,9 +13,9 @@ use relm4::prelude::*;
 
 use devnull_api::{
     ApiError, ChatThread, Client, Commit, CommitPage, CommitTranslation, ConversationSummary,
-    CurrentUser, InboxPage, InboxTab, Lane, LogKind, LogPage, Message, MessageReaction,
-    Notification, NotificationFilter, Page, PastelAward, Profile, RemoteCandidate, SearchResults,
-    ThreadRef, Upload, User, UserPreview, UserSettings,
+    CurrentUser, DeviceKey, InboxPage, InboxTab, Lane, LogKind, LogPage, MentionSuggestions,
+    Message, MessageReaction, Notification, NotificationFilter, Organization, Page, PastelAward,
+    Profile, RemoteCandidate, SearchResults, ThreadRef, Upload, User, UserPreview, UserSettings,
 };
 use devnull_auth::{self as auth, Pkce, APP_ID};
 
@@ -153,14 +153,55 @@ pub enum AppMsg {
     CommitLoaded(Result<CommitPage, ApiError>, Result<Page<Commit>, ApiError>),
     RelatedLoaded(String, Vec<Commit>),
     OpenProfile(String),
+    OpenOrganization(String),
     ProfileLoaded(
         Result<Box<Profile>, ApiError>,
         Result<Page<Commit>, ApiError>,
     ),
+    OrganizationLoaded(
+        Result<Box<Organization>, ApiError>,
+        Result<Page<Commit>, ApiError>,
+    ),
     ProfileTab(ProfileFeed),
     ProfileReadmeLoaded(String, Result<Option<String>, ApiError>),
+    ProfileBarScrolled(bool),
     GoLive,
+    GoLiveSubmit {
+        url: String,
+        hours: i64,
+    },
+    EndLive,
+    LiveSaved(Result<CurrentUser, ApiError>),
+    OpenConnections {
+        handle: String,
+        kind: ConnectionsKind,
+    },
+    ConnectionsLoaded {
+        handle: String,
+        kind: ConnectionsKind,
+        more: bool,
+        users: Result<Page<User>, ApiError>,
+        organizations: Result<Page<Organization>, ApiError>,
+    },
+    LoadMoreConnections,
+    ExpandConnectionOrgs,
+    VotePoll {
+        commit: String,
+        option: String,
+    },
+    PollVoted(String, Result<Commit, ApiError>),
+    MentionMove(i32),
+    MentionPick,
+    MentionDismiss,
+    MentionChosen(String),
+    MentionsLoaded(u64, Result<MentionSuggestions, ApiError>),
     ShareProfile,
+    CopyProfileId,
+    PickEmoji,
+    ClaimOrganization,
+    OrganizationClaimed(String, Result<(), ApiError>),
+    FollowOrganization(String, bool),
+    OrganizationFollowed(String, bool),
     EditOnGitHub,
     SyncProfile,
     ProfileSynced(Result<CurrentUser, ApiError>),
@@ -273,6 +314,7 @@ pub struct App {
     nav: Nav,
     log_cursor: Option<String>,
     profile: Option<Profile>,
+    organization: Option<Organization>,
     profile_tab: ProfileFeed,
     profile_readme: Option<(String, Result<Option<String>, ApiError>)>,
     suggested: Vec<User>,
@@ -370,10 +412,15 @@ pub struct App {
     reply_composer: gtk::TextView,
     remote_composer: gtk::TextView,
     emoji: ui::EmojiSuggest,
+    mentions: ui::MentionSuggest,
+    mention_gen: u64,
+    mention_timeout: Option<glib::SourceId>,
     paste_entry: gtk::Entry,
     omnibox: ui::SearchOmnibox,
     omnibox_gen: u64,
     profile_hero: gtk::Box,
+    profile_bar_avatar: gtk::Box,
+    profile_bar_scrolled: bool,
     suggested_list: gtk::Box,
     live_list: gtk::Box,
     settings_box: gtk::Box,
@@ -386,6 +433,16 @@ pub struct App {
     compose_dialog: adw::Dialog,
     compose_host: gtk::Box,
     compose_open: bool,
+    connections_kind: ConnectionsKind,
+    connections_handle: String,
+    connections_title: String,
+    connections_users: Vec<User>,
+    connections_orgs: Vec<Organization>,
+    connections_cursor: Option<String>,
+    connections_orgs_cursor: Option<String>,
+    connections_orgs_expanded: bool,
+    connections_loading: bool,
+    connections_list: gtk::ListBox,
     inbox: Vec<ConversationSummary>,
     inbox_tab: InboxTab,
     inbox_requests: i64,
@@ -414,6 +471,21 @@ pub enum ProfileFeed {
     Commits,
     Replies,
     Readme,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionsKind {
+    Following,
+    Followers,
+}
+
+impl ConnectionsKind {
+    fn title(self) -> &'static str {
+        match self {
+            Self::Following => "Following",
+            Self::Followers => "Followers",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1145,6 +1217,15 @@ impl SimpleComponent for App {
                                             connect_clicked => AppMsg::AttachImages,
                                         },
                                         gtk::Button {
+                                            set_icon_name: "dn-smile-symbolic",
+                                            set_tooltip_text: Some("Emoji"),
+                                            add_css_class: "flat",
+                                            add_css_class: "dn-composer-icon",
+                                            #[watch]
+                                            set_sensitive: !model.composer_preview,
+                                            connect_clicked => AppMsg::PickEmoji,
+                                        },
+                                        gtk::Button {
                                             set_icon_name: "dn-chart-bar-symbolic",
                                             #[watch]
                                             set_tooltip_text: Some(model.poll_tooltip()),
@@ -1244,6 +1325,13 @@ impl SimpleComponent for App {
                                 gtk::Box {
                                     set_orientation: gtk::Orientation::Horizontal,
                                     set_spacing: 8,
+                                    gtk::Button {
+                                        set_icon_name: "dn-smile-symbolic",
+                                        set_tooltip_text: Some("Emoji"),
+                                        add_css_class: "flat",
+                                        add_css_class: "dn-composer-icon",
+                                        connect_clicked => AppMsg::PickEmoji,
+                                    },
                                     gtk::Label {
                                         set_label: "Reply",
                                         add_css_class: "dn-muted",
@@ -1267,13 +1355,29 @@ impl SimpleComponent for App {
                                 set_orientation: gtk::Orientation::Horizontal,
                                 set_spacing: 12,
                                 add_css_class: "dn-commit-bar",
+                                #[local_ref]
+                                profile_bar_avatar -> gtk::Box {
+                                    set_valign: gtk::Align::Center,
+                                    add_css_class: "dn-profile-bar-avatar",
+                                    #[watch]
+                                    set_visible: model.profile_bar_scrolled,
+                                },
                                 gtk::Label {
                                     #[watch]
                                     set_label: &model.profile_bar_name(),
                                     add_css_class: "dn-commit-bar-title",
                                     set_xalign: 0.0,
                                     set_ellipsize: pango::EllipsizeMode::End,
+                                    set_hexpand: true,
                                     set_width_chars: 1,
+                                },
+                                gtk::Label {
+                                    #[watch]
+                                    set_label: &model.profile_bar_handle(),
+                                    add_css_class: "dn-handle",
+                                    add_css_class: "dn-profile-bar-handle",
+                                    #[watch]
+                                    set_visible: model.profile_bar_scrolled,
                                 },
                                 gtk::Label {
                                     #[watch]
@@ -1281,6 +1385,8 @@ impl SimpleComponent for App {
                                     add_css_class: "dn-mono",
                                     add_css_class: "dn-muted",
                                     add_css_class: "dn-profile-bar-count",
+                                    #[watch]
+                                    set_visible: !model.profile_bar_scrolled,
                                 },
                             },
                             #[name = "profile_scroll"]
@@ -1315,6 +1421,35 @@ impl SimpleComponent for App {
                                 set_vexpand: true,
                                 set_hscrollbar_policy: gtk::PolicyType::Never,
                                 set_child: Some(&model.search_list),
+                            },
+                        },
+
+                        add_titled[Some("connections"), "Connections"] = &gtk::Box {
+                            set_orientation: gtk::Orientation::Vertical,
+                            gtk::Box {
+                                set_orientation: gtk::Orientation::Horizontal,
+                                set_spacing: 12,
+                                add_css_class: "dn-commit-bar",
+                                gtk::Button {
+                                    set_icon_name: "dn-arrow-left-symbolic",
+                                    set_tooltip_text: Some("Back"),
+                                    add_css_class: "flat",
+                                    add_css_class: "dn-commit-bar-btn",
+                                    connect_clicked => AppMsg::Back,
+                                },
+                                gtk::Label {
+                                    #[watch]
+                                    set_label: &model.connections_title,
+                                    add_css_class: "dn-commit-bar-title",
+                                    set_xalign: 0.0,
+                                    set_hexpand: true,
+                                },
+                            },
+                            #[name = "connections_scroll"]
+                            gtk::ScrolledWindow {
+                                set_vexpand: true,
+                                set_hscrollbar_policy: gtk::PolicyType::Never,
+                                set_child: Some(&model.connections_list),
                             },
                         },
 
@@ -1697,6 +1832,7 @@ impl SimpleComponent for App {
                                             set_icon_name: "dn-image-plus-symbolic",
                                             set_tooltip_text: Some("Attach up to 3 images"),
                                             set_valign: gtk::Align::End,
+                                            set_size_request: (40, 40),
                                             #[watch]
                                             set_sensitive: model.remote_images.len() < 3,
                                             connect_clicked => AppMsg::AttachRemoteImages,
@@ -1705,9 +1841,20 @@ impl SimpleComponent for App {
                                             add_css_class: "flat",
                                             add_css_class: "dn-icon-btn",
                                             add_css_class: "dn-composer-icon",
+                                            set_icon_name: "dn-smile-symbolic",
+                                            set_tooltip_text: Some("Emoji"),
+                                            set_valign: gtk::Align::End,
+                                            set_size_request: (40, 40),
+                                            connect_clicked => AppMsg::PickEmoji,
+                                        },
+                                        gtk::Button {
+                                            add_css_class: "flat",
+                                            add_css_class: "dn-icon-btn",
+                                            add_css_class: "dn-composer-icon",
                                             set_icon_name: "dn-mic-symbolic",
                                             set_tooltip_text: Some("Voice note"),
                                             set_valign: gtk::Align::End,
+                                            set_size_request: (40, 40),
                                             connect_clicked => AppMsg::RecordVoice,
                                         },
                                         gtk::Button {
@@ -1717,6 +1864,7 @@ impl SimpleComponent for App {
                                             set_icon_name: "dn-megaphone-symbolic",
                                             set_tooltip_text: Some("Ping everyone in the org"),
                                             set_valign: gtk::Align::End,
+                                            set_size_request: (40, 40),
                                             connect_clicked => AppMsg::PingMention,
                                         },
                                         gtk::Button {
@@ -1726,6 +1874,7 @@ impl SimpleComponent for App {
                                             set_icon_name: "dn-phone-symbolic",
                                             set_tooltip_text: Some("Call"),
                                             set_valign: gtk::Align::End,
+                                            set_size_request: (40, 40),
                                             connect_clicked => AppMsg::StartCall,
                                         },
                                         gtk::Overlay {
@@ -2089,29 +2238,35 @@ impl SimpleComponent for App {
         remote_composer.set_pixels_below_lines(0);
 
         let emoji = ui::EmojiSuggest::new(sender.input_sender().clone());
+        let mentions = ui::MentionSuggest::new(sender.input_sender().clone());
         let emoji_open = emoji.open_flag();
+        let mention_open = mentions.open_flag();
         bind_composer_keys(
             &composer,
             sender.clone(),
             emoji_open.clone(),
+            mention_open.clone(),
             ComposerBind::Log,
         );
         bind_composer_keys(
             &reply_composer,
             sender.clone(),
             emoji_open.clone(),
+            mention_open.clone(),
             ComposerBind::Reply,
         );
         bind_composer_keys(
             &inline_reply,
             sender.clone(),
             emoji_open.clone(),
+            mention_open.clone(),
             ComposerBind::Reply,
         );
         bind_composer_keys(
             &remote_composer,
             sender.clone(),
             emoji_open,
+            mention_open,
             ComposerBind::Remote,
         );
 
@@ -2149,6 +2304,9 @@ impl SimpleComponent for App {
         let search_list = gtk::ListBox::new();
         search_list.set_selection_mode(gtk::SelectionMode::None);
         fill_feed_list(&search_list);
+        let connections_list = gtk::ListBox::new();
+        connections_list.set_selection_mode(gtk::SelectionMode::None);
+        fill_feed_list(&connections_list);
         let notif_list = gtk::ListBox::new();
         notif_list.set_selection_mode(gtk::SelectionMode::None);
         fill_feed_list(&notif_list);
@@ -2190,6 +2348,7 @@ impl SimpleComponent for App {
             nav: Nav::Latest,
             log_cursor: None,
             profile: None,
+            organization: None,
             profile_tab: ProfileFeed::Commits,
             profile_readme: None,
             suggested: Vec::new(),
@@ -2277,6 +2436,7 @@ impl SimpleComponent for App {
             reply_list,
             profile_list,
             search_list,
+            connections_list,
             notif_list,
             inbox_list,
             thread_list,
@@ -2286,10 +2446,15 @@ impl SimpleComponent for App {
             reply_composer,
             remote_composer,
             emoji,
+            mentions,
+            mention_gen: 0,
+            mention_timeout: None,
             paste_entry,
             omnibox: ui::SearchOmnibox::new(sender.input_sender().clone()),
             omnibox_gen: 0,
             profile_hero: gtk::Box::new(gtk::Orientation::Vertical, 0),
+            profile_bar_avatar: gtk::Box::new(gtk::Orientation::Horizontal, 0),
+            profile_bar_scrolled: false,
             suggested_list: gtk::Box::new(gtk::Orientation::Vertical, 8),
             live_list: gtk::Box::new(gtk::Orientation::Vertical, 2),
             settings_box: gtk::Box::new(gtk::Orientation::Vertical, 0),
@@ -2302,6 +2467,15 @@ impl SimpleComponent for App {
             compose_dialog,
             compose_host,
             compose_open: false,
+            connections_kind: ConnectionsKind::Following,
+            connections_handle: String::new(),
+            connections_title: "Following".into(),
+            connections_users: Vec::new(),
+            connections_orgs: Vec::new(),
+            connections_cursor: None,
+            connections_orgs_cursor: None,
+            connections_orgs_expanded: false,
+            connections_loading: false,
             inbox: Vec::new(),
             inbox_tab: InboxTab::Open,
             inbox_requests: 0,
@@ -2331,6 +2505,7 @@ impl SimpleComponent for App {
         let suggested_list = &model.suggested_list;
         let live_list = &model.live_list;
         let poll_editor = &model.poll_editor;
+        let profile_bar_avatar = &model.profile_bar_avatar;
         let schedule_card = &model.schedule_card;
         let image_previews = &model.image_previews;
         let remote_image_previews = &model.remote_image_previews;
@@ -2348,6 +2523,23 @@ impl SimpleComponent for App {
         let widgets = view_output!();
         model.bubble_width.bind(&widgets.thread_width_probe);
         ui::pin_profile_hero(&model.profile_list, &model.profile_hero);
+        widgets
+            .connections_scroll
+            .vadjustment()
+            .connect_value_changed({
+                let sender = sender.clone();
+                move |adj| {
+                    if adj.value() + adj.page_size() >= adj.upper() - 80.0 {
+                        sender.input(AppMsg::LoadMoreConnections);
+                    }
+                }
+            });
+        widgets.profile_scroll.vadjustment().connect_value_changed({
+            let sender = sender.clone();
+            move |adj| {
+                sender.input(AppMsg::ProfileBarScrolled(adj.value() > 72.0));
+            }
+        });
         ui::apply_pointer_cursors(&root);
         model.logo_menu.set_parent(&model.wordmark_btn);
         let logo_press = gtk::GestureClick::new();
@@ -2432,6 +2624,7 @@ impl SimpleComponent for App {
                 ("commit", widgets.commit_scroll.clone()),
                 ("profile", widgets.profile_scroll.clone()),
                 ("search", widgets.search_scroll.clone()),
+                ("connections", widgets.connections_scroll.clone()),
                 ("settings", widgets.settings_scroll.clone()),
                 ("notifications", widgets.notif_scroll.clone()),
             ],
@@ -2552,6 +2745,12 @@ impl SimpleComponent for App {
                     .get()
                     .and_then(|m| m.lock().ok().and_then(|mut g| g.take()))
                 {
+                    if let Some((pkce, _)) = auth::load_pending() {
+                        self.pending = Some(pkce);
+                        self.phase = Phase::WaitingForBrowser;
+                        sender.input(AppMsg::OpenUri(uri));
+                        return;
+                    }
                     sender.input(AppMsg::OpenUri(uri));
                 }
                 let sender2 = sender.clone();
@@ -2560,6 +2759,9 @@ impl SimpleComponent for App {
                 });
             }
             AppMsg::Restored(Ok((user, client))) => {
+                if matches!(self.phase, Phase::WaitingForBrowser | Phase::SignedIn) {
+                    return;
+                }
                 self.client = Some(client);
                 self.set_user(Some(user));
                 self.phase = Phase::SignedIn;
@@ -2569,6 +2771,9 @@ impl SimpleComponent for App {
                 self.load_user_settings(&sender);
             }
             AppMsg::Restored(Err(err)) => {
+                if matches!(self.phase, Phase::WaitingForBrowser | Phase::SignedIn) {
+                    return;
+                }
                 self.phase = Phase::SignedOut;
                 self.visible = "sign_in";
                 if !err.requires_sign_in() {
@@ -2582,6 +2787,8 @@ impl SimpleComponent for App {
                     match auth::load_or_create_key().await {
                         Ok(key) => {
                             let pkce = Pkce::new();
+                            auth::clear_pending();
+                            auth::save_pending(&pkce, &key);
                             let url = auth::authorize_url(&key, &pkce);
                             sender2.input(AppMsg::BrowserOpened(pkce, url));
                         }
@@ -2605,6 +2812,7 @@ impl SimpleComponent for App {
             }
             AppMsg::CancelSignIn => {
                 self.pending = None;
+                auth::clear_pending();
                 self.phase = Phase::SignedOut;
             }
             AppMsg::OpenUri(uri) => self.handle_callback(&uri, &sender),
@@ -2636,6 +2844,7 @@ impl SimpleComponent for App {
                 self.error = Some(err.message);
             }
             AppMsg::SignOut => {
+                auth::clear_pending();
                 relm4::spawn(async {
                     let _ = auth::delete_key().await;
                 });
@@ -2797,9 +3006,7 @@ impl SimpleComponent for App {
                     let sender2 = sender.clone();
                     relm4::spawn(async move {
                         sender2.input(AppMsg::TranslationLanguageSaved(
-                            client
-                                .set_translation_language(language.as_deref())
-                                .await,
+                            client.set_translation_language(language.as_deref()).await,
                         ));
                     });
                 }
@@ -3066,8 +3273,9 @@ impl SimpleComponent for App {
                 self.composer_preview = !self.composer_preview;
                 if self.composer_preview {
                     self.emoji.hide();
+                    self.mentions.hide();
                 } else {
-                    self.sync_emoji(&self.composer.clone());
+                    self.sync_composer_suggests(&self.composer.clone(), &sender);
                 }
             }
             AppMsg::SetPasteis(enabled) => {
@@ -3107,16 +3315,22 @@ impl SimpleComponent for App {
                 sender.input(AppMsg::OpenThread(ThreadRef::Direct { username }));
             }
             AppMsg::Back => {
+                if self.visible == "connections" && !self.connections_handle.is_empty() {
+                    sender.input(AppMsg::OpenProfile(self.connections_handle.clone()));
+                    return;
+                }
                 sender.input(AppMsg::Select(self.nav));
             }
             AppMsg::ComposerChanged => {
-                self.sync_emoji(&self.composer.clone());
+                self.sync_composer_suggests(&self.composer.clone(), &sender);
                 self.composer_len = buffer_text(&self.composer).chars().count();
                 self.sync_composer_ring();
             }
-            AppMsg::ReplyComposerChanged => self.sync_emoji(&self.reply_view().clone()),
+            AppMsg::ReplyComposerChanged => {
+                self.sync_composer_suggests(&self.reply_view().clone(), &sender)
+            }
             AppMsg::RemoteComposerChanged => {
-                self.sync_emoji(&self.remote_composer.clone());
+                self.sync_composer_suggests(&self.remote_composer.clone(), &sender);
                 self.remote_draft_len = buffer_text(&self.remote_composer).trim().chars().count();
                 self.ping_remote_typing();
             }
@@ -3344,7 +3558,7 @@ impl SimpleComponent for App {
                         }
                     }
                     Err(err) => {
-                        self.translations.entry(id).or_insert_with(CommitTranslation::default);
+                        self.translations.entry(id).or_default();
                         self.toast(&err.message);
                     }
                 }
@@ -3530,9 +3744,27 @@ impl SimpleComponent for App {
                 self.visible = "profile";
                 self.profile_tab = ProfileFeed::Commits;
                 self.profile_readme = None;
+                self.organization = None;
+                self.profile_bar_scrolled = false;
                 self.load_profile(&sender, username, false);
             }
+            AppMsg::OpenOrganization(handle) => {
+                self.user_card.dismiss();
+                self.visible = "profile";
+                self.profile = None;
+                self.profile_readme = None;
+                self.profile_bar_scrolled = false;
+                self.load_organization(&sender, handle);
+            }
+            AppMsg::ProfileBarScrolled(scrolled) => {
+                if self.profile_bar_scrolled != scrolled {
+                    self.profile_bar_scrolled = scrolled;
+                }
+            }
             AppMsg::ProfileTab(tab) => {
+                if self.organization.is_some() {
+                    return;
+                }
                 let same = self.profile_tab == tab;
                 self.profile_tab = tab;
                 self.render_profile(&sender);
@@ -3565,7 +3797,10 @@ impl SimpleComponent for App {
                 self.end_busy();
                 self.reset_profile_list();
                 match user {
-                    Ok(u) => self.profile = Some(*u),
+                    Ok(u) => {
+                        self.profile = Some(*u);
+                        self.organization = None;
+                    }
                     Err(err) => {
                         self.fail(err);
                         return;
@@ -3599,21 +3834,292 @@ impl SimpleComponent for App {
                     }
                 }
             }
+            AppMsg::OrganizationLoaded(organization, commits) => {
+                self.end_busy();
+                self.reset_profile_list();
+                match organization {
+                    Ok(organization) => {
+                        self.organization = Some(*organization);
+                        self.profile = None;
+                    }
+                    Err(err) => {
+                        self.fail(err);
+                        return;
+                    }
+                }
+                self.render_profile(&sender);
+                if let Ok(page) = commits {
+                    self.profile_commits = page.data;
+                } else {
+                    self.profile_commits.clear();
+                }
+                self.queue_auto_translations_visible(&sender);
+                self.render_profile_feed(&sender, false);
+                let ids = reply_preview_ids(&self.profile_commits);
+                self.queue_reply_previews_ids(ids, &sender);
+            }
             AppMsg::GoLive => {
-                if let Some(profile) = &self.profile {
-                    sender.input(AppMsg::OpenWeb(
-                        profile.html_url(&devnull_api::default_base_url()),
-                    ));
+                if self.user.as_ref().is_some_and(|user| user.user.is_live()) {
+                    sender.input(AppMsg::EndLive);
+                    return;
+                }
+                let dialog = ui::go_live_dialog(sender.input_sender().clone());
+                dialog.present(Some(&self.log_scroll));
+                ui::apply_pointer_cursors(&dialog);
+            }
+            AppMsg::GoLiveSubmit { url, hours } => {
+                let url = url.trim().to_owned();
+                if url.is_empty() {
+                    self.toast("fatal: a stream needs a YouTube or Twitch link");
+                    return;
+                }
+                if let Some(client) = self.client.clone() {
+                    self.begin_busy();
+                    let sender2 = sender.clone();
+                    relm4::spawn(async move {
+                        sender2.input(AppMsg::LiveSaved(client.set_live(&url, hours).await));
+                    });
+                }
+            }
+            AppMsg::EndLive => {
+                if let Some(client) = self.client.clone() {
+                    self.begin_busy();
+                    let sender2 = sender.clone();
+                    relm4::spawn(async move {
+                        sender2.input(AppMsg::LiveSaved(client.end_live().await));
+                    });
+                }
+            }
+            AppMsg::LiveSaved(result) => {
+                self.end_busy();
+                match result {
+                    Ok(user) => {
+                        let live = user.user.is_live();
+                        self.apply_me(user, &sender);
+                        self.toast(if live { "You're live" } else { "Stream ended" });
+                    }
+                    Err(err) => self.toast(&err.message),
+                }
+            }
+            AppMsg::OpenConnections { handle, kind } => {
+                self.visible = "connections";
+                self.connections_kind = kind;
+                self.connections_handle = handle.clone();
+                self.connections_title = kind.title().into();
+                self.connections_users.clear();
+                self.connections_orgs.clear();
+                self.connections_cursor = None;
+                self.connections_orgs_cursor = None;
+                self.connections_orgs_expanded = false;
+                self.connections_loading = false;
+                ui::clear_list(&self.connections_list);
+                self.connections_list
+                    .append(&ui::empty_row("Loading…", "Fetching this list."));
+                self.load_connections(false, &sender);
+            }
+            AppMsg::ConnectionsLoaded {
+                handle,
+                kind,
+                more,
+                users,
+                organizations,
+            } => {
+                if self.connections_handle != handle || self.connections_kind != kind {
+                    return;
+                }
+                self.connections_loading = false;
+                match users {
+                    Ok(page) => {
+                        self.connections_cursor = page.next_cursor();
+                        if more {
+                            self.connections_users.extend(page.data);
+                        } else {
+                            self.connections_users = page.data;
+                        }
+                    }
+                    Err(err) if !more => {
+                        ui::clear_list(&self.connections_list);
+                        self.connections_list.append(&ui::empty_row(
+                            "fatal: could not load this list",
+                            &err.message,
+                        ));
+                        return;
+                    }
+                    Err(err) => self.toast(&err.message),
+                }
+                if let Ok(page) = organizations {
+                    self.connections_orgs_cursor = page.next_cursor();
+                    if more {
+                        self.connections_orgs.extend(page.data);
+                    } else {
+                        self.connections_orgs = page.data;
+                    }
+                }
+                self.render_connections(&sender);
+            }
+            AppMsg::LoadMoreConnections => {
+                if self.visible != "connections"
+                    || self.connections_loading
+                    || self.connections_cursor.is_none()
+                {
+                    return;
+                }
+                self.load_connections(true, &sender);
+            }
+            AppMsg::ExpandConnectionOrgs => {
+                self.connections_orgs_expanded = true;
+                self.render_connections(&sender);
+            }
+            AppMsg::VotePoll { commit, option } => {
+                if let Some(client) = self.client.clone() {
+                    let sender2 = sender.clone();
+                    relm4::spawn(async move {
+                        sender2.input(AppMsg::PollVoted(
+                            commit.clone(),
+                            client.vote_poll(&commit, &option).await,
+                        ));
+                    });
+                }
+            }
+            AppMsg::PollVoted(id, result) => match result {
+                Ok(commit) => {
+                    if let Some(poll) = commit.poll {
+                        self.apply_poll(&id, poll);
+                    }
+                    self.refresh_visible_feed(&sender, true);
+                }
+                Err(err) => self.toast(&err.message),
+            },
+            AppMsg::MentionMove(step) => self.mentions.move_selection(step),
+            AppMsg::MentionPick => {
+                if let Some(handle) = self.mentions.active_handle() {
+                    self.insert_mention(&handle);
+                }
+            }
+            AppMsg::MentionDismiss => self.mentions.hide(),
+            AppMsg::MentionChosen(handle) => self.insert_mention(&handle),
+            AppMsg::MentionsLoaded(gen, result) => {
+                if gen != self.mention_gen {
+                    return;
+                }
+                let Some(view) = self.mentions.view().or_else(|| self.mention_view()) else {
+                    return;
+                };
+                match result {
+                    Ok(suggestions) => {
+                        let query = self.mention_query(&view).unwrap_or_default();
+                        self.mentions.show(&view, &query, &suggestions);
+                    }
+                    Err(_) => self.mentions.hide(),
                 }
             }
             AppMsg::ShareProfile => {
-                if let Some(profile) = &self.profile {
-                    let url = profile.html_url(&devnull_api::default_base_url());
-                    if ui::copy_text(&url) {
-                        self.toast("Profile link copied");
-                    } else {
-                        self.toast("Could not share profile");
+                let url = if let Some(organization) = &self.organization {
+                    organization.html_url(&devnull_api::default_base_url())
+                } else if let Some(profile) = &self.profile {
+                    profile.html_url(&devnull_api::default_base_url())
+                } else {
+                    return;
+                };
+                if ui::copy_text(&url) {
+                    self.toast("Profile link copied");
+                } else {
+                    self.toast("Could not share profile");
+                }
+            }
+            AppMsg::CopyProfileId => {
+                let id = self
+                    .organization
+                    .as_ref()
+                    .map(|organization| organization.id.clone())
+                    .filter(|id| !id.is_empty())
+                    .or_else(|| {
+                        self.profile
+                            .as_ref()
+                            .map(|profile| profile.user.id.clone())
+                            .filter(|id| !id.is_empty())
+                    });
+                match id {
+                    Some(id) if ui::copy_text(&id) => self.toast("Profile ID copied"),
+                    Some(_) => self.toast("Could not copy profile ID"),
+                    None => self.toast("This profile has no ID to copy"),
+                }
+            }
+            AppMsg::PickEmoji => {
+                let view = self.pick_emoji_view();
+                let items = crate::emoji::catalog(24);
+                self.mentions.hide();
+                self.emoji.show(&view, "", &items);
+            }
+            AppMsg::ClaimOrganization => {
+                let Some(handle) = self
+                    .organization
+                    .as_ref()
+                    .map(|organization| organization.handle.clone())
+                else {
+                    return;
+                };
+                if let Some(client) = self.client.clone() {
+                    let sender2 = sender.clone();
+                    relm4::spawn(async move {
+                        sender2.input(AppMsg::OrganizationClaimed(
+                            handle.clone(),
+                            client.claim_organization(&handle).await,
+                        ));
+                    });
+                }
+            }
+            AppMsg::OrganizationClaimed(handle, result) => match result {
+                Ok(()) => {
+                    self.toast(&format!("You're an admin of @{handle}."));
+                    sender.input(AppMsg::OpenOrganization(handle));
+                }
+                Err(err) => self.toast(&err.message),
+            },
+            AppMsg::FollowOrganization(handle, follow) => {
+                if let Some(client) = self.client.clone() {
+                    let sender2 = sender.clone();
+                    relm4::spawn(async move {
+                        let result = if follow {
+                            client.follow_organization(&handle).await
+                        } else {
+                            client.unfollow_organization(&handle).await
+                        };
+                        match result {
+                            Ok(()) => sender2.input(AppMsg::OrganizationFollowed(handle, follow)),
+                            Err(err) => sender2.input(AppMsg::Toast(err.message)),
+                        }
+                    });
+                }
+            }
+            AppMsg::OrganizationFollowed(handle, follow) => {
+                self.toast(&format!(
+                    "{} @{handle}",
+                    if follow { "Following" } else { "Unfollowed" }
+                ));
+                if let Some(organization) = &mut self.organization {
+                    if organization.handle.eq_ignore_ascii_case(&handle) {
+                        organization.is_following = follow;
+                        let count = organization.followers_count.unwrap_or(0);
+                        organization.followers_count = Some(if follow {
+                            count + 1
+                        } else {
+                            count.saturating_sub(1)
+                        });
                     }
+                }
+                if self.visible == "connections" {
+                    if let Some(organization) = self
+                        .connections_orgs
+                        .iter_mut()
+                        .find(|organization| organization.handle.eq_ignore_ascii_case(&handle))
+                    {
+                        organization.is_following = follow;
+                    }
+                    self.render_connections(&sender);
+                }
+                if self.visible == "profile" && self.organization.is_some() {
+                    self.render_profile(&sender);
                 }
             }
             AppMsg::AppearanceChanged => {
@@ -3871,6 +4377,16 @@ impl SimpleComponent for App {
                     self.following.remove(&name);
                 }
                 sender.input(AppMsg::RefreshSuggested);
+                if self.visible == "connections" {
+                    if let Some(user) = self
+                        .connections_users
+                        .iter_mut()
+                        .find(|user| user.username.eq_ignore_ascii_case(&username))
+                    {
+                        user.is_followed = Some(follow);
+                    }
+                    self.render_connections(&sender);
+                }
                 if self.profile.as_ref().map(|p| p.username()) == Some(username.as_str())
                     && self.visible == "profile"
                 {
@@ -3879,19 +4395,17 @@ impl SimpleComponent for App {
             }
             AppMsg::PreviewUser(username) => self.load_user_preview(&username, &sender),
             AppMsg::UserPreviewLoaded(username, result) => {
-                self.user_preview_loading.remove(&UserPreview::key(&username));
-                match result {
-                    Ok(mut preview) => {
-                        preview.is_blocking = self.is_blocked(&username);
-                        preview.is_muting = preview.is_muting || self.is_muted(&username);
-                        self.user_card.insert(preview.clone());
-                        self.user_card.apply(
-                            &preview,
-                            self.user.as_ref().map(|user| user.user.id.as_str()),
-                            sender.input_sender(),
-                        );
-                    }
-                    Err(_) => {}
+                self.user_preview_loading
+                    .remove(&UserPreview::key(&username));
+                if let Ok(mut preview) = result {
+                    preview.is_blocking = self.is_blocked(&username);
+                    preview.is_muting = preview.is_muting || self.is_muted(&username);
+                    self.user_card.insert(preview.clone());
+                    self.user_card.apply(
+                        &preview,
+                        self.user.as_ref().map(|user| user.user.id.as_str()),
+                        sender.input_sender(),
+                    );
                 }
             }
             AppMsg::MuteUser(username) => {
@@ -3899,7 +4413,10 @@ impl SimpleComponent for App {
                     self.begin_busy();
                     let sender2 = sender.clone();
                     relm4::spawn(async move {
-                        sender2.input(AppMsg::UserMuted(username.clone(), client.mute(&username).await));
+                        sender2.input(AppMsg::UserMuted(
+                            username.clone(),
+                            client.mute(&username).await,
+                        ));
                     });
                 }
             }
@@ -3907,7 +4424,8 @@ impl SimpleComponent for App {
                 self.end_busy();
                 match result {
                     Ok(()) => {
-                        self.user_card.patch(&username, |preview| preview.is_muting = true);
+                        self.user_card
+                            .patch(&username, |preview| preview.is_muting = true);
                         self.user_card.refresh(
                             self.user.as_ref().map(|user| user.user.id.as_str()),
                             sender.input_sender(),
@@ -3970,6 +4488,13 @@ impl SimpleComponent for App {
                 }
             }
             AppMsg::ToggleFollowCurrent => {
+                if let Some(organization) = self.organization.clone() {
+                    sender.input(AppMsg::FollowOrganization(
+                        organization.handle,
+                        !organization.is_following,
+                    ));
+                    return;
+                }
                 let Some(profile) = self.profile.clone() else {
                     return;
                 };
@@ -4716,6 +5241,9 @@ impl App {
         if self.visible == "search" {
             return "Search";
         }
+        if self.visible == "connections" {
+            return self.connections_kind.title();
+        }
         if self.visible == "settings" {
             return "Settings";
         }
@@ -4733,7 +5261,7 @@ impl App {
         match self.visible {
             "notifications" => Sidebar::Notifications,
             "remotes" => Sidebar::Remotes,
-            "profile" => Sidebar::Profile,
+            "profile" | "connections" => Sidebar::Profile,
             "settings" => Sidebar::Settings,
             "search" => Sidebar::Search,
             _ if self.nav == Nav::Starred => Sidebar::Starred,
@@ -4859,19 +5387,43 @@ impl App {
     }
 
     fn profile_bar_name(&self) -> String {
-        self.profile
-            .as_ref()
-            .map(|profile| profile.user.display_name().to_owned())
-            .unwrap_or_default()
+        if let Some(organization) = &self.organization {
+            organization.display_name().to_owned()
+        } else {
+            self.profile
+                .as_ref()
+                .map(|profile| profile.user.display_name().to_owned())
+                .unwrap_or_default()
+        }
+    }
+
+    fn profile_bar_handle(&self) -> String {
+        if let Some(organization) = &self.organization {
+            format!("@{}", organization.handle)
+        } else {
+            self.profile
+                .as_ref()
+                .map(|profile| format!("@{}", profile.user.username))
+                .unwrap_or_default()
+        }
     }
 
     fn profile_bar_commits(&self) -> String {
-        let n = self
-            .profile
-            .as_ref()
-            .and_then(|profile| profile.user.commits_count)
-            .unwrap_or(0);
-        ui::commits_label(n)
+        if let Some(organization) = &self.organization {
+            let n = organization.followers_count.unwrap_or(0);
+            if n == 1 {
+                "1 follower".into()
+            } else {
+                format!("{n} followers")
+            }
+        } else {
+            let n = self
+                .profile
+                .as_ref()
+                .and_then(|profile| profile.user.commits_count)
+                .unwrap_or(0);
+            ui::commits_label(n)
+        }
     }
 
     fn collapse_label(&self) -> &'static str {
@@ -5158,6 +5710,12 @@ impl App {
             ui::enclosing_scroll(&self.profile_list).map(|scroll| scroll.vadjustment().value());
         self.reset_profile_list();
         if self.profile_commits.is_empty() {
+            if let Some(organization) = &self.organization {
+                self.profile_list.append(&ui::root_row(&format!(
+                    "Nobody has mentioned @{} yet.",
+                    organization.handle
+                )));
+            }
             return;
         }
         let ctx = self.feed_ctx(sender);
@@ -5174,24 +5732,31 @@ impl App {
             Some(&threads),
             0,
         );
-        let username = self
-            .profile
-            .as_ref()
-            .map(|p| p.username().to_owned())
-            .unwrap_or_default();
-        let own = self.user.as_ref().map(|u| u.username()) == Some(username.as_str());
-        let end = if self.profile_tab == ProfileFeed::Replies {
-            if own {
-                "That was your first reply."
-            } else {
-                "That's their first reply."
-            }
-        } else if own {
-            "That was your first commit. Everyone starts somewhere."
+        let end = if let Some(organization) = &self.organization {
+            format!(
+                "That's the first commit mentioning @{}.",
+                organization.handle
+            )
         } else {
-            "That's the root commit. There's nothing before it."
+            let username = self
+                .profile
+                .as_ref()
+                .map(|p| p.username().to_owned())
+                .unwrap_or_default();
+            let own = self.user.as_ref().map(|u| u.username()) == Some(username.as_str());
+            if self.profile_tab == ProfileFeed::Replies {
+                if own {
+                    "That was your first reply.".into()
+                } else {
+                    "That's their first reply.".into()
+                }
+            } else if own {
+                "That was your first commit. Everyone starts somewhere.".into()
+            } else {
+                "That's the root commit. There's nothing before it.".into()
+            }
         };
-        self.profile_list.append(&ui::root_row(end));
+        self.profile_list.append(&ui::root_row(&end));
         if let Some(value) = value.filter(|_| restore) {
             if let Some(scroll) = ui::enclosing_scroll(&self.profile_list) {
                 scroll.vadjustment().set_value(value);
@@ -5281,14 +5846,16 @@ impl App {
         (self.composer_len as f64 / MAX_BODY as f64).clamp(0.0, 1.0)
     }
 
-    fn sync_emoji(&mut self, view: &gtk::TextView) {
+    fn sync_composer_suggests(&mut self, view: &gtk::TextView, sender: &ComponentSender<App>) {
         if self.composer_preview && view == &self.composer {
             self.emoji.hide();
+            self.mentions.hide();
             return;
         }
         let buf = view.buffer();
         if buf.has_selection() {
             self.emoji.hide();
+            self.mentions.hide();
             return;
         }
         let text = buffer_text(view);
@@ -5299,6 +5866,13 @@ impl App {
             return;
         }
         let before: String = next.chars().take(next_caret).collect();
+        if let Some((_, query)) = crate::body::mention_trigger_at(&before) {
+            self.emoji.hide();
+            self.fetch_mentions(view, query, sender);
+            return;
+        }
+        self.mentions.hide();
+        self.mention_gen = self.mention_gen.wrapping_add(1);
         match crate::emoji::trigger_at(&before) {
             Some((_, query)) => {
                 let items = crate::emoji::search(&query, 8);
@@ -5308,25 +5882,239 @@ impl App {
         }
     }
 
-    fn insert_emoji(&mut self, glyph: &str) {
-        let Some(view) = self.emoji.view() else {
+    fn fetch_mentions(
+        &mut self,
+        view: &gtk::TextView,
+        query: String,
+        sender: &ComponentSender<App>,
+    ) {
+        let Some(client) = self.client.clone() else {
+            self.mentions.hide();
             return;
         };
+        self.mentions.prepare(view);
+        if let Some(id) = self.mention_timeout.take() {
+            id.remove();
+        }
+        self.mention_gen = self.mention_gen.wrapping_add(1);
+        let gen = self.mention_gen;
+        let (reply, quote, org) = self.mention_context();
+        let sender2 = sender.clone();
+        self.mention_timeout = Some(glib::timeout_add_local_once(
+            Duration::from_millis(140),
+            move || {
+                relm4::spawn(async move {
+                    sender2.input(AppMsg::MentionsLoaded(
+                        gen,
+                        client
+                            .mention_suggestions(
+                                &query,
+                                reply.as_deref(),
+                                quote.as_deref(),
+                                org.as_deref(),
+                            )
+                            .await,
+                    ));
+                });
+            },
+        ));
+    }
+
+    fn mention_context(&self) -> (Option<String>, Option<String>, Option<String>) {
+        if self.visible == "remotes" {
+            let org = match &self.thread_ref {
+                Some(ThreadRef::Org { id, .. }) => Some(id.clone()),
+                _ => None,
+            };
+            return (None, None, org);
+        }
+        let reply = if self.visible == "commit" {
+            self.open_commit.as_ref().map(|commit| commit.id.clone())
+        } else {
+            self.replying_to.clone()
+        };
+        (reply, None, None)
+    }
+
+    fn mention_query(&self, view: &gtk::TextView) -> Option<String> {
+        let buf = view.buffer();
+        let text = buffer_text(view);
+        let caret = (buf.cursor_position() as usize).min(text.chars().count());
+        let before: String = text.chars().take(caret).collect();
+        crate::body::mention_trigger_at(&before).map(|(_, query)| query)
+    }
+
+    fn mention_view(&self) -> Option<gtk::TextView> {
+        self.mentions.view()
+    }
+
+    fn pick_emoji_view(&self) -> gtk::TextView {
+        if self.visible == "remotes" {
+            self.remote_composer.clone()
+        } else if self.visible == "commit" {
+            self.reply_composer.clone()
+        } else {
+            self.composer.clone()
+        }
+    }
+
+    fn insert_emoji(&mut self, glyph: &str) {
+        let view = self.emoji.view().unwrap_or_else(|| self.pick_emoji_view());
         let buf = view.buffer();
         let text = buffer_text(&view);
         let caret = (buf.cursor_position() as usize).min(text.chars().count());
         let before: String = text.chars().take(caret).collect();
-        let Some((start, _)) = crate::emoji::trigger_at(&before) else {
-            self.emoji.hide();
-            return;
+        let start = if buf.has_selection() {
+            let (sel_start, _) = buf.selection_bounds().unwrap_or((
+                buf.iter_at_offset(caret as i32),
+                buf.iter_at_offset(caret as i32),
+            ));
+            sel_start.offset()
+        } else {
+            crate::emoji::trigger_at(&before)
+                .map(|(start, _)| start as i32)
+                .unwrap_or(caret as i32)
         };
-        let mut start_iter = buf.iter_at_offset(start as i32);
+        let mut start_iter = buf.iter_at_offset(start);
         let mut end_iter = buf.iter_at_offset(caret as i32);
         buf.begin_user_action();
         buf.delete(&mut start_iter, &mut end_iter);
         buf.insert(&mut start_iter, glyph);
         buf.end_user_action();
         self.emoji.hide();
+    }
+
+    fn insert_mention(&mut self, handle: &str) {
+        let view = self
+            .mentions
+            .view()
+            .unwrap_or_else(|| self.pick_emoji_view());
+        let buf = view.buffer();
+        let text = buffer_text(&view);
+        let caret = (buf.cursor_position() as usize).min(text.chars().count());
+        let before: String = text.chars().take(caret).collect();
+        let start = crate::body::mention_trigger_at(&before)
+            .map(|(start, _)| start as i32)
+            .unwrap_or(caret as i32);
+        let mut start_iter = buf.iter_at_offset(start);
+        let mut end_iter = buf.iter_at_offset(caret as i32);
+        buf.begin_user_action();
+        buf.delete(&mut start_iter, &mut end_iter);
+        buf.insert(&mut start_iter, &format!("@{handle} "));
+        buf.end_user_action();
+        self.mentions.hide();
+        self.mention_gen = self.mention_gen.wrapping_add(1);
+    }
+
+    fn apply_me(&mut self, user: CurrentUser, sender: &ComponentSender<App>) {
+        let live = user.user.live.clone();
+        let username = user.username().to_owned();
+        self.set_user(Some(user));
+        if let Some(profile) = &mut self.profile {
+            if profile.username() == username {
+                profile.user.live = live;
+            }
+        }
+        if self.visible == "profile" {
+            self.render_profile(sender);
+        }
+        if let Some(client) = self.client.clone() {
+            let sender2 = sender.clone();
+            relm4::spawn(async move {
+                sender2.input(AppMsg::LiveFollowingLoaded(client.live_following().await));
+            });
+        }
+    }
+
+    fn apply_poll(&mut self, id: &str, poll: devnull_api::Poll) {
+        let mut apply = |commit: &mut Commit| {
+            if commit.id == id {
+                commit.poll = Some(poll.clone());
+            }
+            if let Some(quoted) = commit.quoted_commit.as_mut() {
+                if quoted.id == id {
+                    quoted.poll = Some(poll.clone());
+                }
+            }
+        };
+        if let Some(commit) = &mut self.open_commit {
+            apply(commit);
+        }
+        self.log_commits.iter_mut().for_each(&mut apply);
+        self.profile_commits.iter_mut().for_each(&mut apply);
+        self.thread_replies.iter_mut().for_each(&mut apply);
+        self.ancestors.iter_mut().for_each(&mut apply);
+        self.related_commits.iter_mut().for_each(&mut apply);
+        for replies in self.nested_replies.values_mut() {
+            replies.iter_mut().for_each(&mut apply);
+        }
+    }
+
+    fn load_connections(&mut self, more: bool, sender: &ComponentSender<App>) {
+        let Some(client) = self.client.clone().or_else(|| Client::unsigned().ok()) else {
+            return;
+        };
+        if self.connections_loading {
+            return;
+        }
+        self.connections_loading = true;
+        let handle = self.connections_handle.clone();
+        let kind = self.connections_kind;
+        let people_cursor = if more {
+            self.connections_cursor.clone()
+        } else {
+            None
+        };
+        let orgs_cursor = if more {
+            self.connections_orgs_cursor.clone()
+        } else {
+            None
+        };
+        let sender2 = sender.clone();
+        relm4::spawn(async move {
+            let users = match kind {
+                ConnectionsKind::Following => {
+                    client
+                        .following_page(&handle, people_cursor.as_deref())
+                        .await
+                }
+                ConnectionsKind::Followers => {
+                    client.followers(&handle, people_cursor.as_deref()).await
+                }
+            };
+            let organizations =
+                if kind == ConnectionsKind::Following && !(more && orgs_cursor.is_none()) {
+                    client
+                        .following_organizations(&handle, orgs_cursor.as_deref())
+                        .await
+                } else {
+                    Ok(Page {
+                        data: Vec::new(),
+                        links: None,
+                        meta: None,
+                    })
+                };
+            sender2.input(AppMsg::ConnectionsLoaded {
+                handle,
+                kind,
+                more,
+                users,
+                organizations,
+            });
+        });
+    }
+
+    fn render_connections(&self, sender: &ComponentSender<App>) {
+        ui::fill_connections(
+            &self.connections_list,
+            self.connections_kind,
+            &self.connections_users,
+            &self.connections_orgs,
+            self.connections_orgs_expanded,
+            self.connections_orgs_cursor.is_some(),
+            self.user.as_ref().map(|user| user.username()),
+            sender.input_sender().clone(),
+        );
     }
 
     fn render_thread(&self, sender: &ComponentSender<App>) {
@@ -5605,9 +6393,35 @@ impl App {
             self.begin_busy();
             let sender2 = sender.clone();
             relm4::spawn(async move {
-                let profile = client.profile(&username).await.map(Box::new);
-                let commits = client.user_commits(&username, replies, None).await;
-                sender2.input(AppMsg::ProfileLoaded(profile, commits));
+                match client.profile(&username).await {
+                    Ok(profile) => {
+                        let commits = client.user_commits(&username, replies, None).await;
+                        sender2.input(AppMsg::ProfileLoaded(Ok(Box::new(profile)), commits));
+                    }
+                    Err(err) if err.status == 404 => {
+                        let organization = client.organization(&username).await.map(Box::new);
+                        let mentions = client.organization_mentions(&username, None).await;
+                        sender2.input(AppMsg::OrganizationLoaded(organization, mentions));
+                    }
+                    Err(err) => {
+                        sender2.input(AppMsg::ProfileLoaded(Err(err), Err(ApiError::decode())));
+                    }
+                }
+            });
+        }
+    }
+
+    fn load_organization(&mut self, sender: &ComponentSender<App>, handle: String) {
+        self.reset_profile_list();
+        ui::append_commit_skeletons(&self.profile_list, 3);
+        let client = self.client.clone().or_else(|| Client::unsigned().ok());
+        if let Some(client) = client {
+            self.begin_busy();
+            let sender2 = sender.clone();
+            relm4::spawn(async move {
+                let organization = client.organization(&handle).await.map(Box::new);
+                let mentions = client.organization_mentions(&handle, None).await;
+                sender2.input(AppMsg::OrganizationLoaded(organization, mentions));
             });
         }
     }
@@ -5715,7 +6529,21 @@ impl App {
         while let Some(child) = self.profile_hero.first_child() {
             self.profile_hero.remove(&child);
         }
-        if let Some(profile) = &self.profile {
+        while let Some(child) = self.profile_bar_avatar.first_child() {
+            self.profile_bar_avatar.remove(&child);
+        }
+        if let Some(organization) = &self.organization {
+            self.profile_bar_avatar
+                .append(&ui::org_avatar_widget(organization, 24, true));
+            ui::fill_organization_hero(
+                &self.profile_hero,
+                organization,
+                self.user.is_some(),
+                sender.input_sender().clone(),
+            );
+        } else if let Some(profile) = &self.profile {
+            self.profile_bar_avatar
+                .append(&ui::avatar_widget(Some(&profile.user), 24, true));
             ui::fill_profile_hero(
                 &self.profile_hero,
                 profile,
@@ -5744,15 +6572,21 @@ impl App {
     }
 
     fn follow_label(&self) -> &str {
+        if let Some(organization) = &self.organization {
+            return if organization.is_following {
+                "Following"
+            } else {
+                "Follow"
+            };
+        }
         let me = self.user.as_ref().map(|u| u.username());
         if self.profile.as_ref().map(|p| p.username()) == me {
             return "";
         }
-        if self.profile.as_ref().is_some_and(|p| p.is_following) {
-            "Unfollow"
-        } else {
-            "Follow"
-        }
+        let Some(profile) = self.profile.as_ref() else {
+            return "";
+        };
+        ui::preview_follow_label(profile.is_following, profile.follows_you)
     }
 
     fn toast(&self, text: &str) {
@@ -5794,8 +6628,13 @@ impl App {
     }
 
     fn handle_callback(&mut self, uri: &str, sender: &ComponentSender<App>) {
-        if self.phase != Phase::WaitingForBrowser {
+        if self.phase == Phase::SignedIn {
             return;
+        }
+        if self.pending.is_none() {
+            if let Some((pkce, _)) = auth::load_pending() {
+                self.pending = Some(pkce);
+            }
         }
         let Some(extracted) = auth::extract_callback(uri) else {
             return;
@@ -5810,19 +6649,24 @@ impl App {
             return;
         }
         if cb.error.as_deref() == Some("access_denied") {
+            self.pending = None;
+            auth::clear_pending();
             self.phase = Phase::SignedOut;
             return;
         }
         let Some(code) = cb.code else {
             self.error = Some("The browser didn't approve this device.".into());
+            self.pending = None;
+            auth::clear_pending();
             self.phase = Phase::SignedOut;
             return;
         };
         self.pending = None;
         self.phase = Phase::Loading;
+        let key = auth::take_pending().map(|(_, key)| key);
         let sender2 = sender.clone();
         relm4::spawn(async move {
-            sender2.input(AppMsg::Redeemed(redeem(code, pkce.verifier).await));
+            sender2.input(AppMsg::Redeemed(redeem(code, pkce.verifier, key).await));
         });
     }
 
@@ -6650,10 +7494,10 @@ impl App {
                 .iter()
                 .rev()
                 .find(|message| {
-                    !message
+                    message
                         .event
                         .as_deref()
-                        .is_some_and(|event| !event.is_empty())
+                        .is_none_or(|event| event.is_empty())
                 })
                 .or(thread.messages.last())
                 .map(|message| message.id)
@@ -7027,12 +7871,19 @@ async fn restore() -> Result<(CurrentUser, Client), ApiError> {
     Ok((user, client))
 }
 
-async fn redeem(code: String, verifier: String) -> Result<(CurrentUser, Client), ApiError> {
-    let key = auth::load_or_create_key().await.map_err(|e| ApiError {
-        status: 0,
-        code: None,
-        message: e.to_string(),
-    })?;
+async fn redeem(
+    code: String,
+    verifier: String,
+    key: Option<DeviceKey>,
+) -> Result<(CurrentUser, Client), ApiError> {
+    let key = match key {
+        Some(key) => key,
+        None => auth::load_or_create_key().await.map_err(|e| ApiError {
+            status: 0,
+            code: None,
+            message: e.to_string(),
+        })?,
+    };
     let client = Client::signed(key)?;
     let user = client.redeem(&code, &verifier).await?;
     Ok((user, client))
@@ -7081,6 +7932,7 @@ fn bind_composer_keys(
     view: &gtk::TextView,
     sender: ComponentSender<App>,
     emoji_open: Rc<Cell<bool>>,
+    mention_open: Rc<Cell<bool>>,
     kind: ComposerBind,
 ) {
     let sync = Rc::new({
@@ -7123,6 +7975,24 @@ fn bind_composer_keys(
         {
             sender.input(AppMsg::TogglePreview);
             return glib::Propagation::Stop;
+        }
+        if mention_open.get() {
+            if key == gtk::gdk::Key::Down || key == gtk::gdk::Key::KP_Down {
+                sender.input(AppMsg::MentionMove(1));
+                return glib::Propagation::Stop;
+            }
+            if key == gtk::gdk::Key::Up || key == gtk::gdk::Key::KP_Up {
+                sender.input(AppMsg::MentionMove(-1));
+                return glib::Propagation::Stop;
+            }
+            if (enter || key == gtk::gdk::Key::Tab) && !ctrl && !shift {
+                sender.input(AppMsg::MentionPick);
+                return glib::Propagation::Stop;
+            }
+            if key == gtk::gdk::Key::Escape {
+                sender.input(AppMsg::MentionDismiss);
+                return glib::Propagation::Stop;
+            }
         }
         if emoji_open.get() {
             if key == gtk::gdk::Key::Down || key == gtk::gdk::Key::KP_Down {
@@ -7186,6 +8056,10 @@ fn language_code(name: &str) -> Option<String> {
 }
 
 fn poll_clipboard(sender: &ComponentSender<App>) {
+    if let Some(uri) = auth::take_callback_uri() {
+        sender.input(AppMsg::OpenUri(uri));
+        return;
+    }
     let Some(display) = gtk::gdk::Display::default() else {
         return;
     };

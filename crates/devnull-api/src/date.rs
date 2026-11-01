@@ -28,9 +28,7 @@ where
     match value {
         None => Ok(None),
         Some(s) if s.is_empty() => Ok(None),
-        Some(s) => parse_date(&s)
-            .map(Some)
-            .ok_or_else(|| serde::de::Error::custom(format!("Unknown date {s}"))),
+        Some(s) => Ok(parse_date(&s)),
     }
 }
 

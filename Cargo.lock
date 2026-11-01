@@ -439,6 +439,7 @@ dependencies = [
  "hostname",
  "oo7",
  "rand 0.8.8",
+ "security-framework",
  "sha2",
  "thiserror",
  "url",

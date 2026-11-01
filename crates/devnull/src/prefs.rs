@@ -193,11 +193,114 @@ const DARK_TOKENS: &str = r#"
 
 pub fn reload_css() {
     let dark = adw::StyleManager::default().is_dark();
-    let mut css = String::from(include_str!("style.css"));
+    let mut css = gtkify_css(include_str!("style.css"));
     if dark {
         css.push_str(DARK_TOKENS);
     }
     relm4::set_global_css(&css);
+}
+
+/// Map CSS custom properties to GTK named colors so GTK 4.14 can load the
+/// stylesheet. Custom properties need GTK 4.16+.
+/// `:root { --token: value; }` becomes `@define-color token value;`
+/// and `var(--token)` becomes `@token`.
+fn gtkify_css(css: &str) -> String {
+    gtkify_var_refs(&gtkify_root_tokens(css))
+}
+
+fn gtkify_root_tokens(css: &str) -> String {
+    let mut out = String::with_capacity(css.len());
+    let mut rest = css;
+    while let Some(start) = find_root_block(rest) {
+        out.push_str(&rest[..start]);
+        let after_root = rest[start + 5..].trim_start();
+        let body_and_rest = &after_root[1..];
+        match body_and_rest.find('}') {
+            Some(end) => {
+                emit_define_colors(&mut out, &body_and_rest[..end]);
+                rest = &body_and_rest[end + 1..];
+            }
+            None => {
+                out.push_str(&rest[start..]);
+                return out;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn find_root_block(css: &str) -> Option<usize> {
+    let mut search = css;
+    let mut offset = 0;
+    while let Some(i) = search.find(":root") {
+        if search[i + 5..].trim_start().starts_with('{') {
+            return Some(offset + i);
+        }
+        offset += i + 5;
+        search = &search[i + 5..];
+    }
+    None
+}
+
+fn emit_define_colors(out: &mut String, body: &str) {
+    for raw in body.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some(spec) = line.strip_prefix("--") else {
+            continue;
+        };
+        let Some((name, value)) = spec.split_once(':') else {
+            continue;
+        };
+        let name = name.trim();
+        let value = value.trim().trim_end_matches(';').trim();
+        if name.is_empty()
+            || value.is_empty()
+            || !name
+                .bytes()
+                .all(|b| matches!(b, b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' | b'_' | b'-'))
+        {
+            continue;
+        }
+        out.push_str("@define-color ");
+        out.push_str(name);
+        out.push(' ');
+        out.push_str(value);
+        out.push_str(";\n");
+    }
+}
+
+fn gtkify_var_refs(css: &str) -> String {
+    let mut out = String::with_capacity(css.len());
+    let mut rest = css;
+    while let Some(start) = rest.find("var(--") {
+        out.push_str(&rest[..start]);
+        rest = &rest[start + 6..];
+        match rest.find(')') {
+            Some(end) => {
+                let name = &rest[..end];
+                if !name.is_empty()
+                    && name
+                        .bytes()
+                        .all(|b| matches!(b, b'0'..=b'9' | b'A'..=b'Z' | b'a'..=b'z' | b'_' | b'-'))
+                {
+                    out.push('@');
+                    out.push_str(name);
+                    rest = &rest[end + 1..];
+                } else {
+                    out.push_str("var(--");
+                }
+            }
+            None => {
+                out.push_str("var(--");
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 fn path() -> std::path::PathBuf {
@@ -218,5 +321,24 @@ mod tests {
         assert!(prefs.highlight_on_hover);
         assert!(prefs.show_who_to_follow);
         assert!(!prefs.chat_docked);
+    }
+
+    #[test]
+    fn gtkify_css_turns_custom_properties_into_named_colors() {
+        let css = gtkify_css("color: var(--dn_primary); background: alpha(var(--dn_wash), 0.45);");
+        assert_eq!(
+            css,
+            "color: @dn_primary; background: alpha(@dn_wash, 0.45);"
+        );
+        let css = gtkify_css(":root { --dn_shell: #f6f7f8; }\nwindow { color: var(--dn_shell); }");
+        assert_eq!(
+            css,
+            "@define-color dn_shell #f6f7f8;\n\nwindow { color: @dn_shell; }"
+        );
+        let sheet = gtkify_css(include_str!("style.css"));
+        assert!(sheet.contains("@define-color dn_shell #f6f7f8;"));
+        assert!(sheet.contains("background-color: @dn_shell;"));
+        assert!(!sheet.contains("var(--dn_shell)"));
+        assert!(!sheet.contains(":root"));
     }
 }

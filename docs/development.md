@@ -20,18 +20,30 @@ Point at a local or staging API:
 DEVNULL_URL=http://127.0.0.1:8000 cargo run -p devnull
 ```
 
-You still need GTK 4, libadwaita, and a Secret Service daemon. See the [README](../README.md#requirements) for distro packages.
+You still need GTK 4 and libadwaita. Linux also needs a Secret Service daemon; macOS uses the login Keychain. See the [README](../README.md#requirements) for distro and Homebrew packages.
+
+The workspace `rust-version` is **1.93** (Relm4 0.11). If cargo says your rustc is too old:
+
+```bash
+rustup update stable
+```
+
+On macOS, if `pkg-config` cannot find GTK after `brew install gtk4 libadwaita pkgconf`:
+
+```bash
+export PKG_CONFIG_PATH="$(brew --prefix)/lib/pkgconfig:$(brew --prefix libffi)/lib/pkgconfig"
+```
 
 Geist is optional. Without it the UI falls back to Adwaita Sans / Adwaita Mono.
 
 ## Check
 
-CI on `main` / `production` and pull requests runs format, clippy, and tests:
+CI on `main` / `production` and pull requests runs format, clippy (`-D warnings`), and tests on Ubuntu (`test`) and clippy/tests on macOS (`macos`), both with `--locked`:
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace
 ```
 
 `devnull-api` includes a signing test (uses `ssh-keygen` when installed). A live decode against `https://dev-null.sh` is ignored in CI:
@@ -78,7 +90,7 @@ Do not drop a stroke-only Lucide file into `actions/` and expect it to render co
 
 ## Design constraints
 
-Keep the Linux UI aligned with the website. In particular:
+Keep the GTK UI aligned with the website. In particular:
 
 - Feed column 620px (Remotes 940px, fluid below 768px); nav 256 / 80; aside 320
 - Lane color only on the graph, avatar ring, and handle dot — except quoted remotes authors (website ReplyGhost) and notification actor rails / rings / icons
@@ -94,7 +106,11 @@ The stylesheet is GTK CSS, not the web. These properties are ignored or invalid:
 
 | Path | Contents |
 | --- | --- |
-| `~/.config/sh.devnull.Client/prefs.json` | Theme, who-to-follow, highlight-on-hover, chat dock, pins, reactions, last-visit markers |
-| Secret Service item `app=sh.devnull.Client` | Ed25519 device key |
+| `~/.config/sh.devnull.Client/prefs.json` (Linux) | Theme, who-to-follow, highlight-on-hover, chat dock, pins, reactions, last-visit markers |
+| `~/Library/Application Support/sh.devnull.Client/prefs.json` (macOS) | Same prefs file, via GTK’s config dir |
+| `~/.local/share/sh.devnull.Client/pending-auth` (Linux) | In-flight PKCE + key during sign-in (mode 600, deleted after redeem) |
+| `~/Library/Application Support/sh.devnull.Client/pending-auth` (macOS) | Same pending file |
+| Secret Service item `app=sh.devnull.Client` (Linux) | Ed25519 device key (raw 32 bytes) |
+| Keychain generic password `sh.devnull.Client` / `device-key` (macOS) | Ed25519 device key (base64) |
 
 Delete the prefs file to reset theme, the chat dock, pins, reactions, and visit markers. Revoke the device on the website to invalidate the key.

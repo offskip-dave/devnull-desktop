@@ -60,13 +60,13 @@ pub struct User {
     pub feed_url: Option<String>,
     #[serde(default, deserialize_with = "deserialize_opt_datetime")]
     pub created_at: Option<DateTime<Utc>>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_i64")]
     pub commits_count: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_i64")]
     pub followers_count: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_i64")]
     pub following_count: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_ok")]
     pub lane: Option<Lane>,
     #[serde(
         default,
@@ -217,6 +217,8 @@ fn github_login_from_url(url: &str) -> Option<&str> {
 /// A GitHub organization that commits can mention, as `/api/v1/organizations/{handle}` returns it.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Organization {
+    #[serde(default)]
+    pub id: String,
     #[serde(default, alias = "username")]
     pub handle: String,
     #[serde(default)]
@@ -235,6 +237,14 @@ pub struct Organization {
     pub html_url: Option<String>,
     #[serde(default)]
     pub lane: Option<Lane>,
+    #[serde(default)]
+    pub followers_count: Option<i64>,
+    #[serde(default)]
+    pub is_following: bool,
+    #[serde(default)]
+    pub can_claim: bool,
+    #[serde(default)]
+    pub settings_url: Option<String>,
     #[serde(default, deserialize_with = "deserialize_vec")]
     pub admins: Vec<User>,
 }
@@ -290,6 +300,30 @@ impl Organization {
                 .unwrap_or(serde_json::Value::Null);
             organization.admins = User::list_from_value(admins);
         }
+        if organization.id.trim().is_empty() {
+            if let Some(id) = json_str(&data, "id").or_else(|| json_str(&value, "id")) {
+                organization.id = id;
+            }
+        }
+        if organization.followers_count.is_none() {
+            organization.followers_count =
+                json_i64(&data, "followers_count").or_else(|| json_i64(&value, "followers_count"));
+        }
+        if !organization.is_following {
+            organization.is_following = json_bool(&value, "is_following")
+                .or_else(|| json_bool(&data, "is_following"))
+                .or_else(|| json_bool(&value, "is_followed"))
+                .unwrap_or(false);
+        }
+        if !organization.can_claim {
+            organization.can_claim = json_bool(&value, "can_claim")
+                .or_else(|| json_bool(&data, "can_claim"))
+                .unwrap_or(false);
+        }
+        if organization.settings_url.is_none() {
+            organization.settings_url =
+                json_str(&value, "settings_url").or_else(|| json_str(&data, "settings_url"));
+        }
         Ok(organization)
     }
 
@@ -297,11 +331,16 @@ impl Organization {
         let data = value.get("data").unwrap_or(value);
         let items = data
             .as_array()
-            .or_else(|| data.get("organizations").and_then(serde_json::Value::as_array))
-            .or_else(|| value.get("organizations").and_then(|orgs| {
-                orgs.as_array()
-                    .or_else(|| orgs.get("data").and_then(serde_json::Value::as_array))
-            }));
+            .or_else(|| {
+                data.get("organizations")
+                    .and_then(serde_json::Value::as_array)
+            })
+            .or_else(|| {
+                value.get("organizations").and_then(|orgs| {
+                    orgs.as_array()
+                        .or_else(|| orgs.get("data").and_then(serde_json::Value::as_array))
+                })
+            });
         items
             .map(|items| {
                 items
@@ -387,10 +426,12 @@ impl<'de> Deserialize<'de> for MentionMaps {
     }
 }
 
-fn split_mention_value(
-    value: Option<&serde_json::Value>,
-    object_is_org: bool,
-) -> (Option<HashMap<String, String>>, Option<HashMap<String, String>>) {
+type MentionMapsSplit = (
+    Option<HashMap<String, String>>,
+    Option<HashMap<String, String>>,
+);
+
+fn split_mention_value(value: Option<&serde_json::Value>, object_is_org: bool) -> MentionMapsSplit {
     match value {
         None | Some(serde_json::Value::Null) => (None, None),
         Some(serde_json::Value::Object(map)) => {
@@ -416,7 +457,10 @@ fn split_mention_value(
                     users.insert(handle, id);
                 }
             }
-            (Some(users), Some(organizations).filter(|map| !map.is_empty()))
+            (
+                Some(users),
+                Some(organizations).filter(|map| !map.is_empty()),
+            )
         }
         Some(_) => (None, None),
     }
@@ -438,7 +482,9 @@ fn merge_mention_maps(
     }
 }
 
-fn map_from_mention_object(map: &serde_json::Map<String, serde_json::Value>) -> HashMap<String, String> {
+fn map_from_mention_object(
+    map: &serde_json::Map<String, serde_json::Value>,
+) -> HashMap<String, String> {
     let mut out = HashMap::new();
     for (key, item) in map {
         if let Some(id) = item.as_str() {
@@ -484,11 +530,11 @@ fn mention_is_organization(item: &serde_json::Value) -> bool {
 pub struct RemotesSettings {
     #[serde(default)]
     pub from: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_boolish")]
     pub pull_receipts: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_boolish")]
     pub requests: bool,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_boolish")]
     pub everyone: bool,
     #[serde(default)]
     pub unread_count: i64,
@@ -498,21 +544,29 @@ pub struct RemotesSettings {
 pub struct CurrentUser {
     #[serde(flatten)]
     pub user: User,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_boolish")]
     pub pasteis_mode: Option<bool>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_i64")]
     pub pasteis_remaining: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_i64")]
     pub pasteis_received: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_ok")]
     pub remotes: Option<RemotesSettings>,
-    #[serde(default, alias = "unreadNotificationsCount")]
+    #[serde(
+        default,
+        alias = "unreadNotificationsCount",
+        deserialize_with = "deserialize_opt_i64"
+    )]
     pub unread_notifications_count: Option<i64>,
-    #[serde(default, alias = "unreadMessagesCount")]
+    #[serde(
+        default,
+        alias = "unreadMessagesCount",
+        deserialize_with = "deserialize_opt_i64"
+    )]
     pub unread_messages_count: Option<i64>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_ok")]
     pub preferred_lane: Option<Lane>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_opt_ok")]
     pub automatic_lane: Option<u8>,
     #[serde(default, deserialize_with = "deserialize_opt_datetime")]
     pub github_synced_at: Option<DateTime<Utc>>,
@@ -616,14 +670,11 @@ impl CommitTranslation {
             .or_else(|| value.get("data").and_then(|data| data.get("translation")))
             .or_else(|| value.get("data"))
             .unwrap_or(&value);
-        let body = root
-            .get("translated")
-            .and_then(segments_text)
-            .or_else(|| {
-                root.get("translated")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned)
-            });
+        let body = root.get("translated").and_then(segments_text).or_else(|| {
+            root.get("translated")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+        });
         Self {
             language: root
                 .get("language")
@@ -659,7 +710,11 @@ fn segments_text(value: &serde_json::Value) -> Option<String> {
         .iter()
         .filter_map(|segment| segment.get("text").and_then(serde_json::Value::as_str))
         .collect::<String>();
-    if text.is_empty() { None } else { Some(text) }
+    if text.is_empty() {
+        None
+    } else {
+        Some(text)
+    }
 }
 
 impl User {
@@ -1013,6 +1068,7 @@ pub struct Badge {
 #[derive(Debug, Clone, Default)]
 pub struct SearchResults {
     pub users: Vec<User>,
+    pub organizations: Vec<Organization>,
     pub commits: Vec<Commit>,
 }
 
@@ -1020,12 +1076,21 @@ impl SearchResults {
     pub fn from_value(value: serde_json::Value) -> Self {
         let data = value.get("data").cloned().unwrap_or(value.clone());
         let users = User::list_from_value(value.clone());
+        let organizations = value
+            .get("organizations")
+            .or_else(|| data.get("organizations"))
+            .map(Organization::list_from_value)
+            .unwrap_or_default();
         let commits = json_vec::<Commit>(&data, "commits").unwrap_or_default();
-        Self { users, commits }
+        Self {
+            users,
+            organizations,
+            commits,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.users.is_empty() && self.commits.is_empty()
+        self.users.is_empty() && self.organizations.is_empty() && self.commits.is_empty()
     }
 }
 
@@ -1039,6 +1104,14 @@ fn json_i64(value: &serde_json::Value, key: &str) -> Option<i64> {
 
 fn json_bool(value: &serde_json::Value, key: &str) -> Option<bool> {
     value.get(key).and_then(serde_json::Value::as_bool)
+}
+
+fn json_str(value: &serde_json::Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned)
+        .filter(|value| !value.is_empty())
 }
 
 fn nested<'a>(
@@ -1087,6 +1160,13 @@ fn users_from_array(value: &serde_json::Value) -> Option<Vec<User>> {
         .filter(|user| !user.username.trim().is_empty())
         .collect();
     (!users.is_empty()).then_some(users)
+}
+
+fn deserialize_boolish<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(deserialize_opt_boolish(deserializer)?.unwrap_or(false))
 }
 
 fn deserialize_opt_boolish<'de, D>(deserializer: D) -> Result<Option<bool>, D::Error>
@@ -1302,6 +1382,101 @@ pub struct CommitImage {
     pub description: Option<String>,
 }
 
+/// A commit's poll, as CommitPoll on the web. Counts stay hidden until you vote,
+/// wrote it, or it closed, so they can't sway a vote.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct Poll {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default, deserialize_with = "deserialize_opt_datetime")]
+    pub closes_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub is_closed: bool,
+    #[serde(default)]
+    pub has_voted: bool,
+    #[serde(default)]
+    pub total_votes: Option<i64>,
+    #[serde(default, deserialize_with = "deserialize_vec")]
+    pub options: Vec<PollOption>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct PollOption {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub votes_count: Option<i64>,
+    #[serde(default)]
+    pub voted: bool,
+    #[serde(default)]
+    pub percentage: Option<i64>,
+}
+
+impl Poll {
+    pub fn shows_results(&self) -> bool {
+        self.total_votes.is_some()
+    }
+
+    pub fn has_expired(&self, now: DateTime<Utc>) -> bool {
+        self.is_closed || self.closes_at.is_some_and(|closes_at| closes_at <= now)
+    }
+
+    pub fn can_vote(&self, me: Option<&str>, commit: &Commit) -> bool {
+        let Some(me) = me.filter(|id| !id.is_empty()) else {
+            return false;
+        };
+        commit.status.as_deref() == Some("approved")
+            && !commit.is_own(Some(me))
+            && self.closes_at.is_some()
+            && !self.has_voted
+            && !self.has_expired(Utc::now())
+    }
+
+    /// The muted line under the options, worded as the web words it.
+    pub fn status(&self, now: DateTime<Utc>) -> String {
+        match self.closes_at {
+            None => "Voting opens once approved".into(),
+            Some(_) if self.has_expired(now) => {
+                if self.shows_results() {
+                    "Final results".into()
+                } else {
+                    "Poll closed".into()
+                }
+            }
+            Some(closes_at) => poll_time_left(closes_at, now),
+        }
+    }
+
+    /// "4 votes · 3h left", the results' summary line.
+    pub fn summary(&self, now: DateTime<Utc>) -> String {
+        let votes = self.total_votes.unwrap_or(0);
+        format!(
+            "{} {} · {}",
+            votes,
+            if votes == 1 { "vote" } else { "votes" },
+            self.status(now)
+        )
+    }
+}
+
+impl PollOption {
+    pub fn share(&self) -> i64 {
+        self.percentage.unwrap_or(0).clamp(0, 100)
+    }
+}
+
+/// Whole days, then whole hours, then minutes, never less than one: the web's timeLeft().
+fn poll_time_left(closes_at: DateTime<Utc>, now: DateTime<Utc>) -> String {
+    let minutes = ((closes_at - now).num_seconds() as f64 / 60.0).ceil() as i64;
+    match minutes {
+        m if m >= 1440 => format!("{}d left", m / 1440),
+        m if m >= 60 => format!("{}h left", m / 60),
+        _ => format!("{}m left", minutes.max(1)),
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Commit {
     pub id: String,
@@ -1346,6 +1521,8 @@ pub struct Commit {
     pub quoted_commit: Option<Box<Commit>>,
     #[serde(default)]
     pub parent: Option<Box<Commit>>,
+    #[serde(default)]
+    pub poll: Option<Poll>,
     /// Captured `@handle`s: developers and GitHub organizations.
     #[serde(default, flatten)]
     pub captured: MentionMaps,
@@ -2905,6 +3082,34 @@ mod unread_count_tests {
     }
 
     #[test]
+    fn current_user_reads_extra_fields_and_int_booleans() {
+        let user: CurrentUser = serde_json::from_value(json!({
+            "id": "01a13fa8-6cd4-70ef-b8e5-f46a3ca70ca8",
+            "handle": "nunomaduro",
+            "created_at": "2026-10-15T13:02:44.000000Z",
+            "commits_count": "355",
+            "pasteis_mode": 0,
+            "pasteis_resets_at": "2026-11-02T00:00:00.000000Z",
+            "terms_version": "2026-10-01",
+            "terms_accepted": true,
+            "preferred_lane": null,
+            "automatic_lane": 3,
+            "remotes": {
+                "from": "following",
+                "pull_receipts": 1,
+                "requests": true,
+                "everyone": 0,
+                "unread_count": 2
+            }
+        }))
+        .unwrap();
+        assert_eq!(user.username(), "nunomaduro");
+        assert!(!user.pasteis_on());
+        assert!(user.remotes_on());
+        assert_eq!(user.unread_remotes(), 2);
+    }
+
+    #[test]
     fn user_still_reads_the_older_username_field() {
         let user: User = serde_json::from_value(json!({
             "id": "1",
@@ -2992,6 +3197,70 @@ mod unread_count_tests {
         };
         assert_eq!(notice.title(), "You reached level 4: maintainer.");
         assert_eq!(notice.level_chip().as_deref(), Some("Lv. 4 · maintainer"));
+    }
+
+    #[test]
+    fn poll_keeps_counts_back_until_results() {
+        let hidden: Poll = serde_json::from_value(json!({
+            "id": "p1",
+            "closes_at": "2099-01-01T00:00:00Z",
+            "is_closed": false,
+            "has_voted": false,
+            "total_votes": null,
+            "options": [
+                { "id": "a", "label": "Yes" },
+                { "id": "b", "label": "No" }
+            ]
+        }))
+        .unwrap();
+        assert!(!hidden.shows_results());
+        assert!(hidden.status(Utc::now()).ends_with(" left"));
+        let shown: Poll = serde_json::from_value(json!({
+            "id": "p1",
+            "closes_at": "2020-01-01T00:00:00Z",
+            "is_closed": true,
+            "has_voted": true,
+            "total_votes": 4,
+            "options": [
+                { "id": "a", "label": "Yes", "votes_count": 3, "voted": true, "percentage": 75 },
+                { "id": "b", "label": "No", "votes_count": 1, "voted": false, "percentage": 25 }
+            ]
+        }))
+        .unwrap();
+        assert!(shown.shows_results());
+        assert_eq!(shown.options[0].share(), 75);
+        assert_eq!(shown.status(Utc::now()), "Final results");
+        assert_eq!(shown.summary(Utc::now()), "4 votes · Final results");
+        let pending = Poll {
+            closes_at: None,
+            ..Default::default()
+        };
+        assert_eq!(pending.status(Utc::now()), "Voting opens once approved");
+        let commit = Commit {
+            status: Some("approved".into()),
+            user_id: Some("author".into()),
+            ..Default::default()
+        };
+        assert!(hidden.can_vote(Some("voter"), &commit));
+        assert!(!hidden.can_vote(Some("author"), &commit));
+        assert!(!shown.can_vote(Some("voter"), &commit));
+    }
+
+    #[test]
+    fn poll_time_left_uses_whole_units() {
+        let now = Utc::now();
+        assert_eq!(
+            poll_time_left(now + chrono::Duration::minutes(60 * 3 + 5), now),
+            "3h left"
+        );
+        assert_eq!(
+            poll_time_left(now + chrono::Duration::minutes(1440 * 2 + 10), now),
+            "2d left"
+        );
+        assert_eq!(
+            poll_time_left(now + chrono::Duration::minutes(4), now),
+            "4m left"
+        );
     }
 
     #[test]
@@ -3103,6 +3372,31 @@ mod unread_count_tests {
             organization.html_url("https://dev-null.sh"),
             "https://dev-null.sh/@laravel"
         );
+        assert!(!organization.is_following);
+        assert!(!organization.can_claim);
+    }
+
+    #[test]
+    fn organization_reads_follow_state_and_id() {
+        let organization = Organization::from_value(json!({
+            "data": {
+                "id": "org_1",
+                "handle": "laravel",
+                "followers_count": 12
+            },
+            "is_following": true,
+            "can_claim": true,
+            "settings_url": "https://dev-null.sh/@laravel/settings"
+        }))
+        .unwrap();
+        assert_eq!(organization.id, "org_1");
+        assert_eq!(organization.followers_count, Some(12));
+        assert!(organization.is_following);
+        assert!(organization.can_claim);
+        assert_eq!(
+            organization.settings_url.as_deref(),
+            Some("https://dev-null.sh/@laravel/settings")
+        );
     }
 
     #[test]
@@ -3115,7 +3409,11 @@ mod unread_count_tests {
         .unwrap();
         assert_eq!(mapped.mentions().unwrap().get("nuno").unwrap(), "u1");
         assert_eq!(
-            mapped.organization_mentions().unwrap().get("laravel").unwrap(),
+            mapped
+                .organization_mentions()
+                .unwrap()
+                .get("laravel")
+                .unwrap(),
             "o1"
         );
 
@@ -3147,6 +3445,26 @@ mod unread_count_tests {
         }));
         assert_eq!(suggestions.users[0].username, "nuno");
         assert_eq!(suggestions.organizations[0].handle, "laravel");
+    }
+
+    #[test]
+    fn search_reads_organizations_apart_from_people() {
+        let results = SearchResults::from_value(json!({
+            "data": {
+                "users": [{ "handle": "nuno" }],
+                "organizations": [{ "handle": "laravel", "name": "Laravel" }],
+                "commits": [{ "id": "c1", "body": "shipped" }]
+            }
+        }));
+        assert_eq!(results.users[0].username, "nuno");
+        assert_eq!(results.organizations[0].handle, "laravel");
+        assert_eq!(results.commits[0].id, "c1");
+        assert!(!results.is_empty());
+        let people_only = SearchResults::from_value(json!({
+            "data": [{ "handle": "nuno" }]
+        }));
+        assert_eq!(people_only.users[0].username, "nuno");
+        assert!(people_only.organizations.is_empty());
     }
 
     #[test]

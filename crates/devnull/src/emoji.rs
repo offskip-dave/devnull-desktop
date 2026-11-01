@@ -103,6 +103,46 @@ pub fn search(query: &str, limit: usize) -> Vec<Suggestion> {
         .collect()
 }
 
+/// Emoji the picker button offers before anyone types a shortcode.
+pub fn catalog(limit: usize) -> Vec<Suggestion> {
+    const NAMES: &[&str] = &[
+        "grinning",
+        "smiley",
+        "smile",
+        "joy",
+        "thinking",
+        "heart_eyes",
+        "thumbsup",
+        "clap",
+        "tada",
+        "fire",
+        "rocket",
+        "eyes",
+        "wave",
+        "pray",
+        "100",
+        "sparkles",
+        "heart",
+        "laughing",
+        "sweat_smile",
+        "ok_hand",
+        "muscle",
+        "star",
+        "zap",
+        "white_check_mark",
+    ];
+    NAMES
+        .iter()
+        .filter_map(|name| {
+            shortcodes().get(*name).map(|emoji| Suggestion {
+                name: (*name).to_owned(),
+                emoji: emoji.clone(),
+            })
+        })
+        .take(limit)
+        .collect()
+}
+
 pub fn emojify(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
@@ -230,6 +270,14 @@ mod tests {
     fn emojify_input_keeps_open_shortcodes() {
         assert_eq!(emojify_input(":smile", 6), (":smile".into(), 6));
         assert_eq!(emojify_input("so :smile: ok", 10), ("so 😄 ok".into(), 4));
+    }
+
+    #[test]
+    fn catalog_offers_picker_emoji() {
+        let items = catalog(8);
+        assert_eq!(items.len(), 8);
+        assert_eq!(items[0].name, "grinning");
+        assert!(!items[0].emoji.is_empty());
     }
 
     #[test]

@@ -24,6 +24,10 @@ fn ingest_uri(uri: &str) {
     if !uri.contains("devnull://") {
         return;
     }
+    // Any process that sees the URL writes it down so the waiting window can
+    // finish sign-in even when GApplication uniqueness is unavailable (typical
+    // on macOS, also possible on Linux without a session bus).
+    devnull_auth::write_callback_uri(uri);
     if let Ok(mut slot) = pending().lock() {
         *slot = Some(uri.to_owned());
     }

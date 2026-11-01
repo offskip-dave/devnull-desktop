@@ -18,6 +18,9 @@ use crate::sign::{
 use crate::target::target;
 use crate::types::*;
 
+#[cfg(target_os = "macos")]
+pub const USER_AGENT: &str = "DevNull-macOS/0.1";
+#[cfg(not(target_os = "macos"))]
 pub const USER_AGENT: &str = "DevNull-Linux/0.1";
 
 #[derive(Debug)]
@@ -57,6 +60,7 @@ impl Client {
     fn build(key: Option<DeviceKey>, budget: RequestBudget) -> Result<Self, ApiError> {
         let http = Http::builder()
             .user_agent(USER_AGENT)
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(std::time::Duration::from_secs(30))
             .build()
             .map_err(|_| ApiError::network())?;
@@ -92,16 +96,22 @@ impl Client {
             code: &'a str,
             code_verifier: &'a str,
         }
-        self.send_json(
-            Method::POST,
-            "devices",
-            &[],
-            &Body {
-                code,
-                code_verifier: verifier,
-            },
-        )
-        .await
+        match self
+            .send_json(
+                Method::POST,
+                "devices",
+                &[],
+                &Body {
+                    code,
+                    code_verifier: verifier,
+                },
+            )
+            .await
+        {
+            Ok(user) => Ok(user),
+            Err(err) if err.status == 200 => self.me().await.or(Err(err)),
+            Err(err) => Err(err),
+        }
     }
 
     pub async fn log(&self, kind: LogKind, cursor: Option<&str>) -> Result<LogPage, ApiError> {
@@ -631,17 +641,38 @@ impl Client {
         .await
     }
 
+    pub async fn follow_organization(&self, handle: &str) -> Result<(), ApiError> {
+        self.send_empty(Method::POST, &format!("organizations/{handle}/follow"))
+            .await
+    }
+
+    pub async fn unfollow_organization(&self, handle: &str) -> Result<(), ApiError> {
+        self.send_empty(Method::DELETE, &format!("organizations/{handle}/follow"))
+            .await
+    }
+
+    pub async fn claim_organization(&self, handle: &str) -> Result<(), ApiError> {
+        self.send_empty(Method::POST, &format!("organizations/{handle}/claim"))
+            .await
+    }
+
     pub async fn mention_suggestions(
         &self,
         q: &str,
         reply: Option<&str>,
         quote: Option<&str>,
+        org: Option<&str>,
     ) -> Result<MentionSuggestions, ApiError> {
         let bytes = self
             .execute(self.signed_request(
                 Method::GET,
                 "search/mentions",
-                &[("q", Some(q)), ("reply", reply), ("quote", quote)],
+                &[
+                    ("q", Some(q)),
+                    ("reply", reply),
+                    ("quote", quote),
+                    ("org", org),
+                ],
                 None,
                 JSON_NAMESPACE,
             )?)
@@ -649,6 +680,78 @@ impl Client {
         let value: serde_json::Value =
             serde_json::from_slice(&bytes).map_err(|_| ApiError::decode())?;
         Ok(MentionSuggestions::from_value(value))
+    }
+
+    pub async fn followers(
+        &self,
+        handle: &str,
+        cursor: Option<&str>,
+    ) -> Result<Page<User>, ApiError> {
+        let value: serde_json::Value = self
+            .get(&format!("users/{handle}/followers"), &[("cursor", cursor)])
+            .await?;
+        Ok(people_page(value))
+    }
+
+    pub async fn following_page(
+        &self,
+        handle: &str,
+        cursor: Option<&str>,
+    ) -> Result<Page<User>, ApiError> {
+        let value: serde_json::Value = self
+            .get(&format!("users/{handle}/following"), &[("cursor", cursor)])
+            .await?;
+        Ok(people_page(value))
+    }
+
+    pub async fn following_organizations(
+        &self,
+        handle: &str,
+        cursor: Option<&str>,
+    ) -> Result<Page<Organization>, ApiError> {
+        let value: serde_json::Value = self
+            .get(
+                &format!("users/{handle}/following/organizations"),
+                &[("cursor", cursor)],
+            )
+            .await?;
+        let next = serde_json::from_value::<Page<Organization>>(value.clone())
+            .ok()
+            .and_then(|page| page.next_cursor());
+        Ok(Page {
+            data: Organization::list_from_value(&value),
+            links: None,
+            meta: Some(CursorMeta {
+                next_cursor: next,
+                prev_cursor: None,
+                per_page: None,
+            }),
+        })
+    }
+
+    pub async fn set_live(&self, url: &str, hours: i64) -> Result<CurrentUser, ApiError> {
+        self.send_json(
+            Method::PUT,
+            "me/live",
+            &[],
+            &serde_json::json!({ "url": url, "hours": hours }),
+        )
+        .await
+    }
+
+    pub async fn end_live(&self) -> Result<CurrentUser, ApiError> {
+        self.send_empty(Method::DELETE, "me/live").await?;
+        self.me().await
+    }
+
+    pub async fn vote_poll(&self, commit_id: &str, option: &str) -> Result<Commit, ApiError> {
+        self.send_json(
+            Method::POST,
+            &format!("commits/{commit_id}/poll/votes"),
+            &[],
+            &serde_json::json!({ "option": option }),
+        )
+        .await
     }
 
     pub async fn user_commits(
@@ -1128,10 +1231,20 @@ impl Client {
             .ok();
         let mut results = SearchResults::default();
         if let Some(value) = users {
-            results.users = SearchResults::from_value(value).users;
+            let parsed = SearchResults::from_value(value);
+            results.users = parsed.users;
+            results.organizations = parsed.organizations;
         }
         if let Some(value) = commits {
             results.commits = SearchResults::from_value(value).commits;
+        }
+        if results.organizations.is_empty() {
+            if let Ok(value) = self
+                .public_json(&format!("/search/organizations?q={encoded}"))
+                .await
+            {
+                results.organizations = SearchResults::from_value(value).organizations;
+            }
         }
         Ok(results)
     }
@@ -1201,8 +1314,21 @@ fn decode_maybe_wrapped<T: DeserializeOwned>(bytes: Vec<u8>) -> Result<T, ApiErr
     serde_json::from_value(value).map_err(|_| ApiError::decode())
 }
 
-/// Copy envelope fields such as `unread_notifications_count` onto the inner object
-/// when Laravel puts them beside `data` via `JsonResource::additional`.
+fn people_page(value: serde_json::Value) -> Page<User> {
+    let next = serde_json::from_value::<Page<User>>(value.clone())
+        .ok()
+        .and_then(|page| page.next_cursor());
+    Page {
+        data: User::list_from_value(value),
+        links: None,
+        meta: Some(CursorMeta {
+            next_cursor: next,
+            prev_cursor: None,
+            per_page: None,
+        }),
+    }
+}
+
 fn following_paths(named: Option<&str>) -> Vec<String> {
     let mut paths = Vec::new();
     if let Some(path) = named {
@@ -1213,6 +1339,8 @@ fn following_paths(named: Option<&str>) -> Vec<String> {
     paths
 }
 
+/// Copy envelope fields such as `unread_notifications_count` onto the inner object
+/// when Laravel puts them beside `data` via `JsonResource::additional`.
 fn merge_envelope(envelope: &serde_json::Value, inner: &serde_json::Value) -> serde_json::Value {
     let mut merged = inner.clone();
     let Some(object) = merged.as_object_mut() else {
@@ -1234,6 +1362,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn people_page_reads_followers_and_the_next_cursor() {
+        let page = people_page(serde_json::json!({
+            "data": [
+                { "id": "1", "handle": "ada", "is_following": true, "follows_you": true }
+            ],
+            "meta": { "next_cursor": "abc" }
+        }));
+        assert_eq!(page.data[0].username, "ada");
+        assert!(page.data[0].is_followed_by_me());
+        assert_eq!(page.next_cursor().as_deref(), Some("abc"));
+    }
+
+    #[test]
     fn redeem_body_reads_handle_and_unread_count_beside_data() {
         let bytes = serde_json::to_vec(&serde_json::json!({
             "data": {
@@ -1251,6 +1392,47 @@ mod tests {
         let user: CurrentUser = decode_maybe_wrapped(bytes).unwrap();
         assert_eq!(user.username(), "nunomaduro");
         assert_eq!(user.unread_notifications(), 7);
+        assert_eq!(user.unread_remotes(), 2);
+    }
+
+    #[test]
+    fn redeem_body_reads_the_live_current_user_resource() {
+        let bytes = serde_json::to_vec(&serde_json::json!({
+            "data": {
+                "id": "01a13fa8-6cd4-70ef-b8e5-f46a3ca70ca8",
+                "handle": "nunomaduro",
+                "name": "Nuno Maduro",
+                "created_at": "2026-10-15T13:02:44.000000Z",
+                "commits_count": 355,
+                "followers_count": 12,
+                "following_count": 8,
+                "lane": 3,
+                "live": null,
+                "pasteis_mode": false,
+                "pasteis_remaining": 10,
+                "pasteis_resets_at": "2026-11-02T00:00:00.000000Z",
+                "pasteis_received": 0,
+                "preferred_lane": null,
+                "automatic_lane": 3,
+                "sponsors_url": null,
+                "github_synced_at": null,
+                "terms_version": "2026-10-01",
+                "terms_accepted_at": null,
+                "terms_accepted": true,
+                "remotes": {
+                    "from": "following",
+                    "pull_receipts": true,
+                    "requests": true,
+                    "everyone": false,
+                    "unread_count": 2
+                }
+            },
+            "unread_notifications_count": 4
+        }))
+        .unwrap();
+        let user: CurrentUser = decode_maybe_wrapped(bytes).unwrap();
+        assert_eq!(user.username(), "nunomaduro");
+        assert_eq!(user.unread_notifications(), 4);
         assert_eq!(user.unread_remotes(), 2);
     }
 

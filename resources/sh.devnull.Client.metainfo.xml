@@ -9,8 +9,8 @@
   <url type="homepage">https://dev-null.sh</url>
   <description>
     <p>
-      Native Linux client for /dev/null. Sign in with GitHub, follow developers,
-      share commits, and push remotes.
+      Native GTK client for /dev/null on Linux and macOS. Sign in with GitHub,
+      follow developers, share commits, and push remotes.
     </p>
   </description>
   <launchable type="desktop-id">sh.devnull.Client.desktop</launchable>

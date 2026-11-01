@@ -1,18 +1,18 @@
 # Architecture
 
-The Linux client is a Relm4 app over GTK4 and libadwaita. It is a first-party API client, not a wrapper around the website.
+The GTK client is a Relm4 app over GTK4 and libadwaita. It builds on Linux and macOS. It is a first-party API client, not a wrapper around the website. On a Mac it is this GTK binary, distinct from the first-party Swift app.
 
 ## Crates
 
 ```
 crates/devnull          Relm4 UI (bin: devnull)
 crates/devnull-api      Signed /api/v1 HTTP client
-crates/devnull-auth     Device key, PKCE, Secret Service, URL handler
+crates/devnull-auth     Device key, PKCE, Secret Service / Keychain, URL handler
 ```
 
 `devnull` depends on the other two. `devnull-auth` depends on `devnull-api` for `DeviceKey` and the base URL.
 
-Application id: `sh.devnull.Client`. User agent: `DevNull-Linux/0.1`.
+Application id: `sh.devnull.Client` (GTK / desktop / keyring). Authorize `app_id` is `linux:sh.devnull.Client` or `macos:sh.devnull.Client`. User agent: `DevNull-Linux/0.1` on Linux, `DevNull-macOS/0.1` on macOS. Redirect URI is `devnull://linux/auth` on both so the server still recognizes this GTK client.
 
 ## Signed API
 
@@ -26,20 +26,22 @@ Unsigned calls exist for public profiles and commits. Signed traffic is capped a
 
 Point the client at another origin with `DEVNULL_URL`. Default is `https://dev-null.sh`.
 
-`devnull-api` maps resources under `/api/v1`: logs, starred commits, commits (create, star, replies, quotes, related, reports, pastéis, previews), users, following, suggested, search, notifications (including `GET notifications/{id}/group`), remotes, settings, mutes/blocks, export, and account deletion.
+`devnull-api` maps resources under `/api/v1`: logs, starred commits, commits (create, star, replies, quotes, related, reports, pastéis, previews, poll votes), users, following, followers, followed organizations, live start/stop, organizations (show, mentions, follow, claim), suggested, search, mention suggestions, notifications (including `GET notifications/{id}/group`), remotes, settings, mutes/blocks, export, and account deletion.
 
 ## Sign-in
 
 There is no embedded browser for GitHub OAuth.
 
-1. `devnull-auth` creates or loads the device key from Secret Service (`oo7`).
-2. It opens `/mobile/authorize` in the system browser with PKCE (`S256`) and `redirect_uri=devnull://linux/auth`.
+1. `devnull-auth` creates or loads the device key from Secret Service (`oo7`) on Linux, or the login Keychain (`security-framework`) on macOS.
+2. It opens `/mobile/authorize` in the system browser with PKCE (`S256`), `redirect_uri=devnull://linux/auth`, and `app_id` `linux:sh.devnull.Client` or `macos:sh.devnull.Client` (the server requires `platform:bundle`).
 3. After you approve the device, the browser should hand the callback to this app.
 4. The client POSTs the code and verifier to `/api/v1/devices` and stores the session as the signed key.
 
 If the browser swallows `devnull://`, paste the callback URL on the sign-in screen. Revoke a device on the website under Settings → Devices.
 
-On a normal install, launch registers a user desktop file for `x-scheme-handler/devnull`. Flatpak ships the handler in the app metadata instead.
+On Linux, launch registers a user desktop file (`Exec=… %u`) for `x-scheme-handler/devnull`. Flatpak ships the handler in the app metadata instead. GApplication uniqueness on the session bus is the usual return path: the waiting window gets the callback as a command-line URI.
+
+Both platforms also write the in-flight PKCE verifier (and a copy of the device key) under the app data dir, and any process that sees `devnull://` writes `callback.uri` for the waiting window to poll. That covers a missing session bus (typical on macOS, possible on Linux). On macOS, launch also compiles a helper `.app` under Application Support that writes the same file, then starts the binary. Paste still works if the browser keeps the callback.
 
 ## UI
 
@@ -53,7 +55,7 @@ On a normal install, launch registers a user desktop file for `x-scheme-handler/
 | `emoji` | `:` suggestions in composers |
 | `prefs` | Theme, who-to-follow, highlight-on-hover, chat dock, pins, reactions, last-visit markers |
 
-Layout matches the website shell: 256px nav (80px collapsed), 620px feed (940px on Remotes), 320px aside. Below 768px the feed goes fluid. The feed scrollbar is drawn at the window edge so the pointer can scroll from either sidebar.
+Layout matches the website shell: 256px nav (80px collapsed), 620px feed (940px on Remotes), 320px aside. Below 768px the feed goes fluid. The feed scrollbar is drawn at the window edge so the pointer can scroll from either sidebar. A profile's sticky bar starts as a name and count, then brings in the avatar and `@handle` once the hero avatar scrolls away. Folded commits that start with a long code block fade the last lines instead of trailing `…`.
 
 Breakpoints: the aside hides below 1280px — on Remotes, the org inbox collapses first when a thread is open — the nav rail collapses below 1024px, and the shell goes compact below 768px.
 
@@ -77,4 +79,4 @@ Threads use 75% bubbles, 12-hour timestamps, and hover pin / reply / react. Quot
 
 **Dock** pins a 360px overlay to the bottom-right of every page (`prefs.chat_docked`). Compact windows never dock. **New remote** and **New org** open a people picker (candidates, then search). Remote settings (who can push, share pulls, turn remotes off) live in the inbox header. Pin, stash, mute, and leave org sit on the thread menu.
 
-Local prefs: `~/.config/sh.devnull.Client/prefs.json` (theme, who-to-follow, highlight-on-hover, chat dock, pinned remotes and messages, reactions, log visit times). The device key is not stored there.
+Local prefs: `~/.config/sh.devnull.Client/prefs.json` on Linux, `~/Library/Application Support/sh.devnull.Client/prefs.json` on macOS (theme, who-to-follow, highlight-on-hover, chat dock, pinned remotes and messages, reactions, log visit times). The device key is not stored there.

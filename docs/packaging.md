@@ -35,7 +35,9 @@ When `FLATPAK_ID` is set, the app skips writing a user desktop file; the package
 - `MimeType=x-scheme-handler/devnull;`
 - `StartupWMClass=sh.devnull.Client`
 
-A cargo-run session also writes `~/.local/share/applications/sh.devnull.Client.desktop` pointing at the current binary, then tries `update-desktop-database`, `xdg-mime`, and `xdg-settings` so a browser can return after GitHub approval.
+A cargo-run session on Linux also writes `~/.local/share/applications/sh.devnull.Client.desktop` pointing at the current binary, then tries `update-desktop-database`, `xdg-mime`, and `xdg-settings` so a browser can return after GitHub approval. The desktop file passes `%u` into the same binary; GApplication uniqueness forwards that URI to the waiting window. A second process also writes `~/.local/share/sh.devnull.Client/callback.uri` so redeem still works if the session bus is missing.
+
+On macOS, launch compiles `~/Library/Application Support/sh.devnull.Client/DevNull Callback.app` (AppleScript + `devnull://` URL types) and registers it with Launch Services. The helper writes the same callback file, then starts the binary. If the browser still swallows the redirect, paste the callback URL on the sign-in page.
 
 ## AppStream
 
@@ -52,4 +54,22 @@ A native package should install:
 | `resources/sh.devnull.Client.metainfo.xml` | `/usr/share/metainfo/` |
 | `resources/icons/hicolor/` | `/usr/share/icons/hicolor/` |
 
-Runtime dependencies: GTK 4, libadwaita, a Secret Service implementation, and optional Geist fonts.
+Runtime dependencies: GTK 4, libadwaita, a Secret Service implementation, and optional Geist fonts. The binary needs Rust 1.93+ to build.
+
+## macOS (Homebrew)
+
+This is a GTK build, not a `.app` / `.dmg` of the first-party Mac client.
+
+```bash
+brew install gtk4 libadwaita pkgconf
+cargo build --release -p devnull
+cargo run -p devnull
+```
+
+If `pkg-config` cannot find GTK after install:
+
+```bash
+export PKG_CONFIG_PATH="$(brew --prefix)/lib/pkgconfig:$(brew --prefix libffi)/lib/pkgconfig"
+```
+
+The device key is stored in the login Keychain as a generic password (`service=sh.devnull.Client`, `account=device-key`). Prefs live under `~/Library/Application Support/sh.devnull.Client/`.
