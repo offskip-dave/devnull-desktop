@@ -193,8 +193,7 @@ pub fn set_dock_icon() {
     gtk::Window::set_default_icon_name(APP_ID);
     #[cfg(target_os = "macos")]
     {
-        let svg = crate::ui::app_icon_path();
-        let Ok(pixbuf) = gtk::gdk_pixbuf::Pixbuf::from_file_at_scale(svg, 256, 256, true) else {
+        let Some(pixbuf) = dock_icon_pixbuf() else {
             return;
         };
         let png = std::env::temp_dir().join("sh.devnull.Client-dock.png");
@@ -203,6 +202,28 @@ pub fn set_dock_icon() {
         }
         set_ns_application_icon(&png);
     }
+}
+
+/// Render the Mark into a 256² canvas with ~10% transparent margin so Dock /
+/// Cmd-Tab optical size matches other macOS icons (full-bleed SVG looks huge).
+#[cfg(target_os = "macos")]
+fn dock_icon_pixbuf() -> Option<gtk::gdk_pixbuf::Pixbuf> {
+    use gtk::gdk_pixbuf::{Colorspace, Pixbuf};
+
+    const CANVAS: i32 = 256;
+    // Apple's icon grid leaves the squircle inside the canvas; ~80% content.
+    const CONTENT: i32 = 204;
+
+    let svg = crate::ui::app_icon_path();
+    let source = Pixbuf::from_file_at_scale(svg, CONTENT, CONTENT, true).ok()?;
+    let canvas = Pixbuf::new(Colorspace::Rgb, true, 8, CANVAS, CANVAS)?;
+    canvas.fill(0x0000_0000);
+    let w = source.width().min(CONTENT);
+    let h = source.height().min(CONTENT);
+    let x = (CANVAS - w) / 2;
+    let y = (CANVAS - h) / 2;
+    source.copy_area(0, 0, w, h, &canvas, x, y);
+    Some(canvas)
 }
 
 #[cfg(target_os = "macos")]
