@@ -1008,6 +1008,7 @@ pub fn register_icons() {
     gtk::IconTheme::for_display(&display).add_search_path(resources_dir().join("icons"));
 }
 
+#[cfg(target_os = "macos")]
 pub fn app_icon_path() -> &'static str {
     static PATH: OnceLock<String> = OnceLock::new();
     PATH.get_or_init(|| {
