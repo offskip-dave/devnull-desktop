@@ -1,5 +1,7 @@
 # Packaging
 
+Install layout, Flatpak, desktop entry, and macOS Homebrew notes. Contributor workflow lives in [CONTRIBUTING.md](../CONTRIBUTING.md).
+
 ## Flatpak
 
 Manifest: `flatpak/sh.devnull.Client.yml`.

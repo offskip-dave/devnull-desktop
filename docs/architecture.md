@@ -2,6 +2,8 @@
 
 The GTK client is a Relm4 app over GTK4 and libadwaita. It builds on Linux and macOS. It is a first-party API client, not a wrapper around the website. On a Mac it is this GTK binary, distinct from the first-party Swift app.
 
+For contributor workflow (setup, porting rules, PR checks), see [CONTRIBUTING.md](../CONTRIBUTING.md).
+
 ## Crates
 
 ```
@@ -26,7 +28,9 @@ Unsigned calls exist for public profiles and commits. Signed traffic is capped a
 
 Point the client at another origin with `DEVNULL_URL`. Default is `https://dev-null.sh`.
 
-`devnull-api` maps resources under `/api/v1`: logs, starred commits, commits (create, star, replies, quotes, related, reports, pastéis, previews, poll votes), users, following, followers, followed organizations, live start/stop, organizations (show, mentions, follow, claim), suggested, search, mention suggestions, notifications (including `GET notifications/{id}/group`), remotes, settings, mutes/blocks, export, and account deletion.
+`devnull-api` maps resources under `/api/v1`: logs, starred commits, commits (create, star, list who starred your own commit, replies, quotes, related, reports, pastéis, previews, poll votes), users, following, followers, followed organizations, live start/stop, organizations (show, commits, mentions, follow, claim), suggested, search, mention suggestions, notifications (including `GET notifications/{id}/group`), remotes, settings, mutes/blocks, export, and account deletion.
+
+When the website gains a feature that has no `/api/v1` route yet (for example Inertia-only hot topics), the GTK client may reserve UI that stays empty until the API ships. Do not call invented paths that only 404, and do not scrape HTML as a substitute.
 
 ## Sign-in
 

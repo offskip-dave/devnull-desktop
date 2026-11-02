@@ -1,18 +1,23 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use relm4::adw;
-use relm4::adw::prelude::*;
 use relm4::gtk;
 use relm4::gtk::gdk;
-use relm4::gtk::gdk_pixbuf::PixbufLoader;
 use relm4::gtk::glib;
+use relm4::gtk::prelude::*;
 
 static CACHE: OnceLock<Mutex<HashMap<String, glib::Bytes>>> = OnceLock::new();
+static INFLIGHT: OnceLock<Mutex<HashMap<String, Vec<Waiter>>>> = OnceLock::new();
 static HTTP: OnceLock<reqwest::Client> = OnceLock::new();
+
+type Waiter = Box<dyn FnOnce(glib::Bytes) + Send>;
 
 fn cache() -> &'static Mutex<HashMap<String, glib::Bytes>> {
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn inflight() -> &'static Mutex<HashMap<String, Vec<Waiter>>> {
+    INFLIGHT.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 fn http() -> &'static reqwest::Client {
@@ -20,13 +25,16 @@ fn http() -> &'static reqwest::Client {
         reqwest::Client::builder()
             .user_agent(devnull_api::USER_AGENT)
             .timeout(std::time::Duration::from_secs(20))
+            .pool_max_idle_per_host(8)
             .build()
             .unwrap_or_else(|_| reqwest::Client::new())
     })
 }
 
 fn ui_context() -> glib::MainContext {
-    glib::MainContext::default()
+    // Capture the GTK thread's context when bind runs on the UI thread so the
+    // tokio fetch completion marshals back correctly (default() can miss it).
+    glib::MainContext::ref_thread_default()
 }
 
 fn cached(url: &str) -> Option<glib::Bytes> {
@@ -51,9 +59,17 @@ async fn fetch(url: &str) -> Option<glib::Bytes> {
     if bytes.is_empty() || bytes.len() > 10 * 1024 * 1024 {
         return None;
     }
-    let owned = glib::Bytes::from_owned(bytes.to_vec());
-    remember(url.to_owned(), owned.clone());
-    Some(owned)
+    Some(glib::Bytes::from_owned(bytes.to_vec()))
+}
+
+/// Decode off the UI thread into PNG bytes GdkTexture can always load on Quartz.
+fn decode_to_png(bytes: &glib::Bytes) -> Option<glib::Bytes> {
+    let image = image::load_from_memory(bytes.as_ref()).ok()?;
+    let mut png = Vec::new();
+    image
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .ok()?;
+    Some(glib::Bytes::from_owned(png))
 }
 
 pub fn absolute_url(url: &str) -> Option<String> {
@@ -88,12 +104,8 @@ fn texture_from_bytes(bytes: &glib::Bytes) -> Option<gdk::Texture> {
             return Some(texture);
         }
     }
-    let image = image::load_from_memory(bytes.as_ref()).ok()?;
-    let mut png = Vec::new();
-    image
-        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
-        .ok()?;
-    gdk::Texture::from_bytes(&glib::Bytes::from_owned(png)).ok()
+    let png = decode_to_png(bytes)?;
+    gdk::Texture::from_bytes(&png).ok()
 }
 
 fn looks_like_svg(bytes: &glib::Bytes) -> bool {
@@ -103,67 +115,76 @@ fn looks_like_svg(bytes: &glib::Bytes) -> bool {
 }
 
 fn texture_from_svg(bytes: &glib::Bytes) -> Option<gdk::Texture> {
-    let loader = PixbufLoader::with_mime_type("image/svg+xml").ok()?;
+    let loader = relm4::gtk::gdk_pixbuf::PixbufLoader::with_mime_type("image/svg+xml").ok()?;
     loader.write(bytes.as_ref()).ok()?;
     loader.close().ok()?;
     Some(gdk::Texture::for_pixbuf(&loader.pixbuf()?))
 }
 
+fn is_png(bytes: &glib::Bytes) -> bool {
+    bytes
+        .as_ref()
+        .starts_with(&[0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'])
+}
+
+/// Coalesce duplicate URL fetches; decode to PNG off-thread; paint on the UI thread.
 fn apply_bytes(url: &str, done: impl FnOnce(glib::Bytes) + Send + 'static) {
+    let ctx = ui_context();
     if let Some(bytes) = cached(url) {
-        done(bytes);
+        if is_png(&bytes) {
+            done(bytes);
+            return;
+        }
+        let url = url.to_owned();
+        relm4::spawn(async move {
+            let prepared =
+                tokio::task::spawn_blocking(move || decode_to_png(&bytes).unwrap_or(bytes))
+                    .await
+                    .ok();
+            let Some(prepared) = prepared else {
+                return;
+            };
+            remember(url, prepared.clone());
+            ctx.invoke(move || done(prepared));
+        });
         return;
+    }
+    {
+        let mut map = match inflight().lock() {
+            Ok(map) => map,
+            Err(_) => {
+                return;
+            }
+        };
+        if let Some(waiters) = map.get_mut(url) {
+            waiters.push(Box::new(done));
+            return;
+        }
+        map.insert(url.to_owned(), vec![Box::new(done)]);
     }
     let url = url.to_owned();
-    let ctx = ui_context();
     relm4::spawn(async move {
-        let Some(bytes) = fetch(&url).await else {
+        let bytes = fetch(&url).await;
+        let waiters = inflight()
+            .lock()
+            .ok()
+            .and_then(|mut map| map.remove(&url))
+            .unwrap_or_default();
+        let Some(raw) = bytes else {
             return;
         };
-        ctx.invoke(move || done(bytes));
-    });
-}
-
-pub fn bind_avatar(avatar: &adw::Avatar, url: Option<&str>) {
-    let Some(url) = url.and_then(absolute_url) else {
-        return;
-    };
-    reapply_avatar(avatar, &url);
-    let weak = glib::SendWeakRef::from(avatar.downgrade());
-    apply_bytes(&url, move |bytes| {
-        let Some(texture) = avatar_texture(&bytes) else {
-            return;
-        };
-        let Some(avatar) = weak.upgrade() else {
-            return;
-        };
-        avatar.set_custom_image(Some(&texture));
-        avatar.queue_draw();
-    });
-}
-
-pub fn reapply_avatar(avatar: &adw::Avatar, url: &str) {
-    let Some(url) = absolute_url(url) else {
-        return;
-    };
-    let Some(bytes) = cached(&url) else {
-        return;
-    };
-    let Some(texture) = avatar_texture(&bytes) else {
-        return;
-    };
-    avatar.set_custom_image(Some(&texture));
-    avatar.queue_draw();
-}
-
-fn avatar_texture(bytes: &glib::Bytes) -> Option<gdk::Texture> {
-    let loader = PixbufLoader::new();
-    if loader.write(bytes.as_ref()).is_ok() && loader.close().is_ok() {
-        if let Some(pixbuf) = loader.pixbuf() {
-            return Some(gdk::Texture::for_pixbuf(&pixbuf));
+        let prepared = tokio::task::spawn_blocking({
+            let raw = raw.clone();
+            move || decode_to_png(&raw).unwrap_or(raw)
+        })
+        .await
+        .unwrap_or(raw);
+        remember(url, prepared.clone());
+        for waiter in waiters {
+            let payload = prepared.clone();
+            ctx.invoke(move || waiter(payload));
         }
-    }
-    texture_from_bytes(bytes)
+    });
 }
 
 fn apply_texture(url: Option<&str>, done: impl FnOnce(gdk::Texture) + Send + 'static) {
@@ -178,23 +199,27 @@ fn apply_texture(url: Option<&str>, done: impl FnOnce(gdk::Texture) + Send + 'st
 }
 
 pub fn fetch_into(url: &str, done: impl FnOnce(Option<glib::Bytes>) + Send + 'static) {
-    let ctx = ui_context();
     let Some(url) = absolute_url(url) else {
-        ctx.invoke(move || done(None));
+        done(None);
         return;
     };
-    if let Some(bytes) = cached(&url) {
-        done(Some(bytes));
-        return;
-    }
-    relm4::spawn(async move {
-        let bytes = fetch(&url).await;
-        ctx.invoke(move || done(bytes));
-    });
+    apply_bytes(&url, move |bytes| done(Some(bytes)));
 }
 
 pub fn bind_picture(picture: &gtk::Picture, url: Option<&str>) {
     bind_fitted_picture(picture, url, None);
+}
+
+pub fn reapply_picture(picture: &gtk::Picture, url: &str) {
+    let Some(url) = absolute_url(url) else {
+        return;
+    };
+    if let Some(bytes) = cached(&url) {
+        if let Some(texture) = texture_from_bytes(&bytes) {
+            picture.set_paintable(Some(&texture));
+            picture.queue_draw();
+        }
+    }
 }
 
 pub fn bind_fitted_picture(
@@ -209,6 +234,7 @@ pub fn bind_fitted_picture(
             return;
         };
         picture.set_paintable(Some(&texture));
+        picture.queue_draw();
         if let Some(frame) = frame.and_then(|frame| frame.upgrade()) {
             let ratio = capped_ratio(texture.width(), texture.height());
             frame.set_ratio(ratio);

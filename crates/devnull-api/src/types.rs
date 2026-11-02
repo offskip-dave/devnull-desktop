@@ -599,6 +599,58 @@ pub struct RemotesSettings {
     pub unread_count: i64,
 }
 
+/// A sidebar hot topic from the past eight hours of headlines.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct HotTopic {
+    #[serde(default, deserialize_with = "deserialize_stringish")]
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+}
+
+impl HotTopic {
+    pub fn list_from_value(value: serde_json::Value) -> Vec<Self> {
+        let data = value.get("data").cloned().unwrap_or(value.clone());
+        for key in ["hotTopics", "hot_topics", "topics", "headlines"] {
+            if let Some(list) = data
+                .get(key)
+                .or_else(|| value.get(key))
+                .and_then(|node| serde_json::from_value::<Vec<Self>>(node.clone()).ok())
+            {
+                return list
+                    .into_iter()
+                    .filter(|topic| !topic.id.is_empty() && !topic.name.trim().is_empty())
+                    .take(5)
+                    .collect();
+            }
+        }
+        if let Ok(list) = serde_json::from_value::<Vec<Self>>(data.clone()) {
+            return list
+                .into_iter()
+                .filter(|topic| !topic.id.is_empty() && !topic.name.trim().is_empty())
+                .take(5)
+                .collect();
+        }
+        if let Ok(page) = serde_json::from_value::<Page<Self>>(value) {
+            return page
+                .data
+                .into_iter()
+                .filter(|topic| !topic.id.is_empty() && !topic.name.trim().is_empty())
+                .take(5)
+                .collect();
+        }
+        Vec::new()
+    }
+
+    pub fn url(&self) -> String {
+        format!(
+            "{}/headlines/{}",
+            crate::default_base_url().trim_end_matches('/'),
+            self.id
+        )
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CurrentUser {
     #[serde(flatten)]
@@ -3517,6 +3569,24 @@ mod unread_count_tests {
         }));
         assert_eq!(users.len(), 1);
         assert!(users[0].is_live());
+    }
+
+    #[test]
+    fn hot_topics_list_reads_inertia_shape_and_caps_at_five() {
+        let topics = HotTopic::list_from_value(json!({
+            "hotTopics": [
+                { "id": "a", "name": "Alpha" },
+                { "id": "b", "name": "Beta" },
+                { "id": "c", "name": "Gamma" },
+                { "id": "d", "name": "Delta" },
+                { "id": "e", "name": "Epsilon" },
+                { "id": "f", "name": "Zeta" },
+                { "id": "", "name": "skip" }
+            ]
+        }));
+        assert_eq!(topics.len(), 5);
+        assert_eq!(topics[0].name, "Alpha");
+        assert!(topics[0].url().ends_with("/headlines/a"));
     }
 
     #[test]

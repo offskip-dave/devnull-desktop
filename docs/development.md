@@ -1,5 +1,7 @@
 # Development
 
+Day-to-day build, check, icons, and GTK CSS notes. For how to contribute (porting from the website, PR expectations, where to edit), see [CONTRIBUTING.md](../CONTRIBUTING.md).
+
 ## Build
 
 From the repo root:
@@ -40,7 +42,7 @@ On macOS, `cargo run -p devnull --release` is the usable build. Debug GTK on Qua
 
 ## Check
 
-CI on `main` / `production` and pull requests runs format, clippy (`-D warnings`), and tests on Ubuntu (`test`) and clippy/tests on macOS (`macos`), both with `--locked`:
+CI on `main` / `production` and pull requests runs format, clippy (`-D warnings`), and tests on Ubuntu (`test`) and clippy/tests on macOS (`macos`), both with `--locked`. Run the same locally before opening a PR (see [Contributing](../CONTRIBUTING.md#checks-before-a-pull-request)):
 
 ```bash
 cargo fmt --all -- --check

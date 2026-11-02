@@ -215,6 +215,13 @@ button.dn-user-card-live {
 
 .dn-aside-legal {
   padding-top: 8px;
+  margin: 0;
+}
+
+.dn-aside-legal > flowboxchild {
+  padding: 0;
+  min-width: 0;
+  min-height: 0;
 }
 
 .dn-feed {
@@ -936,10 +943,18 @@ textview.dn-composer-text text {
   font-size: 13px;
 }
 
+.dn-star.dn-star-own {
+  opacity: 0.45;
+}
+
 .dn-star.starred,
 .dn-star.starred *,
 .dn-star.starred image {
   color: var(--dn_primary);
+}
+
+.dn-stargazers-summary {
+  padding: 12px 16px 4px;
 }
 
 .dn-over {
@@ -1755,6 +1770,7 @@ button.dn-reaction-pick {
   background-color: transparent;
 }
 
+.dn-avatar-face picture.dn-avatar-photo,
 .dn-avatar-photo {
   border-radius: 9999px;
 }
@@ -2604,32 +2620,30 @@ entry.dn-omnibox-entry > text {
   color: var(--dn_ink);
 }
 
-.dn-aside-you {
-  padding-top: 4px;
-}
-
-.dn-aside-avatar {
-  min-width: 48px;
-  min-height: 48px;
-}
-
-.dn-aside-who {
-  min-height: 0;
-}
-
-.dn-aside-who .dn-name,
-.dn-aside-who .dn-handle,
-.dn-aside-handle {
-  min-height: 0;
-  padding: 0;
-  line-height: 1.2;
-}
-
 .dn-aside-follow {
   padding-top: 20px;
   padding-bottom: 20px;
   border-top: 1px solid var(--dn_hairline);
   border-bottom: 1px solid var(--dn_hairline);
+}
+
+.dn-hot-topics {
+  padding-top: 4px;
+}
+
+.dn-hot-topic-row {
+  padding: 8px 6px;
+  border-radius: 8px;
+  min-height: 0;
+}
+
+.dn-hot-topic-row:hover {
+  background-color: var(--dn_wash);
+}
+
+.dn-hot-topic-name {
+  font-weight: 500;
+  color: var(--dn_ink);
 }
 
 .dn-live-card {
@@ -2707,19 +2721,6 @@ entry.dn-omnibox-entry > text {
   padding: 8px 10px;
   border-radius: 6px;
   min-height: 0;
-}
-
-.dn-aside-you button {
-  padding: 0;
-  min-height: 0;
-}
-
-.dn-aside-you .dn-name {
-  font-weight: 600;
-}
-
-.dn-aside-stats {
-  margin-top: 4px;
 }
 
 button.dn-aside-stat {

@@ -13,9 +13,10 @@ use relm4::prelude::*;
 
 use devnull_api::{
     ApiError, ChatThread, Client, Commit, CommitPage, CommitTranslation, ConversationSummary,
-    CurrentUser, DeviceKey, InboxPage, InboxTab, Lane, LogKind, LogPage, MentionSuggestions,
-    Message, MessageReaction, Notification, NotificationFilter, Organization, Page, PastelAward,
-    Profile, RemoteCandidate, SearchResults, ThreadRef, Upload, User, UserPreview, UserSettings,
+    CurrentUser, DeviceKey, HotTopic, InboxPage, InboxTab, Lane, LogKind, LogPage,
+    MentionSuggestions, Message, MessageReaction, Notification, NotificationFilter, Organization,
+    Page, PastelAward, Profile, RemoteCandidate, SearchResults, ThreadRef, Upload, User,
+    UserPreview, UserSettings,
 };
 use devnull_auth::{self as auth, Pkce, APP_ID};
 
@@ -178,6 +179,10 @@ pub enum AppMsg {
         handle: String,
         kind: ConnectionsKind,
     },
+    OpenStargazers {
+        commit_id: String,
+        count: i64,
+    },
     ConnectionsLoaded {
         handle: String,
         kind: ConnectionsKind,
@@ -187,6 +192,7 @@ pub enum AppMsg {
     },
     LoadMoreConnections,
     ExpandConnectionOrgs,
+    RetryStargazers,
     VotePoll {
         commit: String,
         option: String,
@@ -218,6 +224,7 @@ pub enum AppMsg {
     SearchLoaded(Result<SearchResults, ApiError>),
     SuggestedLoaded(Result<Vec<User>, ApiError>, HashSet<String>),
     LiveFollowingLoaded(Result<Vec<User>, ApiError>),
+    HotTopicsLoaded(Result<Vec<HotTopic>, ApiError>),
     FollowUser(String, bool),
     UserFollowed(String, bool),
     RefreshSuggested,
@@ -329,6 +336,7 @@ pub struct App {
     translation_loading: HashSet<String>,
     auto_translate_retry_at: Option<Instant>,
     live_following: Vec<User>,
+    hot_topics: Vec<HotTopic>,
     muted: Vec<User>,
     blocked: Vec<User>,
     settings_tab: SettingsTab,
@@ -396,9 +404,6 @@ pub struct App {
     composer_rail: gtk::Overlay,
     composer_rail_area: gtk::DrawingArea,
     staged_paint: Rc<RefCell<ui::StagedPaint>>,
-    aside_avatar: gtk::Box,
-    aside_handle: gtk::Box,
-    aside_stats: gtk::Box,
     nav_avatar: gtk::Box,
     header_avatar: gtk::Box,
     wordmark_btn: gtk::Button,
@@ -429,6 +434,7 @@ pub struct App {
     profile_bar_scrolled: bool,
     suggested_list: gtk::Box,
     live_list: gtk::Box,
+    hot_topics_list: gtk::Box,
     settings_box: gtk::Box,
     poll_ui: ui::PollComposer,
     schedule_ui: ui::ScheduleCard,
@@ -441,6 +447,8 @@ pub struct App {
     compose_open: bool,
     connections_kind: ConnectionsKind,
     connections_handle: String,
+    connections_commit: Option<String>,
+    connections_star_count: i64,
     connections_title: String,
     connections_users: Vec<User>,
     connections_orgs: Vec<Organization>,
@@ -484,6 +492,7 @@ pub enum ProfileFeed {
 pub enum ConnectionsKind {
     Following,
     Followers,
+    Stargazers,
 }
 
 impl ConnectionsKind {
@@ -491,6 +500,7 @@ impl ConnectionsKind {
         match self {
             Self::Following => "Following",
             Self::Followers => "Followers",
+            Self::Stargazers => "Starred by",
         }
     }
 }
@@ -517,6 +527,8 @@ enum Sidebar {
 
 const MIN_BODY: usize = 3;
 const MAX_BODY: usize = 4000;
+/// Lane ring around the composer avatar fills solid at this length (web soft limit).
+const RING_FULL_AT: usize = 200;
 
 #[relm4::component(pub)]
 impl SimpleComponent for App {
@@ -2004,64 +2016,29 @@ impl SimpleComponent for App {
 
                                 gtk::Box {
                                     set_orientation: gtk::Orientation::Vertical,
-                                    set_spacing: 12,
-                                    add_css_class: "dn-aside-you",
+                                    set_spacing: 8,
+                                    add_css_class: "dn-hot-topics",
                                     #[watch]
-                                    set_visible: model.user.is_some(),
-
-                                    gtk::Button {
-                                        add_css_class: "flat",
-                                        set_overflow: gtk::Overflow::Visible,
-                                        connect_clicked => AppMsg::OpenMe,
-                                        #[wrap(Some)]
-                                        set_child = &gtk::Box {
-                                            set_orientation: gtk::Orientation::Horizontal,
-                                            set_spacing: 12,
+                                    set_visible: model.user.is_some() && !model.hot_topics.is_empty(),
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Horizontal,
+                                        set_spacing: 6,
+                                        gtk::Image {
+                                            set_icon_name: Some("dn-flame-symbolic"),
+                                            set_pixel_size: 16,
                                             set_valign: gtk::Align::Center,
-                                            #[local_ref]
-                                            aside_avatar -> gtk::Box {
-                                                add_css_class: "dn-aside-avatar",
-                                                set_overflow: gtk::Overflow::Visible,
-                                                set_valign: gtk::Align::Center,
-                                            },
-                                            gtk::Box {
-                                                set_orientation: gtk::Orientation::Vertical,
-                                                set_spacing: 0,
-                                                set_hexpand: true,
-                                                set_valign: gtk::Align::Center,
-                                                add_css_class: "dn-aside-who",
-                                                gtk::Label {
-                                                    #[watch]
-                                                    set_label: &model.me_name(),
-                                                    set_xalign: 0.0,
-                                                    set_valign: gtk::Align::Center,
-                                                    add_css_class: "dn-name",
-                                                    set_hexpand: true,
-                                                },
-                                                #[local_ref]
-                                                aside_handle -> gtk::Box {
-                                                    set_orientation: gtk::Orientation::Horizontal,
-                                                    set_spacing: 6,
-                                                    set_valign: gtk::Align::Center,
-                                                    add_css_class: "dn-aside-handle",
-                                                },
-                                            },
+                                        },
+                                        gtk::Label {
+                                            set_label: "Hot topics",
+                                            set_xalign: 0.0,
+                                            add_css_class: "dn-aside-title",
+                                            set_hexpand: true,
                                         },
                                     },
                                     #[local_ref]
-                                    aside_stats -> gtk::Box {
-                                        set_orientation: gtk::Orientation::Horizontal,
-                                        set_spacing: 16,
-                                        add_css_class: "dn-aside-stats",
-                                    },
-                                    gtk::Label {
-                                        #[watch]
-                                        set_label: &model.me_bio(),
-                                        set_xalign: 0.0,
-                                        add_css_class: "dn-muted",
-                                        set_wrap: true,
-                                        #[watch]
-                                        set_visible: !model.me_bio().is_empty(),
+                                    hot_topics_list -> gtk::Box {
+                                        set_orientation: gtk::Orientation::Vertical,
+                                        set_spacing: 2,
                                     },
                                 },
 
@@ -2154,39 +2131,50 @@ impl SimpleComponent for App {
                                     },
                                 },
 
-                                gtk::Box {
-                                    set_orientation: gtk::Orientation::Horizontal,
-                                    set_spacing: 12,
+                                gtk::FlowBox {
                                     add_css_class: "dn-aside-legal",
-                                    gtk::Button {
+                                    set_selection_mode: gtk::SelectionMode::None,
+                                    set_homogeneous: false,
+                                    set_column_spacing: 12,
+                                    set_row_spacing: 4,
+                                    set_max_children_per_line: 3,
+                                    set_min_children_per_line: 2,
+                                    set_halign: gtk::Align::Start,
+                                    append = &gtk::Button {
                                         set_label: "About",
                                         add_css_class: "flat",
                                         add_css_class: "dn-aside-link",
                                         connect_clicked => AppMsg::OpenWeb(format!("{}/about", devnull_api::default_base_url())),
                                     },
-                                    gtk::Button {
+                                    append = &gtk::Button {
+                                        set_label: "Partners",
+                                        add_css_class: "flat",
+                                        add_css_class: "dn-aside-link",
+                                        connect_clicked => AppMsg::OpenWeb(format!("{}/partners", devnull_api::default_base_url())),
+                                    },
+                                    append = &gtk::Button {
                                         set_label: "Apps",
                                         add_css_class: "flat",
                                         add_css_class: "dn-aside-link",
                                         connect_clicked => AppMsg::OpenWeb(format!("{}/apps", devnull_api::default_base_url())),
                                     },
-                                    gtk::Button {
+                                    append = &gtk::Button {
+                                        set_label: "Changelog",
+                                        add_css_class: "flat",
+                                        add_css_class: "dn-aside-link",
+                                        connect_clicked => AppMsg::OpenWeb(format!("{}/changelog", devnull_api::default_base_url())),
+                                    },
+                                    append = &gtk::Button {
                                         set_label: "Terms",
                                         add_css_class: "flat",
                                         add_css_class: "dn-aside-link",
                                         connect_clicked => AppMsg::OpenWeb(format!("{}/terms", devnull_api::default_base_url())),
                                     },
-                                    gtk::Button {
+                                    append = &gtk::Button {
                                         set_label: "Privacy",
                                         add_css_class: "flat",
                                         add_css_class: "dn-aside-link",
                                         connect_clicked => AppMsg::OpenWeb(format!("{}/privacy", devnull_api::default_base_url())),
-                                    },
-                                    gtk::Button {
-                                        set_label: "Changelog",
-                                        add_css_class: "flat",
-                                        add_css_class: "dn-aside-link",
-                                        connect_clicked => AppMsg::OpenWeb(format!("{}/changelog", devnull_api::default_base_url())),
                                     },
                                 },
                             },
@@ -2388,6 +2376,7 @@ impl SimpleComponent for App {
             translation_loading: HashSet::new(),
             auto_translate_retry_at: None,
             live_following: Vec::new(),
+            hot_topics: Vec::new(),
             muted: Vec::new(),
             blocked: Vec::new(),
             settings_tab: SettingsTab::Profile,
@@ -2451,9 +2440,6 @@ impl SimpleComponent for App {
             composer_rail: gtk::Overlay::new(),
             composer_rail_area: gtk::DrawingArea::new(),
             staged_paint: Rc::new(RefCell::new(ui::StagedPaint::new())),
-            aside_avatar: gtk::Box::new(gtk::Orientation::Horizontal, 0),
-            aside_handle: gtk::Box::new(gtk::Orientation::Horizontal, 6),
-            aside_stats: gtk::Box::new(gtk::Orientation::Horizontal, 16),
             nav_avatar: gtk::Box::new(gtk::Orientation::Horizontal, 0),
             header_avatar: gtk::Box::new(gtk::Orientation::Horizontal, 0),
             wordmark_btn: gtk::Button::new(),
@@ -2488,6 +2474,7 @@ impl SimpleComponent for App {
             profile_bar_scrolled: false,
             suggested_list: gtk::Box::new(gtk::Orientation::Vertical, 8),
             live_list: gtk::Box::new(gtk::Orientation::Vertical, 2),
+            hot_topics_list: gtk::Box::new(gtk::Orientation::Vertical, 2),
             settings_box: gtk::Box::new(gtk::Orientation::Vertical, 0),
             poll_ui,
             schedule_ui,
@@ -2500,6 +2487,8 @@ impl SimpleComponent for App {
             compose_open: false,
             connections_kind: ConnectionsKind::Following,
             connections_handle: String::new(),
+            connections_commit: None,
+            connections_star_count: 0,
             connections_title: "Following".into(),
             connections_users: Vec::new(),
             connections_orgs: Vec::new(),
@@ -2542,9 +2531,7 @@ impl SimpleComponent for App {
         let remote_image_previews = &model.remote_image_previews;
         let log_composer = &model.log_composer;
         let composer_rail = &model.composer_rail;
-        let aside_avatar = &model.aside_avatar;
-        let aside_handle = &model.aside_handle;
-        let aside_stats = &model.aside_stats;
+        let hot_topics_list = &model.hot_topics_list;
         let nav_avatar = &model.nav_avatar;
         let header_avatar = &model.header_avatar;
         let wordmark_btn = &model.wordmark_btn;
@@ -2888,6 +2875,7 @@ impl SimpleComponent for App {
                 self.client = None;
                 self.set_user(None);
                 self.live_following.clear();
+                self.hot_topics.clear();
                 self.following.clear();
                 self.suggested.clear();
                 self.user_settings = None;
@@ -2900,6 +2888,7 @@ impl SimpleComponent for App {
                 self.notifications.clear();
                 self.notif_groups.clear();
                 ui::fill_live_following(&self.live_list, &[], sender.input_sender().clone());
+                ui::fill_hot_topics(&self.hot_topics_list, &[], sender.input_sender().clone());
                 self.phase = Phase::SignedOut;
                 self.visible = "sign_in";
             }
@@ -3370,9 +3359,16 @@ impl SimpleComponent for App {
                 sender.input(AppMsg::OpenThread(ThreadRef::Direct { username }));
             }
             AppMsg::Back => {
-                if self.visible == "connections" && !self.connections_handle.is_empty() {
-                    sender.input(AppMsg::OpenProfile(self.connections_handle.clone()));
-                    return;
+                if self.visible == "connections" {
+                    if self.connections_kind == ConnectionsKind::Stargazers {
+                        self.connections_commit = None;
+                        sender.input(AppMsg::Select(self.nav));
+                        return;
+                    }
+                    if !self.connections_handle.is_empty() {
+                        sender.input(AppMsg::OpenProfile(self.connections_handle.clone()));
+                        return;
+                    }
                 }
                 sender.input(AppMsg::Select(self.nav));
             }
@@ -3996,6 +3992,8 @@ impl SimpleComponent for App {
                 self.visible = "connections";
                 self.connections_kind = kind;
                 self.connections_handle = handle.clone();
+                self.connections_commit = None;
+                self.connections_star_count = 0;
                 self.connections_title = kind.title().into();
                 self.connections_users.clear();
                 self.connections_orgs.clear();
@@ -4008,6 +4006,38 @@ impl SimpleComponent for App {
                     .append(&ui::empty_row("Loading…", "Fetching this list."));
                 self.load_connections(false, &sender);
             }
+            AppMsg::OpenStargazers { commit_id, count } => {
+                self.visible = "connections";
+                self.connections_kind = ConnectionsKind::Stargazers;
+                self.connections_handle.clear();
+                self.connections_commit = Some(commit_id);
+                self.connections_star_count = count;
+                self.connections_title = ConnectionsKind::Stargazers.title().into();
+                self.connections_users.clear();
+                self.connections_orgs.clear();
+                self.connections_cursor = None;
+                self.connections_orgs_cursor = None;
+                self.connections_orgs_expanded = false;
+                self.connections_loading = false;
+                ui::clear_list(&self.connections_list);
+                self.connections_list
+                    .append(&ui::empty_row("Loading…", "Fetching who starred this."));
+                self.load_connections(false, &sender);
+            }
+            AppMsg::RetryStargazers => {
+                if self.connections_kind != ConnectionsKind::Stargazers
+                    || self.connections_commit.is_none()
+                {
+                    return;
+                }
+                self.connections_users.clear();
+                self.connections_cursor = None;
+                self.connections_loading = false;
+                ui::clear_list(&self.connections_list);
+                self.connections_list
+                    .append(&ui::empty_row("Loading…", "Fetching who starred this."));
+                self.load_connections(false, &sender);
+            }
             AppMsg::ConnectionsLoaded {
                 handle,
                 kind,
@@ -4015,7 +4045,14 @@ impl SimpleComponent for App {
                 users,
                 organizations,
             } => {
-                if self.connections_handle != handle || self.connections_kind != kind {
+                let same = match kind {
+                    ConnectionsKind::Stargazers => {
+                        self.connections_kind == kind
+                            && self.connections_commit.as_deref() == Some(handle.as_str())
+                    }
+                    _ => self.connections_handle == handle && self.connections_kind == kind,
+                };
+                if !same {
                     return;
                 }
                 self.connections_loading = false;
@@ -4030,10 +4067,15 @@ impl SimpleComponent for App {
                     }
                     Err(err) if !more => {
                         ui::clear_list(&self.connections_list);
-                        self.connections_list.append(&ui::empty_row(
-                            "fatal: could not load this list",
-                            &err.message,
-                        ));
+                        if kind == ConnectionsKind::Stargazers {
+                            self.connections_list
+                                .append(&ui::stargazers_error_row(sender.input_sender().clone()));
+                        } else {
+                            self.connections_list.append(&ui::empty_row(
+                                "fatal: could not load this list",
+                                &err.message,
+                            ));
+                        }
                         return;
                     }
                     Err(err) => self.toast(&err.message),
@@ -4403,6 +4445,7 @@ impl SimpleComponent for App {
                 if let Some(client) = self.client.clone() {
                     ui::fill_suggestion_skeletons(&self.suggested_list);
                     let live_client = client.clone();
+                    let topics_client = client.clone();
                     let follow_client = client.clone();
                     let me = self.user.as_ref().map(|user| user.username().to_owned());
                     let known = self.following.clone();
@@ -4420,6 +4463,10 @@ impl SimpleComponent for App {
                             live_client.live_following().await,
                         ));
                     });
+                    let sender2 = sender.clone();
+                    relm4::spawn(async move {
+                        sender2.input(AppMsg::HotTopicsLoaded(topics_client.hot_topics().await));
+                    });
                 }
             }
             AppMsg::SuggestedLoaded(result, following) => {
@@ -4433,6 +4480,11 @@ impl SimpleComponent for App {
             AppMsg::LiveFollowingLoaded(result) => {
                 if let Ok(users) = result {
                     self.set_live_following(users, &sender);
+                }
+            }
+            AppMsg::HotTopicsLoaded(result) => {
+                if let Ok(topics) = result {
+                    self.set_hot_topics(topics, &sender);
                 }
             }
             AppMsg::DismissSuggested(username) => {
@@ -5889,9 +5941,6 @@ impl App {
             })
         });
         self.user = user;
-        if let Some(sender) = APP_SENDER.get() {
-            sender.emit(AppMsg::RefreshMeAvatars);
-        }
         if let Some(user) = &self.user {
             self.unread_notifications = user.unread_notifications();
             self.unread_remotes = user.unread_remotes();
@@ -5907,6 +5956,8 @@ impl App {
                 sender.clone(),
             );
         }
+        // Fill once here — avoid a second RefreshMeAvatars that rebuilt the
+        // widget and dropped in-flight picture fetches on Quartz.
         self.refresh_me_avatars();
         self.sync_chat_dock();
     }
@@ -5932,9 +5983,7 @@ impl App {
                     sender.clone(),
                 );
             }
-            ui::fill_aside_you(&self.aside_handle, &self.aside_stats, user, sender.clone());
         }
-        ui::fill_avatar(&self.aside_avatar, user, 48, false);
         ui::fill_avatar(&self.nav_avatar, user, 36, false);
         ui::fill_avatar(&self.header_avatar, user, 32, false);
         self.user_menu.set_user(user);
@@ -5998,7 +6047,7 @@ impl App {
     }
 
     fn composer_fill_amount(&self) -> f64 {
-        (self.composer_len as f64 / MAX_BODY as f64).clamp(0.0, 1.0)
+        (self.composer_len as f64 / RING_FULL_AT as f64).clamp(0.0, 1.0)
     }
 
     fn sync_composer_suggests(&mut self, view: &gtk::TextView, sender: &ComponentSender<App>) {
@@ -6174,9 +6223,14 @@ impl App {
             self.render_profile(sender);
         }
         if let Some(client) = self.client.clone() {
+            let topics_client = client.clone();
             let sender2 = sender.clone();
             relm4::spawn(async move {
                 sender2.input(AppMsg::LiveFollowingLoaded(client.live_following().await));
+            });
+            let sender2 = sender.clone();
+            relm4::spawn(async move {
+                sender2.input(AppMsg::HotTopicsLoaded(topics_client.hot_topics().await));
             });
         }
     }
@@ -6215,6 +6269,7 @@ impl App {
         self.connections_loading = true;
         let handle = self.connections_handle.clone();
         let kind = self.connections_kind;
+        let commit_id = self.connections_commit.clone();
         let people_cursor = if more {
             self.connections_cursor.clone()
         } else {
@@ -6236,6 +6291,10 @@ impl App {
                 ConnectionsKind::Followers => {
                     client.followers(&handle, people_cursor.as_deref()).await
                 }
+                ConnectionsKind::Stargazers => match commit_id.as_deref() {
+                    Some(id) => client.commit_stars(id, people_cursor.as_deref()).await,
+                    None => Err(ApiError::decode()),
+                },
             };
             let organizations =
                 if kind == ConnectionsKind::Following && !(more && orgs_cursor.is_none()) {
@@ -6250,7 +6309,11 @@ impl App {
                     })
                 };
             sender2.input(AppMsg::ConnectionsLoaded {
-                handle,
+                handle: if kind == ConnectionsKind::Stargazers {
+                    commit_id.unwrap_or(handle)
+                } else {
+                    handle
+                },
                 kind,
                 more,
                 users,
@@ -6267,6 +6330,7 @@ impl App {
             &self.connections_orgs,
             self.connections_orgs_expanded,
             self.connections_orgs_cursor.is_some(),
+            self.connections_star_count,
             self.user.as_ref().map(|user| user.username()),
             self.user.as_ref().is_some_and(|user| {
                 user.username()
@@ -6343,20 +6407,32 @@ impl App {
             return;
         };
         let me = self.user.as_ref().map(|user| user.user.id.as_str());
-        if commit.is_own(me) {
-            return;
-        }
-        if commit
-            .status
-            .as_deref()
-            .is_some_and(|status| status != "approved")
-        {
-            return;
-        }
         let (starred, count) = self.stars.get(id).copied().unwrap_or((
             commit.starred.unwrap_or(false),
             commit.stars_count.unwrap_or(0),
         ));
+        if commit.is_own(me) {
+            if count > 0 {
+                sender.input(AppMsg::OpenStargazers {
+                    commit_id: id.to_owned(),
+                    count,
+                });
+            }
+            return;
+        }
+        let org_ids = self
+            .user
+            .as_ref()
+            .map(CurrentUser::org_ids)
+            .unwrap_or_default();
+        if commit.is_owned_by(me, &org_ids)
+            || commit
+                .status
+                .as_deref()
+                .is_some_and(|status| status != "approved")
+        {
+            return;
+        }
         let next = !starred;
         let next_count = if next {
             count + 1
@@ -6434,6 +6510,7 @@ impl App {
         };
         let remotes = self.remotes_on();
         let live_client = client.clone();
+        let topics_client = client.clone();
         let sender2 = sender.clone();
         relm4::spawn(async move {
             sender2.input(AppMsg::UnreadPolled(client.unread_counts(remotes).await));
@@ -6444,6 +6521,19 @@ impl App {
                 live_client.live_following().await,
             ));
         });
+        let sender2 = sender.clone();
+        relm4::spawn(async move {
+            sender2.input(AppMsg::HotTopicsLoaded(topics_client.hot_topics().await));
+        });
+    }
+
+    fn set_hot_topics(&mut self, topics: Vec<HotTopic>, sender: &ComponentSender<App>) {
+        self.hot_topics = topics.into_iter().take(5).collect();
+        ui::fill_hot_topics(
+            &self.hot_topics_list,
+            &self.hot_topics,
+            sender.input_sender().clone(),
+        );
     }
 
     fn set_live_following(&mut self, mut users: Vec<User>, sender: &ComponentSender<App>) {
@@ -6534,13 +6624,6 @@ impl App {
         self.user
             .as_ref()
             .map(|u| format!("@{}", u.username()))
-            .unwrap_or_default()
-    }
-
-    fn me_bio(&self) -> String {
-        self.user
-            .as_ref()
-            .and_then(|u| u.user.bio.clone())
             .unwrap_or_default()
     }
 

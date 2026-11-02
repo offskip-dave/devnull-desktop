@@ -26,11 +26,18 @@ The first commit on an account still has to be made on the web. Legal pages and 
 
 | Page | Covers |
 | --- | --- |
+| [Contributing](CONTRIBUTING.md) | Setup, where to edit, porting from the web, PR checks |
 | [Architecture](docs/architecture.md) | Crates, signed API, auth, layout, notifications, remotes |
-| [Development](docs/development.md) | Build, test, icons, local prefs |
+| [Development](docs/development.md) | Build, test, icons, GTK CSS, local prefs |
 | [Packaging](docs/packaging.md) | Flatpak, desktop file, `devnull://`, Homebrew |
 
 Visual language follows the website’s [DESIGN.md](https://github.com/dev-null-sh/dev-null.sh/blob/production/DESIGN.md).
+
+## Contributing
+
+Bug fixes, features, docs, and packaging help are welcome. Start with [CONTRIBUTING.md](CONTRIBUTING.md): how to run the app, which crate to touch, how we port changelog items from the website, and the `fmt` / clippy / test gate CI enforces.
+
+Linux is the primary platform; keep macOS (Homebrew GTK) green. Do not add a WebView for sign-in or invent `/api/v1` routes that do not exist yet.
 
 ## Requirements
 

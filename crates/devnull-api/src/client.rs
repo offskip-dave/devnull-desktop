@@ -237,6 +237,18 @@ impl Client {
             .await
     }
 
+    /// Who starred your own commit, newest first, 20 a page. Authors only; others get 404.
+    pub async fn commit_stars(
+        &self,
+        id: &str,
+        cursor: Option<&str>,
+    ) -> Result<Page<User>, ApiError> {
+        let value: serde_json::Value = self
+            .get(&format!("commits/{id}/stars"), &[("cursor", cursor)])
+            .await?;
+        Ok(people_page(value))
+    }
+
     pub async fn user(&self, username: &str) -> Result<User, ApiError> {
         self.profile(username).await.map(|p| p.user)
     }
@@ -478,6 +490,25 @@ impl Client {
                         .filter(User::is_live)
                         .take(3)
                         .collect());
+                }
+                Err(err) if err.status == 404 => continue,
+                Err(err) => return Err(err),
+            }
+        }
+        Ok(Vec::new())
+    }
+
+    /// Up to five hot topics for the desktop aside. Empty until the API ships the list.
+    pub async fn hot_topics(&self) -> Result<Vec<HotTopic>, ApiError> {
+        for path in ["me/hot-topics", "hot-topics", "headlines/hot"] {
+            match self
+                .execute(self.signed_request(Method::GET, path, &[], None, JSON_NAMESPACE)?)
+                .await
+            {
+                Ok(bytes) => {
+                    let value: serde_json::Value =
+                        serde_json::from_slice(&bytes).map_err(|_| ApiError::decode())?;
+                    return Ok(HotTopic::list_from_value(value));
                 }
                 Err(err) if err.status == 404 => continue,
                 Err(err) => return Err(err),

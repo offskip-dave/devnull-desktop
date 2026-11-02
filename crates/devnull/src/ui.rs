@@ -3,10 +3,10 @@ use chrono::{
 };
 use devnull_api::{
     event_line, Achievements, Activity, ActivityCell, ApiError, Badge, ChatThread, Client, Commit,
-    CommitImage, CommitTranslation, ConversationSummary, CurrentUser, Embed, Lane, LinkPreview,
-    MentionSuggestions, Message, MessageImage, MessageReaction, Notification, Organization, Poll,
-    Profile, RemoteCandidate, RemotesSettings, SearchResults, Streaks, ThreadRef,
-    TranslationLanguage, Upload, User, UserPreview,
+    CommitImage, CommitTranslation, ConversationSummary, CurrentUser, Embed, HotTopic, Lane,
+    LinkPreview, MentionSuggestions, Message, MessageImage, MessageReaction, Notification,
+    Organization, Poll, Profile, RemoteCandidate, RemotesSettings, SearchResults, Streaks,
+    ThreadRef, TranslationLanguage, Upload, User, UserPreview,
 };
 use relm4::adw;
 use relm4::adw::prelude::{AdwDialogExt, AlertDialogExt};
@@ -2493,16 +2493,24 @@ fn rebind_avatar(box_: &gtk::Box, user: &User, size: i32) -> bool {
     let Some(root) = box_.first_child() else {
         return false;
     };
-    let Some(av) = find_widget::<adw::Avatar>(&root) else {
-        return false;
-    };
-    av.set_text(Some(user.display_name()));
-    av.set_size(size);
-    av.set_size_request(size, size);
     let url = user.avatar_src();
-    images::bind_avatar(&av, url.as_deref());
-    if let Some(url) = url.as_deref() {
-        images::reapply_avatar(&av, url);
+    let picture = find_widget::<gtk::Picture>(&root);
+    // Photo faces use GtkPicture (org pattern). Initials-only AdwAvatar rebuilds
+    // when a URL appears later.
+    if url.is_some() && picture.is_none() {
+        return false;
+    }
+    if let Some(av) = find_widget::<adw::Avatar>(&root) {
+        av.set_text(Some(user.display_name()));
+        av.set_size(size);
+        av.set_size_request(size, size);
+    } else if picture.is_none() {
+        return false;
+    }
+    if let (Some(url), Some(picture)) = (url.as_deref(), picture) {
+        picture.set_size_request(size, size);
+        images::reapply_picture(&picture, url);
+        images::bind_picture(&picture, Some(url));
     }
     true
 }
@@ -2511,17 +2519,12 @@ fn find_widget<T: IsA<gtk::Widget>>(root: &gtk::Widget) -> Option<T> {
     if let Ok(found) = root.clone().downcast::<T>() {
         return Some(found);
     }
-    let children = root.observe_children();
-    for i in 0..children.n_items() {
-        let Some(item) = children.item(i) else {
-            continue;
-        };
-        let Ok(widget) = item.downcast::<gtk::Widget>() else {
-            continue;
-        };
+    let mut child = root.first_child();
+    while let Some(widget) = child {
         if let Some(found) = find_widget::<T>(&widget) {
             return Some(found);
         }
+        child = widget.next_sibling();
     }
     None
 }
@@ -2615,87 +2618,6 @@ fn author_menu_row(
         menu.popdown();
         sender.emit(AppMsg::PostAs(handle.clone()));
     });
-    btn
-}
-
-pub fn fill_aside_you(
-    handle: &gtk::Box,
-    stats: &gtk::Box,
-    user: Option<&User>,
-    sender: Sender<AppMsg>,
-) {
-    while let Some(child) = handle.first_child() {
-        handle.remove(&child);
-    }
-    while let Some(child) = stats.first_child() {
-        stats.remove(&child);
-    }
-    let Some(user) = user else {
-        return;
-    };
-    handle.append(&handle_dot(Some(user)));
-    let at = gtk::Label::new(Some(&format!("@{}", user.username)));
-    at.add_css_class("dn-handle");
-    at.set_xalign(0.0);
-    at.set_valign(gtk::Align::Center);
-    handle.append(&at);
-
-    let commits = user.commits_count.unwrap_or(0);
-    let following = user.following_count.unwrap_or(0);
-    let followers = user.followers_count.unwrap_or(0);
-    let username = user.username.clone();
-    stats.append(&aside_stat(
-        commits,
-        if commits == 1 { "commit" } else { "commits" },
-        sender.clone(),
-        || AppMsg::OpenMe,
-    ));
-    stats.append(&aside_stat(following, "following", sender.clone(), {
-        let handle = username.clone();
-        move || AppMsg::OpenConnections {
-            handle: handle.clone(),
-            kind: ConnectionsKind::Following,
-        }
-    }));
-    stats.append(&aside_stat(
-        followers,
-        if followers == 1 {
-            "follower"
-        } else {
-            "followers"
-        },
-        sender,
-        {
-            let handle = username.clone();
-            move || AppMsg::OpenConnections {
-                handle: handle.clone(),
-                kind: ConnectionsKind::Followers,
-            }
-        },
-    ));
-}
-
-fn aside_stat(
-    count: i64,
-    label: &str,
-    sender: Sender<AppMsg>,
-    on_click: impl Fn() -> AppMsg + 'static,
-) -> gtk::Button {
-    let btn = gtk::Button::new();
-    btn.add_css_class("flat");
-    btn.add_css_class("dn-aside-stat");
-    pointer(&btn);
-    let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-    let n = gtk::Label::new(Some(&format_count(count)));
-    n.add_css_class("dn-aside-stat-count");
-    n.add_css_class("dn-mono");
-    let word = gtk::Label::new(Some(label));
-    word.add_css_class("dn-aside-stat-label");
-    word.add_css_class("dn-muted");
-    row.append(&n);
-    row.append(&word);
-    btn.set_child(Some(&row));
-    btn.connect_clicked(move |_| sender.emit(on_click()));
     btn
 }
 
@@ -2815,15 +2737,45 @@ fn with_org_ring(face: gtk::Box, size: i32, hex: &str) -> gtk::Widget {
 
 pub fn avatar_widget(user: Option<&User>, size: i32, ring: bool) -> gtk::Widget {
     let name = user.map(User::display_name);
-    let av = adw::Avatar::new(size, name, true);
-    av.add_css_class("dn-avatar");
-    av.set_size_request(size, size);
     let url = user.and_then(User::avatar_src);
-    images::bind_avatar(&av, url.as_deref());
-    if let Some(url) = url {
-        av.connect_map(move |av| images::reapply_avatar(av, &url));
-    }
-    let face: gtk::Widget = av.upcast();
+    let face = match url.as_deref() {
+        Some(url) => {
+            // Same GtkPicture clip path as org avatars — AdwAvatar custom-image
+            // stays blank on macOS Quartz. Initials sit underneath until the
+            // photo paints (Picture is opaque once loaded).
+            let overlay = gtk::Overlay::new();
+            overlay.add_css_class("dn-avatar-face");
+            overlay.set_overflow(gtk::Overflow::Hidden);
+            overlay.set_size_request(size, size);
+            overlay.set_hexpand(false);
+            overlay.set_vexpand(false);
+            let av = adw::Avatar::new(size, name, true);
+            av.add_css_class("dn-avatar");
+            av.set_size_request(size, size);
+            overlay.set_child(Some(&av));
+            let picture = gtk::Picture::new();
+            picture.add_css_class("dn-avatar-photo");
+            picture.set_content_fit(gtk::ContentFit::Cover);
+            picture.set_can_shrink(true);
+            picture.set_size_request(size, size);
+            picture.set_halign(gtk::Align::Fill);
+            picture.set_valign(gtk::Align::Fill);
+            picture.set_hexpand(true);
+            picture.set_vexpand(true);
+            images::bind_picture(&picture, Some(url));
+            let mapped = url.to_owned();
+            picture.connect_map(move |picture| images::reapply_picture(picture, &mapped));
+            overlay.add_overlay(&picture);
+            overlay.upcast()
+        }
+        None => {
+            let av = adw::Avatar::new(size, name, true);
+            av.add_css_class("dn-avatar");
+            av.set_size_request(size, size);
+            av.upcast()
+        }
+    };
+
     if user.is_some_and(User::is_live) {
         return live_avatar_chrome(face, user);
     }
@@ -3778,9 +3730,27 @@ fn commit_actions(commit: &Commit, ctx: &FeedCtx, focused: bool) -> gtk::Box {
     star.add_css_class("dn-star");
     pointer(&star);
     paint_star(&star, starred, count);
+    let own = commit.is_own(ctx.me_id.as_deref());
     let owned = commit.is_owned_by(ctx.me_id.as_deref(), &ctx.org_ids);
-    if owned {
+    if own {
+        if count > 0 {
+            star.set_tooltip_text(Some("Starred by"));
+            let id = commit.id.clone();
+            let star_sender = ctx.sender.clone();
+            star.connect_clicked(move |_| {
+                star_sender.emit(AppMsg::OpenStargazers {
+                    commit_id: id.clone(),
+                    count,
+                });
+            });
+        } else {
+            star.set_sensitive(false);
+            star.add_css_class("dn-star-own");
+            star.set_tooltip_text(Some("You can't star your own commit"));
+        }
+    } else if owned {
         star.set_sensitive(false);
+        star.add_css_class("dn-star-own");
         star.set_tooltip_text(Some("You can't star your own commit"));
     } else {
         let id = commit.id.clone();
@@ -10534,6 +10504,34 @@ fn achievement_ranks_page(achievements: &Achievements, lane_class_name: &str) ->
     list
 }
 
+pub fn fill_hot_topics(box_: &gtk::Box, topics: &[HotTopic], sender: Sender<AppMsg>) {
+    while let Some(child) = box_.first_child() {
+        box_.remove(&child);
+    }
+    for topic in topics.iter().take(5) {
+        box_.append(&hot_topic_row(topic, sender.clone()));
+    }
+}
+
+fn hot_topic_row(topic: &HotTopic, sender: Sender<AppMsg>) -> gtk::Button {
+    let row = gtk::Button::new();
+    pointer(&row);
+    row.add_css_class("flat");
+    row.add_css_class("dn-hot-topic-row");
+    row.set_tooltip_text(Some(&format!("Open {}", topic.name)));
+    let label = gtk::Label::new(Some(&topic.name));
+    label.add_css_class("dn-hot-topic-name");
+    label.set_xalign(0.0);
+    label.set_ellipsize(pango::EllipsizeMode::End);
+    label.set_hexpand(true);
+    row.set_child(Some(&label));
+    let url = topic.url();
+    row.connect_clicked(move |_| {
+        sender.emit(AppMsg::OpenWeb(url.clone()));
+    });
+    row
+}
+
 pub fn fill_live_following(box_: &gtk::Box, users: &[User], sender: Sender<AppMsg>) {
     while let Some(child) = box_.first_child() {
         box_.remove(&child);
@@ -10851,6 +10849,7 @@ pub fn fill_connections(
     organizations: &[Organization],
     orgs_expanded: bool,
     more_orgs: bool,
+    star_count: i64,
     me: Option<&str>,
     own_profile: bool,
     sender: Sender<AppMsg>,
@@ -10866,9 +10865,16 @@ pub fn fill_connections(
                 "fatal: no followers yet",
                 "When people follow them, they show up here.",
             ),
+            ConnectionsKind::Stargazers => (
+                "fatal: no stars yet",
+                "When someone stars this commit, they show up here.",
+            ),
         };
         list.append(&empty_row(fatal, detail));
         return;
+    }
+    if kind == ConnectionsKind::Stargazers {
+        list.append(&stargazers_summary_row(star_count.max(users.len() as i64)));
     }
     if kind == ConnectionsKind::Following && !organizations.is_empty() {
         list.append(&section_row("Organizations"));
@@ -10909,6 +10915,42 @@ pub fn fill_connections(
 
 pub fn shows_follows_you_chip(kind: ConnectionsKind, own_profile: bool, follows_you: bool) -> bool {
     kind == ConnectionsKind::Followers && !own_profile && follows_you
+}
+
+fn stargazers_summary_row(count: i64) -> gtk::ListBoxRow {
+    let row = gtk::ListBoxRow::new();
+    row.set_activatable(false);
+    row.add_css_class("dn-stargazers-summary");
+    let label = gtk::Label::new(Some(&if count == 1 {
+        "1 person starred this commit.".into()
+    } else {
+        format!("{count} people starred this commit.")
+    }));
+    label.add_css_class("dn-muted");
+    label.set_xalign(0.0);
+    label.set_wrap(true);
+    row.set_child(Some(&label));
+    row
+}
+
+pub fn stargazers_error_row(sender: Sender<AppMsg>) -> gtk::ListBoxRow {
+    let row = gtk::ListBoxRow::new();
+    row.set_activatable(false);
+    let col = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    col.add_css_class("dn-empty");
+    let fatal = gtk::Label::new(Some("fatal: could not load stars"));
+    fatal.add_css_class("dn-empty-fatal");
+    fatal.set_xalign(0.0);
+    col.append(&fatal);
+    let retry = gtk::Button::with_label("Try again");
+    retry.add_css_class("flat");
+    retry.add_css_class("dn-text-btn");
+    retry.set_halign(gtk::Align::Start);
+    pointer(&retry);
+    retry.connect_clicked(move |_| sender.emit(AppMsg::RetryStargazers));
+    col.append(&retry);
+    row.set_child(Some(&col));
+    row
 }
 
 fn connection_user_row(
