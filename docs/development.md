@@ -1,6 +1,6 @@
 # Development
 
-Day-to-day build, check, icons, and GTK CSS notes. For how to contribute (porting from the website, PR expectations, where to edit), see [CONTRIBUTING.md](../CONTRIBUTING.md).
+Day-to-day build, check, icons, and GTK CSS notes. For how to contribute (porting from the website, PR expectations, where to edit), see [CONTRIBUTING.md](../CONTRIBUTING.md). For the day-one→present changelog ledger (matrix + every production `feat`), see [Changelog parity](changelog-parity.md).
 
 ## Build
 

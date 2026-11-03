@@ -220,8 +220,15 @@ button.dn-user-card-live {
 
 .dn-aside-legal > flowboxchild {
   padding: 0;
+  margin: 0;
   min-width: 0;
   min-height: 0;
+}
+
+.dn-aside-legal button.dn-aside-link {
+  min-width: 0;
+  padding-left: 0;
+  padding-right: 0;
 }
 
 .dn-feed {
@@ -2631,6 +2638,24 @@ entry.dn-omnibox-entry > text {
   padding-top: 4px;
 }
 
+@keyframes dn-flame-flicker {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  40% {
+    opacity: 0.55;
+  }
+  70% {
+    opacity: 0.85;
+  }
+}
+
+.dn-hot-topics > box:first-child image {
+  color: var(--dn_lane_0);
+  animation: dn-flame-flicker 5s ease-in-out infinite;
+}
+
 .dn-hot-topic-row {
   padding: 8px 6px;
   border-radius: 8px;
@@ -2642,8 +2667,33 @@ entry.dn-omnibox-entry > text {
 }
 
 .dn-hot-topic-name {
-  font-weight: 500;
+  font-weight: 700;
   color: var(--dn_ink);
+}
+
+.dn-hot-topic-summary {
+  font-size: 12px;
+}
+
+.dn-back-to-present {
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background-color: var(--dn_primary);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 500;
+  box-shadow: 0 4px 16px alpha(black, 0.18);
+}
+
+.dn-back-to-present:hover {
+  background-color: var(--dn_primary);
+  color: #ffffff;
+  filter: brightness(1.05);
+}
+
+.dn-back-to-present image {
+  color: #ffffff;
 }
 
 .dn-live-card {

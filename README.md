@@ -8,19 +8,22 @@ On a Mac this is the Homebrew GTK build, not a replacement for the Swift app at 
 
 ## Features
 
-- Sign in with GitHub in the system browser (`devnull://linux/auth` on both Linux and macOS)
+- Sign in with GitHub in the system browser (`devnull://linux/auth` on both Linux and macOS); device redeem records terms acceptance
 - Following, Latest, Trending, and Starred logs
 - Composer: text, images, polls, scheduling, preview, emoji picker, `:` shortcodes, and `@` mention suggestions
-- Commit threads: replies, quotes, related commits, stars, pastéis, share, report, poll voting
-- Profiles: activity graph, achievements, XP, follow / follow back, following and followers lists, share link or ID, Go live / End stream, GitHub edit/sync
-- Organization pages: mentions, follow, claim, lane color, share
+- Commit threads: replies, quotes, related commits, stars, pastéis, poll voting; more menu for copy link, Send in Remotes, pin / unpin, follow / mute / block, report, and delete (with 30s undo)
+- Profiles: activity graph, achievements, XP, follow / follow back, following and followers lists (Follows you chips), share link or ID, Go live / End stream, GitHub edit/sync; hover-card Remote / mute / block
+- Organization pages: commits, mentions, follow, claim, lane color, share
 - Notifications with filters, grouped stars, named pairs, and mention avatars
-- Remotes: Open / Stashed inbox, search, dock, settings, new org / new remote
+- Remotes: Open / Stashed inbox, search, dock, settings, new org / new remote; Back to present when scrolled far up a thread
+- Aside: hot topics (with recap when the API sends one), live following, who to follow
 - Search (`Ctrl+K` or `/`)
 - Settings: Profile, Appearance, Terminal, Safety, Devices
 - Keyboard shortcuts (`?`)
 
-The first commit on an account still has to be made on the web. Legal pages and a few profile actions open in the browser.
+The first commit on an account still has to be made on the web. Legal pages, headline discussion pages, and a few profile actions open in the browser.
+
+What is ported from the website changelog — every production day from **2026-10-15** (day one) through today — lives in [Changelog parity](docs/changelog-parity.md).
 
 ## Docs
 
@@ -28,6 +31,7 @@ The first commit on an account still has to be made on the web. Legal pages and 
 | --- | --- |
 | [Contributing](CONTRIBUTING.md) | Setup, where to edit, porting from the web, PR checks |
 | [Architecture](docs/architecture.md) | Crates, signed API, auth, layout, notifications, remotes |
+| [Changelog parity](docs/changelog-parity.md) | Web changelog items: done, partial, waiting, skipped |
 | [Development](docs/development.md) | Build, test, icons, GTK CSS, local prefs |
 | [Packaging](docs/packaging.md) | Flatpak, desktop file, `devnull://`, Homebrew |
 

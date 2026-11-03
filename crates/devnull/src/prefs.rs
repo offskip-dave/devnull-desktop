@@ -51,6 +51,9 @@ pub struct Prefs {
     #[serde(default)]
     #[allow(dead_code)]
     pub message_reactions: HashMap<String, Vec<String>>,
+    /// Last three search queries per user id, newest first.
+    #[serde(default)]
+    pub recent_searches: HashMap<String, Vec<String>>,
 }
 
 fn default_true() -> bool {
@@ -69,6 +72,7 @@ impl Default for Prefs {
             pinned_messages: HashMap::new(),
             pin_warning_dismissed: false,
             message_reactions: HashMap::new(),
+            recent_searches: HashMap::new(),
         }
     }
 }
@@ -111,6 +115,30 @@ impl Prefs {
 
     pub fn remember_visit(&mut self, user_id: &str, log: &str, at: String) {
         self.last_visits.insert(Self::visit_key(user_id, log), at);
+        self.persist();
+    }
+
+    pub fn recent_searches(&self, user_id: &str) -> Vec<String> {
+        self.recent_searches
+            .get(user_id)
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    pub fn remember_search(&mut self, user_id: &str, query: &str) {
+        let term = query.trim();
+        if term.is_empty() || term.len() > 100 {
+            return;
+        }
+        let recent = self.recent_searches.entry(user_id.to_owned()).or_default();
+        recent.retain(|known| !known.eq_ignore_ascii_case(term));
+        recent.insert(0, term.to_owned());
+        recent.truncate(3);
+        self.persist();
+    }
+
+    pub fn clear_recent_searches(&mut self, user_id: &str) {
+        self.recent_searches.remove(user_id);
         self.persist();
     }
 

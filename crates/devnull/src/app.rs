@@ -15,8 +15,8 @@ use devnull_api::{
     ApiError, ChatThread, Client, Commit, CommitPage, CommitTranslation, ConversationSummary,
     CurrentUser, DeviceKey, HotTopic, InboxPage, InboxTab, Lane, LogKind, LogPage,
     MentionSuggestions, Message, MessageReaction, Notification, NotificationFilter, Organization,
-    Page, PastelAward, Profile, RemoteCandidate, SearchResults, ThreadRef, Upload, User,
-    UserPreview, UserSettings,
+    Page, PastelAward, Profile, RemoteCandidate, ReplyParticipant, SearchResults, ThreadRef,
+    Upload, User, UserPreview, UserSettings,
 };
 use devnull_auth::{self as auth, Pkce, APP_ID};
 
@@ -109,16 +109,35 @@ pub enum AppMsg {
     TogglePreview,
     SetPasteis(bool),
     PasteisSaved(Result<CurrentUser, ApiError>),
-    StartRemote,
+    StartRemote(String),
     CopyCommitLink,
     CopyPermalink(String),
     ReportCommit(Commit),
+    ConfirmDeleteCommit(String),
+    DeleteCommit(String),
+    CommitDeleted(String, Result<(), ApiError>),
+    UndoDeleteCommit,
+    CommitRestored(Result<Commit, ApiError>),
+    ShareCommit(String),
+    ConfirmShareCommit {
+        username: String,
+        commit_id: String,
+    },
+    ShareCommitSent(String, Result<devnull_api::Message, ApiError>),
+    TogglePinCommit(String, bool),
+    CommitPinToggled(Result<Commit, ApiError>),
     SubmitReport {
         id: String,
         reason: String,
         details: String,
+        images: Vec<Upload>,
     },
     ReportSubmitted(Result<(), ApiError>),
+    ToggleReplyParticipant(String),
+    SetReplyExcluded(HashSet<String>),
+    SetRemoteLinkCard(Option<Option<String>>),
+    ClearRecentSearches,
+    OpenReplyRecipients,
     ShowShortcuts,
     ShortcutCompose,
     ShortcutOnCommit(char),
@@ -348,6 +367,11 @@ pub struct App {
     open_commit: Option<Commit>,
     ancestors: Vec<Commit>,
     related_commits: Vec<Commit>,
+    open_series: Vec<Commit>,
+    reply_participants: Vec<ReplyParticipant>,
+    reply_excluded: HashSet<String>,
+    /// `None` = default first link; `Some(None)` = no card; `Some(Some(url))` = chosen.
+    remote_link_card: Option<Option<String>>,
     thread_replies: Vec<Commit>,
     nested_replies: HashMap<String, Vec<Commit>>,
     expanded_replies: HashSet<String>,
@@ -394,8 +418,11 @@ pub struct App {
     new_posts: gtk::Button,
     aside_toast: gtk::Revealer,
     aside_toast_label: gtk::Label,
+    aside_toast_action: gtk::Button,
     toast_commit: Rc<RefCell<Option<String>>>,
+    toast_undo: Rc<Cell<bool>>,
     toast_hide: Rc<RefCell<Option<glib::SourceId>>>,
+    pending_undo: Option<Commit>,
     stars: HashMap<String, (bool, i64)>,
     pasteis: HashMap<String, i64>,
     composer_avatar: gtk::Box,
@@ -418,6 +445,7 @@ pub struct App {
     inbox_list: gtk::ListBox,
     thread_list: gtk::ListBox,
     thread_scroll: gtk::ScrolledWindow,
+    thread_pane: gtk::Overlay,
     thread_follow: Rc<Cell<bool>>,
     composer: gtk::TextView,
     reply_composer: gtk::TextView,
@@ -442,6 +470,8 @@ pub struct App {
     schedule_card: gtk::Box,
     image_previews: gtk::Box,
     remote_image_previews: gtk::Box,
+    reply_participants_box: gtk::Box,
+    remote_link_card_btn: gtk::MenuButton,
     compose_dialog: adw::Dialog,
     compose_host: gtk::Box,
     compose_open: bool,
@@ -1350,6 +1380,13 @@ impl SimpleComponent for App {
                             gtk::Box {
                                 set_orientation: gtk::Orientation::Vertical,
                                 add_css_class: "dn-composer",
+                                #[local_ref]
+                                reply_participants_box -> gtk::Box {
+                                    set_orientation: gtk::Orientation::Horizontal,
+                                    set_margin_start: 8,
+                                    set_margin_end: 8,
+                                    set_margin_top: 4,
+                                },
                                 gtk::ScrolledWindow {
                                     set_min_content_height: 60,
                                     set_max_content_height: 120,
@@ -1794,14 +1831,11 @@ impl SimpleComponent for App {
                                     },
                                 },
                                 #[local_ref]
-                                thread_scroll -> gtk::ScrolledWindow {
+                                thread_pane -> gtk::Overlay {
                                     set_vexpand: true,
                                     set_hexpand: true,
-                                    set_hscrollbar_policy: gtk::PolicyType::Never,
-                                    add_css_class: "dn-thread-scroll",
                                     #[watch]
                                     set_visible: model.thread_ref.is_some(),
-                                    set_child: Some(&model.thread_list),
                                 },
                                 gtk::Box {
                                     set_orientation: gtk::Orientation::Vertical,
@@ -1910,6 +1944,8 @@ impl SimpleComponent for App {
                                             set_size_request: (40, 40),
                                             connect_clicked => AppMsg::StartCall,
                                         },
+                                        #[local_ref]
+                                        remote_link_card_btn -> gtk::MenuButton {},
                                         gtk::Overlay {
                                             add_css_class: "dn-remote-input",
                                             set_hexpand: true,
@@ -2137,43 +2173,51 @@ impl SimpleComponent for App {
                                     set_homogeneous: false,
                                     set_column_spacing: 12,
                                     set_row_spacing: 4,
-                                    set_max_children_per_line: 3,
-                                    set_min_children_per_line: 2,
-                                    set_halign: gtk::Align::Start,
+                                    // Pack by natural width so every gap is column_spacing (not a stretched grid).
+                                    set_max_children_per_line: 6,
+                                    set_min_children_per_line: 1,
+                                    set_halign: gtk::Align::Fill,
+                                    set_hexpand: true,
                                     append = &gtk::Button {
                                         set_label: "About",
                                         add_css_class: "flat",
                                         add_css_class: "dn-aside-link",
+                                        set_halign: gtk::Align::Start,
                                         connect_clicked => AppMsg::OpenWeb(format!("{}/about", devnull_api::default_base_url())),
                                     },
                                     append = &gtk::Button {
                                         set_label: "Partners",
                                         add_css_class: "flat",
                                         add_css_class: "dn-aside-link",
+                                        set_halign: gtk::Align::Start,
                                         connect_clicked => AppMsg::OpenWeb(format!("{}/partners", devnull_api::default_base_url())),
                                     },
                                     append = &gtk::Button {
                                         set_label: "Apps",
                                         add_css_class: "flat",
                                         add_css_class: "dn-aside-link",
+                                        set_halign: gtk::Align::Start,
                                         connect_clicked => AppMsg::OpenWeb(format!("{}/apps", devnull_api::default_base_url())),
                                     },
                                     append = &gtk::Button {
                                         set_label: "Changelog",
                                         add_css_class: "flat",
                                         add_css_class: "dn-aside-link",
+                                        set_halign: gtk::Align::Start,
                                         connect_clicked => AppMsg::OpenWeb(format!("{}/changelog", devnull_api::default_base_url())),
                                     },
                                     append = &gtk::Button {
                                         set_label: "Terms",
                                         add_css_class: "flat",
                                         add_css_class: "dn-aside-link",
+                                        set_halign: gtk::Align::Start,
                                         connect_clicked => AppMsg::OpenWeb(format!("{}/terms", devnull_api::default_base_url())),
                                     },
                                     append = &gtk::Button {
                                         set_label: "Privacy",
                                         add_css_class: "flat",
                                         add_css_class: "dn-aside-link",
+                                        set_halign: gtk::Align::Start,
                                         connect_clicked => AppMsg::OpenWeb(format!("{}/privacy", devnull_api::default_base_url())),
                                     },
                                 },
@@ -2325,6 +2369,7 @@ impl SimpleComponent for App {
         fill_feed_list(&connections_list);
         let notif_list = gtk::ListBox::new();
         notif_list.set_selection_mode(gtk::SelectionMode::None);
+        notif_list.set_activate_on_single_click(true);
         fill_feed_list(&notif_list);
         let inbox_list = gtk::ListBox::new();
         inbox_list.set_selection_mode(gtk::SelectionMode::None);
@@ -2340,8 +2385,20 @@ impl SimpleComponent for App {
         thread_scroll.set_hscrollbar_policy(gtk::PolicyType::Never);
         thread_scroll.add_css_class("dn-thread-scroll");
         thread_scroll.set_child(Some(&thread_list));
+        let present_btn = ui::back_to_present_button();
+        let thread_pane = gtk::Overlay::new();
+        thread_pane.set_vexpand(true);
+        thread_pane.set_hexpand(true);
+        thread_pane.set_child(Some(&thread_scroll));
+        thread_pane.add_overlay(&present_btn);
         let thread_follow = Rc::new(Cell::new(true));
         ui::bind_follow_end(&thread_scroll, thread_follow.clone());
+        ui::bind_back_to_present(
+            &thread_scroll,
+            &thread_list,
+            thread_follow.clone(),
+            &present_btn,
+        );
         let poll_ui = ui::PollComposer::new(sender.input_sender().clone());
         let schedule_ui = ui::ScheduleCard::new();
         let poll_editor = poll_ui.root.clone();
@@ -2385,6 +2442,10 @@ impl SimpleComponent for App {
             open_commit: None,
             ancestors: Vec::new(),
             related_commits: Vec::new(),
+            open_series: Vec::new(),
+            reply_participants: Vec::new(),
+            reply_excluded: HashSet::new(),
+            remote_link_card: None,
             thread_replies: Vec::new(),
             nested_replies: HashMap::new(),
             expanded_replies: HashSet::new(),
@@ -2430,8 +2491,11 @@ impl SimpleComponent for App {
             new_posts,
             aside_toast: gtk::Revealer::new(),
             aside_toast_label: gtk::Label::new(None),
+            aside_toast_action: gtk::Button::with_label("Undo"),
             toast_commit: Rc::new(RefCell::new(None)),
+            toast_undo: Rc::new(Cell::new(false)),
             toast_hide: Rc::new(RefCell::new(None)),
+            pending_undo: None,
             stars: HashMap::new(),
             pasteis: HashMap::new(),
             composer_avatar: gtk::Box::new(gtk::Orientation::Horizontal, 0),
@@ -2458,6 +2522,7 @@ impl SimpleComponent for App {
             inbox_list,
             thread_list,
             thread_scroll,
+            thread_pane,
             thread_follow,
             composer,
             reply_composer,
@@ -2482,6 +2547,22 @@ impl SimpleComponent for App {
             schedule_card,
             image_previews: gtk::Box::new(gtk::Orientation::Horizontal, 8),
             remote_image_previews: gtk::Box::new(gtk::Orientation::Horizontal, 8),
+            reply_participants_box: {
+                let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                row.set_visible(false);
+                row
+            },
+            remote_link_card_btn: {
+                let btn = gtk::MenuButton::new();
+                btn.add_css_class("flat");
+                btn.add_css_class("dn-composer-icon");
+                btn.set_tooltip_text(Some("Choose which link gets a card"));
+                btn.set_icon_name("dn-link-symbolic");
+                btn.set_valign(gtk::Align::End);
+                btn.set_size_request(40, 40);
+                btn.set_visible(false);
+                btn
+            },
             compose_dialog,
             compose_host,
             compose_open: false,
@@ -2529,6 +2610,8 @@ impl SimpleComponent for App {
         let schedule_card = &model.schedule_card;
         let image_previews = &model.image_previews;
         let remote_image_previews = &model.remote_image_previews;
+        let reply_participants_box = &model.reply_participants_box;
+        let remote_link_card_btn = &model.remote_link_card_btn;
         let log_composer = &model.log_composer;
         let composer_rail = &model.composer_rail;
         let hot_topics_list = &model.hot_topics_list;
@@ -2537,7 +2620,7 @@ impl SimpleComponent for App {
         let wordmark_btn = &model.wordmark_btn;
         let remote_settings = &model.remote_settings;
         let thread_header = &model.thread_header;
-        let thread_scroll = &model.thread_scroll;
+        let thread_pane = &model.thread_pane;
         let widgets = view_output!();
         crate::macos::decorate_window(&root);
         model.bubble_width.bind(&widgets.thread_width_probe);
@@ -2602,16 +2685,27 @@ impl SimpleComponent for App {
         model.aside_toast_label.set_wrap(true);
         model.aside_toast_label.set_xalign(0.0);
         model.aside_toast_label.set_max_width_chars(36);
-        let toast_card = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        model.aside_toast_label.set_hexpand(true);
+        model.aside_toast_action.add_css_class("flat");
+        model.aside_toast_action.add_css_class("dn-text-btn");
+        model.aside_toast_action.set_visible(false);
+        model.aside_toast_action.set_valign(gtk::Align::Center);
+        ui::pointer(&model.aside_toast_action);
+        let toast_card = gtk::Box::new(gtk::Orientation::Horizontal, 12);
         toast_card.add_css_class("dn-aside-toast");
         toast_card.append(&model.aside_toast_label);
+        toast_card.append(&model.aside_toast_action);
         let toast_press = gtk::GestureClick::new();
         toast_press.set_button(1);
         let toast_commit = model.toast_commit.clone();
+        let toast_undo = model.toast_undo.clone();
         let toast_host = model.aside_toast.clone();
         let toast_hide = model.toast_hide.clone();
         let toast_sender = sender.clone();
         toast_press.connect_released(move |_, _, _, _| {
+            if toast_undo.get() {
+                return;
+            }
             if let Some(id) = toast_commit.borrow().clone() {
                 toast_host.remove_css_class("visible");
                 toast_host.set_reveal_child(false);
@@ -2622,6 +2716,10 @@ impl SimpleComponent for App {
             }
         });
         toast_card.add_controller(toast_press);
+        model.aside_toast_action.connect_clicked({
+            let sender = sender.clone();
+            move |_| sender.input(AppMsg::UndoDeleteCommit)
+        });
         model.aside_toast.set_child(Some(&toast_card));
         model.aside_toast.add_css_class("dn-aside-toast-host");
         model
@@ -3197,7 +3295,7 @@ impl SimpleComponent for App {
             }
             AppMsg::FocusSearch => {
                 if self.phase == Phase::SignedIn {
-                    self.omnibox.open();
+                    self.omnibox.open(&self.recent_search_terms());
                 }
             }
             AppMsg::OpenCompose => self.open_compose(),
@@ -3208,7 +3306,8 @@ impl SimpleComponent for App {
                 let trimmed = query.trim().to_string();
                 if trimmed.is_empty() {
                     self.omnibox.set_status(None);
-                    self.omnibox.show_suggestions();
+                    self.omnibox
+                        .show_suggestions(&self.recent_search_terms());
                     return;
                 }
                 if trimmed == "@" {
@@ -3348,11 +3447,7 @@ impl SimpleComponent for App {
                 });
                 self.refresh_me_avatars();
             }
-            AppMsg::StartRemote => {
-                let Some(profile) = &self.profile else {
-                    return;
-                };
-                let username = profile.username().to_owned();
+            AppMsg::StartRemote(username) => {
                 self.nav = Nav::Remotes;
                 self.visible = "remotes";
                 self.load_remotes(&sender);
@@ -3383,6 +3478,7 @@ impl SimpleComponent for App {
             AppMsg::RemoteComposerChanged => {
                 self.sync_composer_suggests(&self.remote_composer.clone(), &sender);
                 self.remote_draft_len = buffer_text(&self.remote_composer).trim().chars().count();
+                self.sync_remote_link_card_ui(&sender);
                 self.ping_remote_typing();
             }
             AppMsg::EmojiMove(step) => self.emoji.move_selection(step),
@@ -3571,6 +3667,7 @@ impl SimpleComponent for App {
                                     None,
                                     None,
                                     author.as_deref(),
+                                    None,
                                 )
                                 .await,
                         ));
@@ -3746,6 +3843,9 @@ impl SimpleComponent for App {
                 });
                 self.ancestors.clear();
                 self.related_commits.clear();
+                self.open_series.clear();
+                self.reply_participants.clear();
+                self.reply_excluded.clear();
                 self.thread_replies.clear();
                 self.nested_replies.clear();
                 self.expanded_replies.clear();
@@ -3782,6 +3882,9 @@ impl SimpleComponent for App {
                     Ok(page) => {
                         self.open_commit = Some(page.commit);
                         self.ancestors = page.ancestors;
+                        self.open_series = page.series;
+                        self.reply_participants = page.reply_participants;
+                        self.reply_excluded.clear();
                     }
                     Err(err) => {
                         self.fail(err);
@@ -3794,6 +3897,7 @@ impl SimpleComponent for App {
                     .unwrap_or_default();
                 self.queue_auto_translations_visible(&sender);
                 self.render_thread(&sender);
+                self.sync_reply_participants_ui(&sender);
                 if self.focus_reply {
                     self.focus_reply = false;
                     self.reply_composer.grab_focus();
@@ -4286,20 +4390,198 @@ impl SimpleComponent for App {
             AppMsg::ReportCommit(commit) => {
                 ui::report_window(&commit, sender.input_sender().clone()).present();
             }
+            AppMsg::ConfirmDeleteCommit(id) => {
+                ui::confirm_delete_commit(id, sender.input_sender().clone());
+            }
+            AppMsg::DeleteCommit(id) => {
+                self.pending_undo = self.commit_by_id(&id).cloned();
+                if let Some(client) = self.client.clone() {
+                    let sender2 = sender.clone();
+                    relm4::spawn(async move {
+                        sender2.input(AppMsg::CommitDeleted(
+                            id.clone(),
+                            client.delete_commit(&id).await,
+                        ));
+                    });
+                }
+            }
+            AppMsg::CommitDeleted(id, Ok(())) => {
+                self.log_commits.retain(|commit| commit.id != id);
+                self.nested_replies.values_mut().for_each(|replies| {
+                    replies.retain(|commit| commit.id != id);
+                });
+                if self
+                    .open_commit
+                    .as_ref()
+                    .is_some_and(|commit| commit.id == id)
+                {
+                    self.open_commit = None;
+                    sender.input(AppMsg::Select(self.nav));
+                } else {
+                    self.refresh_visible_feed(&sender, true);
+                }
+                self.toast_undo("Commit deleted.");
+            }
+            AppMsg::CommitDeleted(_, Err(err)) => {
+                self.pending_undo = None;
+                self.fail(err);
+            }
+            AppMsg::UndoDeleteCommit => {
+                let Some(commit) = self.pending_undo.clone() else {
+                    return;
+                };
+                self.hide_toast();
+                if let Some(client) = self.client.clone() {
+                    let sender2 = sender.clone();
+                    let id = commit.id.clone();
+                    relm4::spawn(async move {
+                        sender2.input(AppMsg::CommitRestored(client.restore_commit(&id).await));
+                    });
+                }
+            }
+            AppMsg::CommitRestored(Ok(commit)) => {
+                self.pending_undo = None;
+                if !self.log_commits.iter().any(|known| known.id == commit.id) {
+                    self.log_commits.insert(0, commit.clone());
+                }
+                self.refresh_visible_feed(&sender, true);
+                self.toast("Commit restored.");
+            }
+            AppMsg::CommitRestored(Err(err)) => {
+                self.pending_undo = None;
+                self.fail(err);
+            }
+            AppMsg::ShareCommit(id) => {
+                if !self.remotes_on() {
+                    self.toast("Turn remotes on in Settings to send commits.");
+                    return;
+                }
+                self.people_picker.open_share(id);
+            }
+            AppMsg::ConfirmShareCommit {
+                username,
+                commit_id,
+            } => {
+                let Some(commit) = self.commit_by_id(&commit_id) else {
+                    self.toast("fatal: commit not found");
+                    return;
+                };
+                let body = ui::commit_url(commit);
+                let reference = ThreadRef::Direct {
+                    username: username.clone(),
+                };
+                if let Some(client) = self.client.clone() {
+                    self.begin_busy();
+                    let sender2 = sender.clone();
+                    let client_id = uuid::Uuid::new_v4().to_string();
+                    relm4::spawn(async move {
+                        sender2.input(AppMsg::ShareCommitSent(
+                            username,
+                            client
+                                .push(&reference, &body, &client_id, Vec::new(), None, None)
+                                .await,
+                        ));
+                    });
+                }
+            }
+            AppMsg::ShareCommitSent(username, Ok(_)) => {
+                self.end_busy();
+                self.people_picker.close();
+                self.toast(&format!("Sent to @{username}."));
+                sender.input(AppMsg::OpenThread(ThreadRef::Direct { username }));
+            }
+            AppMsg::ShareCommitSent(_, Err(err)) => {
+                self.end_busy();
+                self.fail(err);
+            }
+            AppMsg::TogglePinCommit(id, pin) => {
+                if let Some(client) = self.client.clone() {
+                    let sender2 = sender.clone();
+                    relm4::spawn(async move {
+                        let result = if pin {
+                            client.pin_commit(&id).await
+                        } else {
+                            client.unpin_commit(&id).await
+                        };
+                        sender2.input(AppMsg::CommitPinToggled(result));
+                    });
+                }
+            }
+            AppMsg::CommitPinToggled(Ok(commit)) => {
+                let pinned = commit.is_pinned.unwrap_or(false);
+                self.set_commit_pinned(&commit.id, pinned);
+                if let Some(profile) = self.profile.as_mut() {
+                    if pinned {
+                        profile.pinned_commit = Some(commit.clone());
+                    } else if profile
+                        .pinned_commit
+                        .as_ref()
+                        .is_some_and(|pinned| pinned.id == commit.id)
+                    {
+                        profile.pinned_commit = None;
+                    }
+                }
+                self.refresh_visible_feed(&sender, true);
+                self.toast(if pinned {
+                    "Pinned to your profile."
+                } else {
+                    "Unpinned from your profile."
+                });
+            }
+            AppMsg::CommitPinToggled(Err(err)) => self.fail(err),
             AppMsg::SubmitReport {
                 id,
                 reason,
                 details,
+                images,
             } => {
                 if let Some(client) = self.client.clone() {
                     let sender2 = sender.clone();
                     relm4::spawn(async move {
                         sender2.input(AppMsg::ReportSubmitted(
                             client
-                                .report_commit(&id, &reason, Some(details.as_str()))
+                                .report_commit(&id, &reason, Some(details.as_str()), images)
                                 .await,
                         ));
                     });
+                }
+            }
+            AppMsg::ToggleReplyParticipant(id) => {
+                if self.reply_excluded.contains(&id) {
+                    self.reply_excluded.remove(&id);
+                } else {
+                    self.reply_excluded.insert(id);
+                }
+                self.sync_reply_participants_ui(&sender);
+            }
+            AppMsg::SetReplyExcluded(excluded) => {
+                self.reply_excluded = excluded;
+                self.sync_reply_participants_ui(&sender);
+            }
+            AppMsg::OpenReplyRecipients => {
+                if self.reply_participants.is_empty() {
+                    return;
+                }
+                ui::reply_recipients_window(
+                    &self.reply_participants,
+                    &self.reply_excluded,
+                    self.open_commit
+                        .as_ref()
+                        .and_then(|commit| commit.author.as_ref())
+                        .map(|author| author.username.as_str()),
+                    sender.input_sender().clone(),
+                )
+                .present();
+            }
+            AppMsg::SetRemoteLinkCard(choice) => {
+                self.remote_link_card = choice;
+                self.sync_remote_link_card_ui(&sender);
+            }
+            AppMsg::ClearRecentSearches => {
+                if let Some(user_id) = self.user.as_ref().map(|user| user.user.id.clone()) {
+                    self.prefs.clear_recent_searches(&user_id);
+                    self.omnibox
+                        .show_suggestions(&self.prefs.recent_searches(&user_id));
                 }
             }
             AppMsg::ReportSubmitted(Ok(())) => {
@@ -4412,6 +4694,9 @@ impl SimpleComponent for App {
                 let q = q.trim().to_string();
                 if q.is_empty() {
                     return;
+                }
+                if let Some(user_id) = self.user.as_ref().map(|user| user.user.id.clone()) {
+                    self.prefs.remember_search(&user_id, &q);
                 }
                 self.omnibox.close();
                 self.visible = "search";
@@ -4697,6 +4982,14 @@ impl SimpleComponent for App {
                     self.toast("fatal: nothing to commit");
                     return;
                 }
+                let has_picker = !self.reply_participants.is_empty();
+                let recipients: Vec<String> = self
+                    .reply_participants
+                    .iter()
+                    .filter(|person| !self.reply_excluded.contains(&person.id))
+                    .map(|person| person.id.clone())
+                    .collect();
+                let recipients = has_picker.then_some(recipients);
                 if let Some(client) = self.client.clone() {
                     self.begin_busy();
                     let sender2 = sender.clone();
@@ -4712,6 +5005,7 @@ impl SimpleComponent for App {
                                     None,
                                     None,
                                     author.as_deref(),
+                                    recipients.as_deref(),
                                 )
                                 .await,
                         ));
@@ -4770,6 +5064,7 @@ impl SimpleComponent for App {
                                     poll,
                                     scheduled.as_deref(),
                                     author.as_deref(),
+                                    None,
                                 )
                                 .await,
                         ));
@@ -5284,12 +5579,28 @@ impl SimpleComponent for App {
                 if let Some(client) = self.client.clone() {
                     let images = std::mem::take(&mut self.remote_images);
                     let reply_to_id = self.remote_reply.as_ref().map(|message| message.id);
+                    let links = crate::body::body_urls(&body);
+                    let link_preview_url = if links.is_empty() {
+                        None
+                    } else {
+                        self.remote_link_card.clone()
+                    };
                     let sender2 = sender.clone();
                     let client_id = uuid::Uuid::new_v4().to_string();
                     relm4::spawn(async move {
+                        let link = link_preview_url
+                            .as_ref()
+                            .map(|choice| choice.as_deref());
                         sender2.input(AppMsg::RemotePushed(
                             client
-                                .push(&reference, &body, &client_id, images, reply_to_id)
+                                .push(
+                                    &reference,
+                                    &body,
+                                    &client_id,
+                                    images,
+                                    reply_to_id,
+                                    link,
+                                )
                                 .await,
                         ));
                     });
@@ -5299,6 +5610,8 @@ impl SimpleComponent for App {
                 self.remote_composer.buffer().set_text("");
                 self.remote_draft_len = 0;
                 self.remote_reply = None;
+                self.remote_link_card = None;
+                self.sync_remote_link_card_ui(&sender);
                 self.sync_image_previews(&sender);
                 self.fetch_open_thread(&sender);
             }
@@ -5699,6 +6012,7 @@ impl App {
                 .as_ref()
                 .map(CurrentUser::org_ids)
                 .unwrap_or_default(),
+            remotes_on: self.remotes_on(),
         }
     }
 
@@ -5944,10 +6258,12 @@ impl App {
         if let Some(user) = &self.user {
             self.unread_notifications = user.unread_notifications();
             self.unread_remotes = user.unread_remotes();
+            self.user_card.set_remotes(user.remotes_on());
         } else {
             self.unread_notifications = 0;
             self.unread_remotes = 0;
             self.counts_ready = false;
+            self.user_card.set_remotes(false);
         }
         if let Some(sender) = APP_SENDER.get() {
             ui::fill_remote_settings(
@@ -6361,7 +6677,132 @@ impl App {
             &threads,
             &ctx,
         );
+        ui::append_series(&self.reply_list, &self.open_series, &ctx);
         ui::append_related(&self.reply_list, &self.related_commits, &ctx);
+    }
+
+    fn recent_search_terms(&self) -> Vec<String> {
+        self.user
+            .as_ref()
+            .map(|user| self.prefs.recent_searches(&user.user.id))
+            .unwrap_or_default()
+    }
+
+    fn sync_reply_participants_ui(&self, sender: &ComponentSender<App>) {
+        while let Some(child) = self.reply_participants_box.first_child() {
+            self.reply_participants_box.remove(&child);
+        }
+        if self.reply_participants.is_empty() {
+            self.reply_participants_box.set_visible(false);
+            return;
+        }
+        self.reply_participants_box.set_visible(true);
+        let author = self
+            .open_commit
+            .as_ref()
+            .and_then(|commit| commit.author.as_ref())
+            .map(|author| author.username.as_str())
+            .unwrap_or("author");
+        let selected: Vec<&str> = self
+            .reply_participants
+            .iter()
+            .filter(|person| !self.reply_excluded.contains(&person.id))
+            .map(|person| person.handle.as_str())
+            .collect();
+        let label = ui::replying_to_label(author, &selected);
+        let btn = gtk::Button::with_label(&label);
+        btn.add_css_class("flat");
+        btn.add_css_class("dn-muted");
+        btn.set_halign(gtk::Align::Start);
+        btn.set_hexpand(true);
+        btn.set_tooltip_text(Some("Choose who to include"));
+        let input = sender.input_sender().clone();
+        btn.connect_clicked(move |_| input.emit(AppMsg::OpenReplyRecipients));
+        self.reply_participants_box.append(&btn);
+    }
+
+    fn sync_remote_link_card_ui(&self, sender: &ComponentSender<App>) {
+        let body = buffer_text(&self.remote_composer);
+        let links = crate::body::body_urls(&body);
+        if links.is_empty() {
+            self.remote_link_card_btn.set_visible(false);
+            self.remote_link_card_btn.set_popover(None::<&gtk::Popover>);
+            return;
+        }
+        // Drop stale choices when the URL left the body.
+        let effective = match &self.remote_link_card {
+            None => None,
+            Some(None) => Some(None),
+            Some(Some(url)) if links.iter().any(|link| link == url) => {
+                Some(Some(url.clone()))
+            }
+            Some(Some(_)) => None,
+        };
+        let display = match &effective {
+            None => links.first().cloned(),
+            Some(None) => None,
+            Some(Some(url)) => Some(url.clone()),
+        };
+        self.remote_link_card_btn.set_visible(true);
+        self.remote_link_card_btn.set_icon_name(if display.is_some() {
+            "dn-link-symbolic"
+        } else {
+            "dn-ban-symbolic"
+        });
+        let tip = match &display {
+            None => "Link card: No card".to_owned(),
+            Some(url) => format!(
+                "Link card: {}",
+                url.trim_start_matches("https://")
+                    .trim_start_matches("http://")
+            ),
+        };
+        self.remote_link_card_btn.set_tooltip_text(Some(&tip));
+        let popover = gtk::Popover::new();
+        let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        list.set_margin_top(8);
+        list.set_margin_bottom(8);
+        list.set_margin_start(8);
+        list.set_margin_end(8);
+        let title = gtk::Label::new(Some("Link card"));
+        title.add_css_class("dn-muted");
+        title.add_css_class("dn-mono");
+        title.set_xalign(0.0);
+        list.append(&title);
+        for link in &links {
+            let short = link
+                .trim_start_matches("https://")
+                .trim_start_matches("http://");
+            let row = gtk::Button::with_label(short);
+            row.add_css_class("flat");
+            row.set_halign(gtk::Align::Fill);
+            if display.as_deref() == Some(link.as_str()) {
+                row.add_css_class("suggested-action");
+            }
+            let url = link.clone();
+            let pop = popover.clone();
+            let input = sender.input_sender().clone();
+            row.connect_clicked(move |_| {
+                pop.popdown();
+                input.emit(AppMsg::SetRemoteLinkCard(Some(Some(url.clone()))));
+            });
+            list.append(&row);
+        }
+        let none = gtk::Button::with_label("No card");
+        none.add_css_class("flat");
+        none.set_halign(gtk::Align::Fill);
+        if display.is_none() && effective == Some(None) {
+            none.add_css_class("suggested-action");
+        }
+        let pop = popover.clone();
+        let input = sender.input_sender().clone();
+        none.connect_clicked(move |_| {
+            pop.popdown();
+            input.emit(AppMsg::SetRemoteLinkCard(Some(None)));
+        });
+        list.append(&none);
+        popover.set_child(Some(&list));
+        self.remote_link_card_btn.set_popover(Some(&popover));
     }
 
     fn begin_busy(&mut self) {
@@ -6394,6 +6835,7 @@ impl App {
             .or_else(|| self.thread_replies.iter().find(|commit| commit.id == id))
             .or_else(|| self.ancestors.iter().find(|commit| commit.id == id))
             .or_else(|| self.related_commits.iter().find(|commit| commit.id == id))
+            .or_else(|| self.open_series.iter().find(|commit| commit.id == id))
             .or_else(|| {
                 self.nested_replies
                     .values()
@@ -6838,7 +7280,7 @@ impl App {
     }
 
     fn toast(&self, text: &str) {
-        self.show_toast(text, None);
+        self.show_toast(text, None, false);
     }
 
     fn toast_unless_limited(&self, err: &ApiError) {
@@ -6848,13 +7290,32 @@ impl App {
     }
 
     fn toast_commit(&self, text: &str, id: String) {
-        self.show_toast(text, Some(id));
+        self.show_toast(text, Some(id), false);
     }
 
-    fn show_toast(&self, text: &str, commit_id: Option<String>) {
+    fn toast_undo(&self, text: &str) {
+        self.show_toast(text, None, true);
+    }
+
+    fn hide_toast(&self) {
+        if let Some(id) = self.toast_hide.borrow_mut().take() {
+            ui::try_remove_source(id);
+        }
+        self.toast_commit.borrow_mut().take();
+        self.toast_undo.set(false);
+        self.aside_toast_action.set_visible(false);
+        self.aside_toast.remove_css_class("visible");
+        self.aside_toast.remove_css_class("dn-toast-link");
+        self.aside_toast.set_cursor_from_name(None);
+        self.aside_toast.set_reveal_child(false);
+    }
+
+    fn show_toast(&self, text: &str, commit_id: Option<String>, undo: bool) {
         *self.toast_commit.borrow_mut() = commit_id.clone();
+        self.toast_undo.set(undo);
         self.aside_toast_label.set_label(text);
-        if commit_id.is_some() {
+        self.aside_toast_action.set_visible(undo);
+        if commit_id.is_some() && !undo {
             self.aside_toast.add_css_class("dn-toast-link");
             self.aside_toast.set_cursor_from_name(Some("pointer"));
         } else {
@@ -6867,11 +7328,18 @@ impl App {
             ui::try_remove_source(id);
         }
         let revealer = self.aside_toast.downgrade();
+        let action = self.aside_toast_action.downgrade();
         let slot = self.toast_hide.clone();
         let commit_slot = self.toast_commit.clone();
-        let id = glib::timeout_add_local_once(Duration::from_secs(4), move || {
+        let undo_slot = self.toast_undo.clone();
+        let secs = if undo { 30 } else { 4 };
+        let id = glib::timeout_add_local_once(Duration::from_secs(secs), move || {
             slot.borrow_mut().take();
             commit_slot.borrow_mut().take();
+            undo_slot.set(false);
+            if let Some(action) = action.upgrade() {
+                action.set_visible(false);
+            }
             if let Some(revealer) = revealer.upgrade() {
                 revealer.remove_css_class("visible");
                 revealer.remove_css_class("dn-toast-link");
@@ -6879,6 +7347,26 @@ impl App {
             }
         });
         *self.toast_hide.borrow_mut() = Some(id);
+    }
+
+    fn set_commit_pinned(&mut self, id: &str, pinned: bool) {
+        let mut apply = |commit: &mut Commit| {
+            if commit.id == id {
+                commit.is_pinned = Some(pinned);
+            } else if pinned {
+                commit.is_pinned = Some(false);
+            }
+        };
+        if let Some(commit) = &mut self.open_commit {
+            apply(commit);
+        }
+        self.log_commits.iter_mut().for_each(&mut apply);
+        self.profile_commits.iter_mut().for_each(&mut apply);
+        self.thread_replies.iter_mut().for_each(&mut apply);
+        self.ancestors.iter_mut().for_each(&mut apply);
+        for replies in self.nested_replies.values_mut() {
+            replies.iter_mut().for_each(&mut apply);
+        }
     }
 
     fn handle_callback(&mut self, uri: &str, sender: &ComponentSender<App>) {

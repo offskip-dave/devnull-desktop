@@ -95,6 +95,8 @@ impl Client {
         struct Body<'a> {
             code: &'a str,
             code_verifier: &'a str,
+            /// The sign-in screen links to terms and privacy; accepting there is yes for the version in force.
+            terms_accepted: bool,
         }
         match self
             .send_json(
@@ -104,6 +106,7 @@ impl Client {
                 &Body {
                     code,
                     code_verifier: verifier,
+                    terms_accepted: true,
                 },
             )
             .await
@@ -112,6 +115,47 @@ impl Client {
             Err(err) if err.status == 200 => self.me().await.or(Err(err)),
             Err(err) => Err(err),
         }
+    }
+
+    pub async fn delete_commit(&self, id: &str) -> Result<(), ApiError> {
+        self.send_empty(Method::DELETE, &format!("commits/{id}"))
+            .await
+    }
+
+    pub async fn restore_commit(&self, id: &str) -> Result<Commit, ApiError> {
+        self.commit_action(Method::POST, &format!("commits/{id}/restoration"))
+            .await
+    }
+
+    pub async fn pin_commit(&self, id: &str) -> Result<Commit, ApiError> {
+        self.commit_action(Method::PUT, &format!("commits/{id}/pin"))
+            .await
+    }
+
+    pub async fn unpin_commit(&self, id: &str) -> Result<Commit, ApiError> {
+        self.commit_action(Method::DELETE, &format!("commits/{id}/pin"))
+            .await
+    }
+
+    async fn commit_action(&self, method: Method, path: &str) -> Result<Commit, ApiError> {
+        let body = if matches!(method, Method::DELETE) {
+            None
+        } else {
+            Some(b"{}".as_slice())
+        };
+        let mut request = self.signed_request(method, path, &[], body, JSON_NAMESPACE)?;
+        if body.is_some() {
+            request.headers_mut().insert(
+                reqwest::header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            );
+            *request.body_mut() = Some(b"{}".to_vec().into());
+        }
+        let bytes = self.execute(request).await?;
+        let value: serde_json::Value = decode_maybe_wrapped(bytes)?;
+        CommitPage::from_value(value)
+            .map(|page| page.commit)
+            .map_err(|_| ApiError::decode())
     }
 
     pub async fn log(&self, kind: LogKind, cursor: Option<&str>) -> Result<LogPage, ApiError> {
@@ -180,13 +224,21 @@ impl Client {
         id: &str,
         reason: &str,
         details: Option<&str>,
+        images: Vec<Upload>,
     ) -> Result<(), ApiError> {
         let mut body = serde_json::json!({ "reason": reason });
         if let Some(details) = details.map(str::trim).filter(|value| !value.is_empty()) {
             body["details"] = serde_json::json!(details);
         }
-        self.send_json_empty(Method::POST, &format!("commits/{id}/report"), &body)
-            .await
+        let path = format!("commits/{id}/report");
+        if images.is_empty() {
+            self.send_json_empty(Method::POST, &path, &body).await
+        } else {
+            let _: serde_json::Value = self
+                .send_multipart(Method::POST, &path, body, "images", images)
+                .await?;
+            Ok(())
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -199,6 +251,7 @@ impl Client {
         poll: Option<(Vec<String>, i64)>,
         scheduled_at: Option<&str>,
         author: Option<&str>,
+        reply_recipients: Option<&[String]>,
     ) -> Result<Commit, ApiError> {
         let mut payload = serde_json::json!({ "body": body });
         if let Some(parent) = parent_id {
@@ -218,6 +271,9 @@ impl Client {
         }
         if let Some(handle) = author.map(str::trim).filter(|handle| !handle.is_empty()) {
             payload["author"] = serde_json::json!(handle);
+        }
+        if let Some(recipients) = reply_recipients.filter(|ids| !ids.is_empty()) {
+            payload["reply_recipients"] = serde_json::json!(recipients);
         }
         if images.is_empty() {
             self.send_json(Method::POST, "commits", &[], &payload).await
@@ -960,10 +1016,18 @@ impl Client {
         client_id: &str,
         images: Vec<Upload>,
         reply_to_id: Option<i64>,
+        // `None` = server default (first link). `Some(None)` = no card. `Some(Some(url))` = that link.
+        link_preview_url: Option<Option<&str>>,
     ) -> Result<Message, ApiError> {
         let mut payload = serde_json::json!({ "body": body, "client_id": client_id });
         if let Some(id) = reply_to_id {
             payload["reply_to_id"] = serde_json::json!(id);
+        }
+        if let Some(choice) = link_preview_url {
+            payload["link_preview_url"] = match choice {
+                Some(url) => serde_json::json!(url),
+                None => serde_json::Value::Null,
+            };
         }
         let path = match reference {
             ThreadRef::Direct { username } => format!("remotes/@{username}/messages"),

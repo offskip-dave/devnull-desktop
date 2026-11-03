@@ -606,6 +606,9 @@ pub struct HotTopic {
     pub id: String,
     #[serde(default)]
     pub name: String,
+    /// Short event-focused recap under the headline, when the API has one.
+    #[serde(default, deserialize_with = "deserialize_opt_ok")]
+    pub summary: Option<String>,
 }
 
 impl HotTopic {
@@ -1720,11 +1723,20 @@ impl Commit {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ReplyParticipant {
+    #[serde(default, deserialize_with = "deserialize_stringish")]
+    pub id: String,
+    #[serde(default)]
+    pub handle: String,
+}
+
+#[derive(Debug, Clone)]
 pub struct CommitPage {
     pub commit: Commit,
     pub ancestors: Vec<Commit>,
     pub series: Vec<Commit>,
+    pub reply_participants: Vec<ReplyParticipant>,
 }
 
 impl CommitPage {
@@ -1742,10 +1754,16 @@ impl CommitPage {
             .or_else(|| data.get("series"))
             .cloned()
             .unwrap_or(serde_json::Value::Array(Vec::new()));
+        let reply_participants = value
+            .get("reply_participants")
+            .or_else(|| data.get("reply_participants"))
+            .cloned()
+            .unwrap_or(serde_json::Value::Array(Vec::new()));
         Ok(Self {
             commit: serde_json::from_value(commit_value)?,
             ancestors: serde_json::from_value(ancestors).unwrap_or_default(),
             series: serde_json::from_value(series).unwrap_or_default(),
+            reply_participants: serde_json::from_value(reply_participants).unwrap_or_default(),
         })
     }
 }
@@ -3575,7 +3593,7 @@ mod unread_count_tests {
     fn hot_topics_list_reads_inertia_shape_and_caps_at_five() {
         let topics = HotTopic::list_from_value(json!({
             "hotTopics": [
-                { "id": "a", "name": "Alpha" },
+                { "id": "a", "name": "Alpha", "summary": "Shipped overnight." },
                 { "id": "b", "name": "Beta" },
                 { "id": "c", "name": "Gamma" },
                 { "id": "d", "name": "Delta" },
@@ -3586,6 +3604,7 @@ mod unread_count_tests {
         }));
         assert_eq!(topics.len(), 5);
         assert_eq!(topics[0].name, "Alpha");
+        assert_eq!(topics[0].summary.as_deref(), Some("Shipped overnight."));
         assert!(topics[0].url().ends_with("/headlines/a"));
     }
 

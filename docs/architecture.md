@@ -2,7 +2,7 @@
 
 The GTK client is a Relm4 app over GTK4 and libadwaita. It builds on Linux and macOS. It is a first-party API client, not a wrapper around the website. On a Mac it is this GTK binary, distinct from the first-party Swift app.
 
-For contributor workflow (setup, porting rules, PR checks), see [CONTRIBUTING.md](../CONTRIBUTING.md).
+For contributor workflow (setup, porting rules, PR checks), see [CONTRIBUTING.md](../CONTRIBUTING.md). For which website changelog capabilities (day one → present, including every production `feat`) are in this client vs still waiting or skipped, see [Changelog parity](changelog-parity.md).
 
 ## Crates
 
@@ -28,9 +28,9 @@ Unsigned calls exist for public profiles and commits. Signed traffic is capped a
 
 Point the client at another origin with `DEVNULL_URL`. Default is `https://dev-null.sh`.
 
-`devnull-api` maps resources under `/api/v1`: logs, starred commits, commits (create, star, list who starred your own commit, replies, quotes, related, reports, pastéis, previews, poll votes), users, following, followers, followed organizations, live start/stop, organizations (show, commits, mentions, follow, claim), suggested, search, mention suggestions, notifications (including `GET notifications/{id}/group`), remotes, settings, mutes/blocks, export, and account deletion.
+`devnull-api` maps resources under `/api/v1`: logs, starred commits, commits (create, star, delete, list who starred your own commit, replies, quotes, related, reports, pastéis, previews, poll votes), users, following, followers, followed organizations, live start/stop, organizations (show, commits, mentions, follow, claim), suggested, hot topics (aside), search, mention suggestions, notifications (including `GET notifications/{id}/group`), remotes, settings, mutes/blocks, export, and account deletion. Device redeem (`POST devices`) may send `terms_accepted: true`.
 
-When the website gains a feature that has no `/api/v1` route yet (for example Inertia-only hot topics), the GTK client may reserve UI that stays empty until the API ships. Do not call invented paths that only 404, and do not scrape HTML as a substitute.
+When the website gains a feature that has no `/api/v1` route yet (for example unclaimed GitHub profiles or in-app headline threads), the GTK client may reserve UI that stays empty until the API ships, or open the website. Do not call invented paths that only 404, and do not scrape HTML as a substitute. Track those gaps in [Changelog parity](changelog-parity.md).
 
 ## Sign-in
 
@@ -69,6 +69,10 @@ Lane color is used on the graph rail, avatar ring, and the handle dot — not as
 
 Who to follow in the aside comes from `GET suggested` (also `suggested-users` / `me/suggested`), minus people already followed (`GET users/{me}/following`, then `me/following`, then authors on the Following log). When that payload is missing, unique authors from Trending then Latest are used, still excluding people already followed.
 
+Hot topics in the aside load from `me/hot-topics` (then `hot-topics` / `headlines/hot`), show up to five names with an optional `summary` recap, and open the web headline URL. The flame uses lane-0 orange and a light flicker. Full headline discussion pages stay on the website until a signed feed route exists.
+
+Commit rows keep star / quote / reply (and pastel / translate when relevant) on the action bar. Copy link, follow / mute / block author, report, and delete live under the ellipsis menu. Hover cards offer Remote (when Remotes is on), mute, and block.
+
 ## Notifications
 
 `GET notifications?type=&cursor=` and `GET notifications/{id}/group`. Filter pills choose which kinds to include. Rows highlight on hover like the log.
@@ -81,8 +85,8 @@ Signed routes under `/api/v1`: inbox (`GET remotes?tab=&q=`), candidates (`GET r
 
 The Remotes page is a 320px inbox plus thread and composer (feed max 940px). **Open** and **Stashed** tabs split the list. Direct rows show the partner’s avatar, name, and `@handle`. Org rows stack member avatars and show the org name (or the other members’ first names) with a members count; the open-thread header hides that count. Search filters the inbox and can start a remote with a matching developer.
 
-Threads use 75% bubbles, 12-hour timestamps, and hover pin / reply / react. Quoted authors use lane color; membership lines read `@username added @username`. Opening a thread jumps to the latest message. Voice notes and ping live next to the composer. Pull receipts sit under the latest message.
+Threads use 75% bubbles, 12-hour timestamps, and hover pin / reply / react. Quoted authors use lane color; membership lines read `@username added @username`. Opening a thread jumps to the latest message. When you scroll so that at least 25 newer messages sit below the viewport, **Back to present** appears and glides to the latest (skipped when GTK animations are off). Voice notes and ping live next to the composer. Pull receipts sit under the latest message.
 
-**Dock** pins a 360px overlay to the bottom-right of every page (`prefs.chat_docked`). Compact windows never dock. **New remote** and **New org** open a people picker (candidates, then search). Remote settings (who can push, share pulls, turn remotes off) live in the inbox header. Pin, stash, mute, and leave org sit on the thread menu.
+**Dock** pins a 360px overlay to the bottom-right of every page (`prefs.chat_docked`). Compact windows never dock. **New remote** and **New org** open a people picker (candidates, then search). Remote settings (who can push, share pulls, turn remotes off) live in the inbox header. Pin, stash, mute, and leave org sit on the thread menu. Calls and voice-note recording are still website / Swift-app territory; see Changelog parity.
 
 Local prefs: `~/.config/sh.devnull.Client/prefs.json` on Linux, `~/Library/Application Support/sh.devnull.Client/prefs.json` on macOS (theme, who-to-follow, highlight-on-hover, chat dock, pinned remotes and messages, reactions, log visit times). The device key is not stored there.
