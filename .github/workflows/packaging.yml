@@ -1,0 +1,76 @@
+name: Packaging
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, production]
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  flatpak:
+    runs-on: ubuntu-latest
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-48
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v4
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: devnull.flatpak
+          manifest-path: flatpak/sh.devnull.Client.yml
+          cache-key: flatpak-${{ github.sha }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpak-x86_64
+          path: devnull.flatpak
+          retention-days: 14
+
+  appimage:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GTK
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential pkg-config curl \
+            libgtk-4-dev libadwaita-1-dev \
+            libglib2.0-dev libpango1.0-dev libgraphene-1.0-dev \
+            libfuse2 openssh-client
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build AppImage
+        run: scripts/build-appimage.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: appimage-x86_64
+          path: dist/*.AppImage
+          retention-days: 14
+
+  macos:
+    runs-on: macos-latest
+    env:
+      HOMEBREW_NO_AUTO_UPDATE: 1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install GTK
+        run: |
+          brew install gtk4 libadwaita pkgconf
+          echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:$(brew --prefix libffi)/lib/pkgconfig" >> "$GITHUB_ENV"
+          echo "DYLD_FALLBACK_LIBRARY_PATH=$(brew --prefix)/lib" >> "$GITHUB_ENV"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build macOS binary
+        run: scripts/build-macos.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-${{ runner.arch }}
+          path: dist/devnull-macos-*
+          retention-days: 14

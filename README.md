@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="resources/icons/hicolor/scalable/apps/sh.devnull.Client.svg" alt="/dev/null" width="128" height="128">
+</p>
+
 # /dev/null GTK client
 
 A native GTK4 / libadwaita client for [dev-null.sh](https://dev-null.sh), written in Rust. It builds on **Linux** and **macOS**.
@@ -33,7 +37,7 @@ What is ported from the website changelog — every production day from **2026-1
 | [Architecture](docs/architecture.md) | Crates, signed API, auth, layout, notifications, remotes |
 | [Changelog parity](docs/changelog-parity.md) | Web changelog items: done, partial, waiting, skipped |
 | [Development](docs/development.md) | Build, test, icons, GTK CSS, local prefs |
-| [Packaging](docs/packaging.md) | Flatpak, desktop file, `devnull://`, Homebrew |
+| [Packaging](docs/packaging.md) | Flatpak, AppImage, macOS binary, desktop file, CI scripts |
 
 Visual language follows the website’s [DESIGN.md](https://github.com/dev-null-sh/dev-null.sh/blob/production/DESIGN.md).
 
@@ -96,14 +100,13 @@ The device key never leaves Secret Service (Linux) or the Keychain (macOS). Revo
 
 ## Package
 
-Flatpak (Linux, runs across distributions):
-
 ```bash
-flatpak-builder --user --install --force-clean build-dir flatpak/sh.devnull.Client.yml
-flatpak run sh.devnull.Client
+scripts/build-flatpak.sh --install   # Linux; needs flatpak-builder
+scripts/build-appimage.sh            # Linux; host GTK 4.14+ / libadwaita 1.5+
+scripts/build-macos.sh               # macOS Homebrew GTK binary → dist/
 ```
 
-See [Packaging](docs/packaging.md) for portals, the desktop file, the URL handler, and Homebrew on macOS.
+Artifacts land in `dist/`. CI also builds them on `main` / `production`, `v*` tags, and manual dispatch. See [Packaging](docs/packaging.md) for portals, the desktop file, the URL handler, AppImage host requirements, and Homebrew notes.
 
 ## Architecture
 

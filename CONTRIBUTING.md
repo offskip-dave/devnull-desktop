@@ -8,7 +8,7 @@ Thanks for helping with the GTK /dev/null client. This guide is for people chang
 2. Skim [Architecture](docs/architecture.md) so crate boundaries stay clear.
 3. Check [Changelog parity](docs/changelog-parity.md) before porting (capability matrix + day-by-day from Oct 15: done / waiting / skipped).
 4. Use [Development](docs/development.md) for day-to-day build, check, icons, and GTK CSS pitfalls.
-5. Use [Packaging](docs/packaging.md) only when you touch Flatpak, desktop files, or install layout.
+5. Use [Packaging](docs/packaging.md) when you touch Flatpak, AppImage, macOS packaging scripts, desktop files, or install layout.
 
 Linux is the primary target. macOS (Homebrew GTK) must keep working; it is not a substitute for the first-party Swift app.
 

@@ -1,8 +1,12 @@
 /target
 **/*.rs.bk
 .flatpak-builder/
+.flatpak-repo/
 build-dir/
 repo/
+dist/
+AppDir/
+.cache/
 .cargo-home/
 .inkscape-profile/
 *.swp

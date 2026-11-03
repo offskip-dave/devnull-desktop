@@ -1,12 +1,28 @@
 # Packaging
 
-Install layout, Flatpak, desktop entry, and macOS Homebrew notes. Contributor workflow lives in [CONTRIBUTING.md](../CONTRIBUTING.md).
+Install layout, Flatpak, AppImage, desktop entry, and macOS Homebrew notes. Contributor workflow lives in [CONTRIBUTING.md](../CONTRIBUTING.md).
+
+## Scripts and CI
+
+From the repo root:
+
+| Script | Output |
+| --- | --- |
+| `scripts/build-flatpak.sh` | `dist/devnull.flatpak` (pass `--install` to install for the user) |
+| `scripts/build-appimage.sh` | `dist/devnull-x86_64.AppImage` (or `aarch64`) |
+| `scripts/build-macos.sh` | `dist/devnull-macos-$(uname -m)` |
+
+The **Packaging** GitHub Actions workflow (`.github/workflows/packaging.yml`) runs those targets on `workflow_dispatch`, pushes to `main` / `production`, and `v*` tags. It uploads artifacts for ~14 days. PR CI stays on the lighter [CI](../.github/workflows/ci.yml) workflow (fmt / clippy / tests only).
+
+Dependabot (`.github/dependabot.yml`) opens weekly PRs for Cargo and GitHub Actions.
 
 ## Flatpak
 
 Manifest: `flatpak/sh.devnull.Client.yml`.
 
 ```bash
+scripts/build-flatpak.sh --install
+# or manually:
 flatpak-builder --user --install --force-clean build-dir flatpak/sh.devnull.Client.yml
 flatpak run sh.devnull.Client
 ```
@@ -28,6 +44,22 @@ The Flatpak install copies:
 - `resources/icons/hicolor`
 
 When `FLATPAK_ID` is set, the app skips writing a user desktop file; the packaged one already owns `x-scheme-handler/devnull`.
+
+Flatpak is the portable Linux path: any distro that can install Flatpak and the GNOME 48 runtime.
+
+## AppImage
+
+```bash
+scripts/build-appimage.sh
+```
+
+The AppImage **does not bundle GTK or libadwaita**. It links against the host’s libraries so themes stay consistent. The host needs:
+
+- GTK **4.14+** and libadwaita **1.5+**
+- glibc at least as new as the build host (CI builds on Ubuntu 24.04)
+- a Secret Service daemon
+
+That roughly means GNOME 46+ (Ubuntu 24.04+, Fedora 40+, recent Arch / openSUSE). Older hosts should use Flatpak instead.
 
 ## Desktop entry
 
@@ -64,6 +96,8 @@ This is a GTK build, not a `.app` / `.dmg` of the first-party Mac client.
 
 ```bash
 brew install gtk4 libadwaita pkgconf
+scripts/build-macos.sh
+# or:
 cargo build --release -p devnull
 cargo run -p devnull
 ```
