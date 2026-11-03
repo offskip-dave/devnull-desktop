@@ -1090,10 +1090,7 @@ fn with_urls(text: &str, mentions: CapturedMentions<'_>) -> String {
 
 /// HTTP(S) and bare URLs in `text`, in order, suitable for link-card choice.
 pub fn body_urls(text: &str) -> Vec<String> {
-    url_spans(text)
-        .into_iter()
-        .map(|span| span.href)
-        .collect()
+    url_spans(text).into_iter().map(|span| span.href).collect()
 }
 
 fn url_spans(text: &str) -> Vec<UrlSpan> {

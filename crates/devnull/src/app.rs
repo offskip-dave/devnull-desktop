@@ -3306,8 +3306,7 @@ impl SimpleComponent for App {
                 let trimmed = query.trim().to_string();
                 if trimmed.is_empty() {
                     self.omnibox.set_status(None);
-                    self.omnibox
-                        .show_suggestions(&self.recent_search_terms());
+                    self.omnibox.show_suggestions(&self.recent_search_terms());
                     return;
                 }
                 if trimmed == "@" {
@@ -5588,19 +5587,10 @@ impl SimpleComponent for App {
                     let sender2 = sender.clone();
                     let client_id = uuid::Uuid::new_v4().to_string();
                     relm4::spawn(async move {
-                        let link = link_preview_url
-                            .as_ref()
-                            .map(|choice| choice.as_deref());
+                        let link = link_preview_url.as_ref().map(|choice| choice.as_deref());
                         sender2.input(AppMsg::RemotePushed(
                             client
-                                .push(
-                                    &reference,
-                                    &body,
-                                    &client_id,
-                                    images,
-                                    reply_to_id,
-                                    link,
-                                )
+                                .push(&reference, &body, &client_id, images, reply_to_id, link)
                                 .await,
                         ));
                     });
@@ -6733,9 +6723,7 @@ impl App {
         let effective = match &self.remote_link_card {
             None => None,
             Some(None) => Some(None),
-            Some(Some(url)) if links.iter().any(|link| link == url) => {
-                Some(Some(url.clone()))
-            }
+            Some(Some(url)) if links.iter().any(|link| link == url) => Some(Some(url.clone())),
             Some(Some(_)) => None,
         };
         let display = match &effective {
@@ -6744,11 +6732,12 @@ impl App {
             Some(Some(url)) => Some(url.clone()),
         };
         self.remote_link_card_btn.set_visible(true);
-        self.remote_link_card_btn.set_icon_name(if display.is_some() {
-            "dn-link-symbolic"
-        } else {
-            "dn-ban-symbolic"
-        });
+        self.remote_link_card_btn
+            .set_icon_name(if display.is_some() {
+                "dn-link-symbolic"
+            } else {
+                "dn-ban-symbolic"
+            });
         let tip = match &display {
             None => "Link card: No card".to_owned(),
             Some(url) => format!(

@@ -5393,7 +5393,10 @@ fn notification_event_line(item: &Notification, sender: Sender<AppMsg>) -> gtk::
     row.add_css_class("dn-notif-event");
     row.set_hexpand(true);
     // Group event lines: stars/follows open the actor; otherwise the commit (web parity).
-    let go = if matches!(kind, "star" | "starred" | "follow" | "followed" | "leveled_up") {
+    let go = if matches!(
+        kind,
+        "star" | "starred" | "follow" | "followed" | "leveled_up"
+    ) {
         notification_actor_go(item)
     } else {
         notification_go(item)
@@ -12527,10 +12530,7 @@ pub fn replying_to_label(author: &str, selected: &[&str]) -> String {
         [first, second] => format!("Replying to {first} and {second}"),
         [first, rest @ ..] => {
             let (last, mid) = rest.split_last().unwrap();
-            format!(
-                "Replying to {first}, {}, and {last}",
-                mid.join(", ")
-            )
+            format!("Replying to {first}, {}, and {last}", mid.join(", "))
         }
         [] => "Replying to no one".into(),
     }
@@ -13069,31 +13069,35 @@ pub fn report_window(commit: &Commit, sender: Sender<AppMsg>) -> gtk::Window {
         let images = images_pick.clone();
         let previews = previews_pick.clone();
         let attach = attach_btn.clone();
-        dialog.open_multiple(Some(&win_pick), None::<&gtk::gio::Cancellable>, move |result| {
-            let Ok(files) = result else {
-                return;
-            };
-            let mut batch = Vec::new();
-            for i in 0..files.n_items() {
-                if let Some(file) = files
-                    .item(i)
-                    .and_then(|o| o.downcast::<gtk::gio::File>().ok())
-                {
-                    if let Some(upload) = read_upload_file(&file) {
-                        batch.push(upload);
+        dialog.open_multiple(
+            Some(&win_pick),
+            None::<&gtk::gio::Cancellable>,
+            move |result| {
+                let Ok(files) = result else {
+                    return;
+                };
+                let mut batch = Vec::new();
+                for i in 0..files.n_items() {
+                    if let Some(file) = files
+                        .item(i)
+                        .and_then(|o| o.downcast::<gtk::gio::File>().ok())
+                    {
+                        if let Some(upload) = read_upload_file(&file) {
+                            batch.push(upload);
+                        }
                     }
                 }
-            }
-            if batch.is_empty() {
-                return;
-            }
-            let mut store = images.borrow_mut();
-            let room = 3usize.saturating_sub(store.len());
-            store.extend(batch.into_iter().take(room));
-            refresh_report_previews(&previews, &store, images.clone(), &attach);
-            attach.set_sensitive(store.len() < 3);
-            previews.set_visible(!store.is_empty());
-        });
+                if batch.is_empty() {
+                    return;
+                }
+                let mut store = images.borrow_mut();
+                let room = 3usize.saturating_sub(store.len());
+                store.extend(batch.into_iter().take(room));
+                refresh_report_previews(&previews, &store, images.clone(), &attach);
+                attach.set_sensitive(store.len() < 3);
+                previews.set_visible(!store.is_empty());
+            },
+        );
     });
     attach_row.append(&attach);
     let attach_hint = gtk::Label::new(Some("Optional evidence for moderators."));
@@ -13600,10 +13604,8 @@ impl SearchOmnibox {
     pub fn show_suggestions(&self, recent: &[String]) {
         clear_list(&self.list);
         if !recent.is_empty() {
-            self.list.append(&omnibox_heading_row(
-                Some("dn-search-symbolic"),
-                "Recent",
-            ));
+            self.list
+                .append(&omnibox_heading_row(Some("dn-search-symbolic"), "Recent"));
             for term in recent {
                 let row = gtk::ListBoxRow::new();
                 row.set_activatable(true);
