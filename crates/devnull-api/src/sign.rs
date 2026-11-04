@@ -1,7 +1,6 @@
 use base64::engine::general_purpose::STANDARD;
 use base64::Engine;
 use ed25519_dalek::{Signature, Signer, SigningKey, VerifyingKey};
-use rand::rngs::OsRng;
 use sha2::{Digest, Sha256, Sha512};
 
 pub const JSON_NAMESPACE: &str = "devnull-api";
@@ -15,8 +14,9 @@ pub struct DeviceKey {
 
 impl DeviceKey {
     pub fn generate() -> Self {
+        let secret = rand::random();
         Self {
-            signing: SigningKey::generate(&mut OsRng),
+            signing: SigningKey::from_bytes(&secret),
         }
     }
 
