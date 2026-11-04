@@ -615,6 +615,8 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | search for profiles | Done |  |
 | show day-N retention by signup day and by weekly cohort on the Growth page (#1337) | Skip | |
 | release 0.4.0 mac os app | Skip | |
+| add Halloween 404, Christmas graph, Santa hat and New Year snippet | Waiting | Auto-imported from [22ff0d2](https://github.com/dev-null-sh/dev-null.sh/commit/22ff0d26914b2fd3e4527632d89f7190eb91756f); needs GTK port or API probe |
+| add event themes for Halloween, Christmas and New Year | Waiting | Auto-imported from [3ab68f8](https://github.com/dev-null-sh/dev-null.sh/commit/3ab68f8cdbf326007b33b3cdcfaabbc5e7202896); needs GTK port or API probe |
 
 ### 2026-11-01
 
@@ -669,6 +671,11 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | add the TUI app to the apps page (#1445) | Skip | |
 | suggest mobile app | Skip | |
 | allow reclassifying commit headlines in batches | Skip | |
+| add instant latest tab to semantic search | Waiting | Auto-imported from [2fc3bdb](https://github.com/dev-null-sh/dev-null.sh/commit/2fc3bdb8929fb83c961f2c4aad04df99aafca428); needs GTK port or API probe |
+| open profile pictures in the image viewer | Waiting | Auto-imported from [3e7c0b9](https://github.com/dev-null-sh/dev-null.sh/commit/3e7c0b91696a012be6318d9ac49d08848dcc9781); needs GTK port or API probe |
+| read public GitHub organization membership | Waiting | Auto-imported from [4e86df8](https://github.com/dev-null-sh/dev-null.sh/commit/4e86df87c0be83fa2f327c2bb45eca1c19b6357b); needs GTK port or API probe |
+| expand Tom community statistics with aggregates | Skip | Out of scope for GTK (auto) |
+| hashtags | Waiting | Auto-imported from [b7456c2](https://github.com/dev-null-sh/dev-null.sh/commit/b7456c2c21a550b5b777755d5e4ec1a8f29bf563); needs GTK port or API probe |
 
 ### 2026-11-04
 
@@ -685,6 +692,9 @@ No new `feat` commits yet; notable non-feat changelog items:
 | Hide mutuals on own connections (#1442) | Skip | No Mutuals tab yet |
 | Code block language vs title (#1306) | Done | |
 | Terms yes at app sign-in (#1385) | Done | Listed under Nov 3 stream of work; redeem sends `terms_accepted` |
+| replace suggested searches with hot topics | Waiting | Auto-imported from [365479f](https://github.com/dev-null-sh/dev-null.sh/commit/365479feb94511cdcccd7874d114b04263cf284f); needs GTK port or API probe |
+| show latest hot topic matches and simplify mobile tab focus | Waiting | Auto-imported from [a03b721](https://github.com/dev-null-sh/dev-null.sh/commit/a03b72110ad866f3bb7344a665349ed217558891); needs GTK port or API probe |
+| add whoopsie achievement badge | Waiting | Auto-imported from [ddfb6ec](https://github.com/dev-null-sh/dev-null.sh/commit/ddfb6ec4c0c32a69a4aef85c13e3fd143a4c0a28); needs GTK port or API probe |
 
 
 ## Standing gaps (priority)
