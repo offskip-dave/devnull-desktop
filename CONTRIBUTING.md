@@ -6,7 +6,7 @@ Thanks for helping with the GTK /dev/null client. This guide is for people chang
 
 1. Read [README](README.md) for install and run.
 2. Skim [Architecture](docs/architecture.md) so crate boundaries stay clear.
-3. Check [Changelog parity](docs/changelog-parity.md) before porting (capability matrix + day-by-day from Oct 15: done / waiting / skipped).
+3. Check [Changelog parity](docs/changelog-parity.md) before porting (capability matrix + day-by-day from Oct 15: done / waiting / skipped). A daily Actions cron also imports new web `feat`s and opens port PRs — review those before duplicating work.
 4. Use [Development](docs/development.md) for day-to-day build, check, icons, and GTK CSS pitfalls.
 5. Use [Packaging](docs/packaging.md) when you touch Flatpak, AppImage, macOS packaging scripts, desktop files, or install layout.
 

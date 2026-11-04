@@ -716,3 +716,18 @@ Do not track these as GTK work unless product direction changes:
 2. Add or adjust rows in [Day by day](#day-by-day-oct-15--present); update the [capability matrix](#capability-matrix-launch--present) when a capability’s status changes.  
 3. Prefer implementing **Waiting** once a signed route exists; probe production carefully — do not invent paths.  
 4. Keep [README](../README.md) Features aligned with what users can see; this file stays the ledger.
+
+## Daily automation
+
+`.github/workflows/changelog-parity.yml` runs every 24 hours (and on `workflow_dispatch`). It:
+
+1. Reads recent `feat:` commits on `dev-null-sh/dev-null.sh@production` via the public GitHub API.  
+2. Diffs them against this ledger.  
+3. Opens a **ledger PR** that appends missing rows (`Skip` when the title matches out-of-scope heuristics, otherwise `Waiting`).  
+4. For up to a few `Waiting` items, opens **port** work: Cursor Cloud Agents with `autoCreatePR` when the `CURSOR_API_KEY` repo secret is set; otherwise draft tracking PRs under `parity-port/…` with a task file in `.github/parity-tasks/`.
+
+Local dry run:
+
+```bash
+python3 scripts/parity/sync_changelog.py --dry-run --repo "$GITHUB_REPOSITORY"
+```

@@ -1,0 +1,59 @@
+name: Changelog parity
+
+on:
+  schedule:
+    # Every day at 06:00 UTC.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      lookback_days:
+        description: How many days of production feats to scan
+        required: false
+        default: "3"
+      max_port_prs:
+        description: Max port PRs / agents to open this run
+        required: false
+        default: "3"
+      no_agents:
+        description: Set to true to skip Cursor Cloud Agents
+        required: false
+        default: "false"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: changelog-parity
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync changelog parity
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          PARITY_BASE_BRANCH: ${{ github.event.repository.default_branch }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          LOOKBACK="${{ github.event.inputs.lookback_days || '3' }}"
+          MAX_PORTS="${{ github.event.inputs.max_port_prs || '3' }}"
+          NO_AGENTS="${{ github.event.inputs.no_agents || 'false' }}"
+          EXTRA=()
+          if [ "$NO_AGENTS" = "true" ]; then
+            EXTRA+=(--no-agents)
+          fi
+          python3 scripts/parity/sync_changelog.py \
+            --lookback-days "$LOOKBACK" \
+            --max-port-prs "$MAX_PORTS" \
+            --max-agents "$MAX_PORTS" \
+            --base-branch "$PARITY_BASE_BRANCH" \
+            --repo "$GITHUB_REPOSITORY" \
+            "${EXTRA[@]}"

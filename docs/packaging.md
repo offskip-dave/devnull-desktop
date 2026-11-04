@@ -27,7 +27,7 @@ flatpak-builder --user --install --force-clean build-dir flatpak/sh.devnull.Clie
 flatpak run sh.devnull.Client
 ```
 
-It uses `org.gnome.Platform` 48, the Rust SDK extension, and `cargo build --release --locked -p devnull`. Finish args:
+It uses `org.gnome.Platform` 49, the Rust SDK extension (Freedesktop 25.08, rustc ≥ 1.93), and `cargo build --release --locked -p devnull`. Finish args:
 
 - Network (API)
 - Wayland / fallback X11
@@ -45,7 +45,7 @@ The Flatpak install copies:
 
 When `FLATPAK_ID` is set, the app skips writing a user desktop file; the packaged one already owns `x-scheme-handler/devnull`.
 
-Flatpak is the portable Linux path: any distro that can install Flatpak and the GNOME 48 runtime.
+Flatpak is the portable Linux path: any distro that can install Flatpak and the GNOME 49 runtime.
 
 ## AppImage
 

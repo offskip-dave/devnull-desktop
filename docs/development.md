@@ -42,7 +42,7 @@ On macOS, `cargo run -p devnull --release` is the usable build. Debug GTK on Qua
 
 ## Check
 
-CI on `main` / `production` and pull requests runs format, clippy (`-D warnings`), and tests on Ubuntu (`test`) and clippy/tests on macOS (`macos`), both with `--locked`. Run the same locally before opening a PR (see [Contributing](../CONTRIBUTING.md#checks-before-a-pull-request)):
+CI on `main` / `production` and pull requests runs format, clippy (`-D warnings`), and tests on Ubuntu (`test`) and clippy/tests on macOS (`macos`), both with `--locked`. A separate daily workflow ([changelog-parity.yml](../.github/workflows/changelog-parity.yml)) imports website `feat`s into [Changelog parity](changelog-parity.md) and opens port PRs (optionally via Cursor Cloud Agents when `CURSOR_API_KEY` is set). Run the same checks locally before opening a PR (see [Contributing](../CONTRIBUTING.md#checks-before-a-pull-request)):
 
 ```bash
 cargo fmt --all -- --check
