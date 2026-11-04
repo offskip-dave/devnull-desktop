@@ -11,7 +11,7 @@ repository = "https://github.com/dev-null-sh/dev-null-linux"
 authors = ["/dev/null community"]
 
 [workspace.dependencies]
-base64 = "0.22"
+base64 = "0.23"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 ed25519-dalek = { version = "2", features = ["rand_core", "std"] }
 hex = "0.4"
