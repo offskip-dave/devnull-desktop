@@ -440,7 +440,7 @@ dependencies = [
 name = "devnull-api"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "chrono",
  "ed25519-dalek",
  "hex",
@@ -459,7 +459,7 @@ dependencies = [
 name = "devnull-auth"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "core-foundation",
  "devnull-api",
  "hostname",
