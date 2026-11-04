@@ -16,7 +16,7 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 ed25519-dalek = { version = "2", features = ["rand_core", "std"] }
 hex = "0.4"
 hostname = "0.4"
-oo7 = "0.5"
+oo7 = "0.6"
 percent-encoding = "2"
 rand = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["json", "multipart", "rustls-tls-native-roots", "stream"] }
