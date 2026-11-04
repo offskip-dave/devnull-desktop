@@ -26,7 +26,7 @@ jobs:
           bundle: devnull.flatpak
           manifest-path: flatpak/sh.devnull.Client.yml
           cache-key: flatpak-${{ github.sha }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: flatpak-x86_64
           path: devnull.flatpak
@@ -48,7 +48,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build AppImage
         run: scripts/build-appimage.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: appimage-x86_64
           path: dist/*.AppImage
@@ -69,7 +69,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build macOS binary
         run: scripts/build-macos.sh
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: macos-${{ runner.arch }}
           path: dist/devnull-macos-*
