@@ -685,6 +685,7 @@ No new `feat` commits yet; notable non-feat changelog items:
 | Hide mutuals on own connections (#1442) | Skip | No Mutuals tab yet |
 | Code block language vs title (#1306) | Done | |
 | Terms yes at app sign-in (#1385) | Done | Listed under Nov 3 stream of work; redeem sends `terms_accepted` |
+| add whoopsie achievement badge | Waiting | Port task opened; web [ddfb6ec](https://github.com/dev-null-sh/dev-null.sh/commit/ddfb6ec4c0c32a69a4aef85c13e3fd143a4c0a28) |
 
 
 ## Standing gaps (priority)
