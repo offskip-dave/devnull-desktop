@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::sync::Mutex;
 
+use chrono::{Datelike, Local, NaiveDate};
 use relm4::adw;
 use serde::{Deserialize, Serialize};
 
@@ -30,6 +32,102 @@ impl Theme {
     }
 }
 
+/// What the reader picked in Appearance. Auto follows the calendar where they are.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum EventThemeChoice {
+    #[default]
+    Auto,
+    #[serde(rename = "none")]
+    None,
+    Halloween,
+    Christmas,
+    #[serde(rename = "newyear")]
+    NewYear,
+}
+
+impl EventThemeChoice {
+    pub fn index(self) -> u32 {
+        match self {
+            Self::Auto => 0,
+            Self::None => 1,
+            Self::Halloween => 2,
+            Self::Christmas => 3,
+            Self::NewYear => 4,
+        }
+    }
+
+    pub fn from_index(index: u32) -> Self {
+        match index {
+            1 => Self::None,
+            2 => Self::Halloween,
+            3 => Self::Christmas,
+            4 => Self::NewYear,
+            _ => Self::Auto,
+        }
+    }
+
+    fn forced(self) -> Option<EventTheme> {
+        match self {
+            Self::Halloween => Some(EventTheme::Halloween),
+            Self::Christmas => Some(EventTheme::Christmas),
+            Self::NewYear => Some(EventTheme::NewYear),
+            Self::Auto | Self::None => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventTheme {
+    Halloween,
+    Christmas,
+    NewYear,
+}
+
+/// The theme to show: "none" picks no theme, a named choice forces it, auto follows the date.
+/// Each theme runs from two days before the day to the day after it.
+pub fn event_for(choice: EventThemeChoice, date: NaiveDate) -> Option<EventTheme> {
+    if choice == EventThemeChoice::None {
+        return None;
+    }
+    choice.forced().or_else(|| event_on(date))
+}
+
+fn event_on(date: NaiveDate) -> Option<EventTheme> {
+    let month_day = date.month() * 100 + date.day();
+    if (1029..=1101).contains(&month_day) {
+        Some(EventTheme::Halloween)
+    } else if (1223..=1226).contains(&month_day) {
+        Some(EventTheme::Christmas)
+    } else if month_day >= 1230 || month_day <= 102 {
+        Some(EventTheme::NewYear)
+    } else {
+        None
+    }
+}
+
+/// The year a New Year greeting wishes: the coming one through December, then the current one.
+pub fn greeted_year_on(date: NaiveDate) -> i32 {
+    if date.month() == 12 {
+        date.year() + 1
+    } else {
+        date.year()
+    }
+}
+
+static EVENT_CHOICE: Mutex<EventThemeChoice> = Mutex::new(EventThemeChoice::Auto);
+
+fn publish_event(choice: EventThemeChoice) {
+    if let Ok(mut slot) = EVENT_CHOICE.lock() {
+        *slot = choice;
+    }
+}
+
+fn published_event() -> Option<EventTheme> {
+    let choice = EVENT_CHOICE.lock().map(|slot| *slot).unwrap_or_default();
+    event_for(choice, Local::now().date_naive())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Prefs {
     #[serde(default)]
@@ -54,6 +152,9 @@ pub struct Prefs {
     /// Last three search queries per user id, newest first.
     #[serde(default)]
     pub recent_searches: HashMap<String, Vec<String>>,
+    /// Auto follows Halloween, Christmas, and New Year where this computer is.
+    #[serde(default)]
+    pub event_theme: EventThemeChoice,
 }
 
 fn default_true() -> bool {
@@ -73,6 +174,7 @@ impl Default for Prefs {
             pin_warning_dismissed: false,
             message_reactions: HashMap::new(),
             recent_searches: HashMap::new(),
+            event_theme: EventThemeChoice::Auto,
         }
     }
 }
@@ -171,8 +273,17 @@ impl Prefs {
     }
 
     pub fn apply(&self) {
+        publish_event(self.event_theme);
         adw::StyleManager::default().set_color_scheme(self.theme.color_scheme());
         reload_css();
+    }
+
+    pub fn active_event(&self) -> Option<EventTheme> {
+        event_for(self.event_theme, Local::now().date_naive())
+    }
+
+    pub fn greeted_year(&self) -> i32 {
+        greeted_year_on(Local::now().date_naive())
     }
 }
 
@@ -225,7 +336,232 @@ pub fn reload_css() {
     if dark {
         css.push_str(DARK_TOKENS);
     }
+    if let Some(theme) = published_event() {
+        css.push_str(event_token_css(theme, dark));
+    }
     relm4::set_global_css(&css);
+}
+
+/// Christmas contribution graph: green days, red for the busiest ones.
+pub fn christmas_graph_hex(dark: bool) -> Option<(&'static str, &'static str)> {
+    if published_event() == Some(EventTheme::Christmas) {
+        if dark {
+            Some(("#51cf66", "#ff6b6b"))
+        } else {
+            Some(("#2f9e44", "#c92a2a"))
+        }
+    } else {
+        None
+    }
+}
+
+fn event_token_css(theme: EventTheme, dark: bool) -> &'static str {
+    match (theme, dark) {
+        (EventTheme::Halloween, false) => {
+            r#"
+@define-color dn_shell #fbf5ee;
+@define-color dn_surface #fffdf9;
+@define-color dn_ink #1f1710;
+@define-color dn_ink_muted #6b5a4a;
+@define-color dn_hairline #eadccd;
+@define-color dn_rail #dccbb8;
+@define-color dn_wash #fdeadb;
+@define-color dn_primary #c2410c;
+@define-color dn_primary_hover #9a3412;
+@define-color dn_primary_soft #fdeadb;
+@define-color dn_primary_ink #ffffff;
+@define-color window_bg_color #fbf5ee;
+@define-color window_fg_color #1f1710;
+@define-color view_bg_color #fffdf9;
+@define-color view_fg_color #1f1710;
+@define-color headerbar_bg_color #fbf5ee;
+@define-color headerbar_fg_color #1f1710;
+@define-color headerbar_border_color #eadccd;
+@define-color sidebar_bg_color #fbf5ee;
+@define-color sidebar_fg_color #1f1710;
+@define-color card_bg_color #fffdf9;
+@define-color card_fg_color #1f1710;
+@define-color popover_bg_color #fffdf9;
+@define-color popover_fg_color #1f1710;
+@define-color dialog_bg_color #fffdf9;
+@define-color dialog_fg_color #1f1710;
+@define-color borders #eadccd;
+@define-color accent_bg_color #c2410c;
+@define-color accent_fg_color #ffffff;
+@define-color accent_color #c2410c;
+"#
+        }
+        (EventTheme::Halloween, true) => {
+            r#"
+@define-color dn_shell #120c14;
+@define-color dn_surface #1a1220;
+@define-color dn_ink #f1e9f5;
+@define-color dn_ink_muted #ae9fb8;
+@define-color dn_hairline #2c2033;
+@define-color dn_rail #3a2c44;
+@define-color dn_wash #2e1a12;
+@define-color dn_primary #ff8a4c;
+@define-color dn_primary_hover #ffa270;
+@define-color dn_primary_soft #2e1a12;
+@define-color dn_primary_ink #120c14;
+@define-color window_bg_color #120c14;
+@define-color window_fg_color #f1e9f5;
+@define-color view_bg_color #1a1220;
+@define-color view_fg_color #f1e9f5;
+@define-color headerbar_bg_color #120c14;
+@define-color headerbar_fg_color #f1e9f5;
+@define-color headerbar_border_color #2c2033;
+@define-color sidebar_bg_color #120c14;
+@define-color sidebar_fg_color #f1e9f5;
+@define-color card_bg_color #1a1220;
+@define-color card_fg_color #f1e9f5;
+@define-color popover_bg_color #21162a;
+@define-color popover_fg_color #f1e9f5;
+@define-color dialog_bg_color #1a1220;
+@define-color dialog_fg_color #f1e9f5;
+@define-color borders #2c2033;
+@define-color accent_bg_color #ff8a4c;
+@define-color accent_fg_color #120c14;
+@define-color accent_color #ff8a4c;
+"#
+        }
+        (EventTheme::Christmas, false) => {
+            r#"
+@define-color dn_shell #f8f6f1;
+@define-color dn_surface #fffefb;
+@define-color dn_ink #161a17;
+@define-color dn_ink_muted #5e5a50;
+@define-color dn_hairline #e3e0d6;
+@define-color dn_rail #d3cfc2;
+@define-color dn_wash #fbe9e9;
+@define-color dn_primary #b3262c;
+@define-color dn_primary_hover #962024;
+@define-color dn_primary_soft #fbe9e9;
+@define-color dn_primary_ink #ffffff;
+@define-color window_bg_color #f8f6f1;
+@define-color window_fg_color #161a17;
+@define-color view_bg_color #fffefb;
+@define-color view_fg_color #161a17;
+@define-color headerbar_bg_color #f8f6f1;
+@define-color headerbar_fg_color #161a17;
+@define-color headerbar_border_color #e3e0d6;
+@define-color sidebar_bg_color #f8f6f1;
+@define-color sidebar_fg_color #161a17;
+@define-color card_bg_color #fffefb;
+@define-color card_fg_color #161a17;
+@define-color popover_bg_color #fffefb;
+@define-color popover_fg_color #161a17;
+@define-color dialog_bg_color #fffefb;
+@define-color dialog_fg_color #161a17;
+@define-color borders #e3e0d6;
+@define-color accent_bg_color #b3262c;
+@define-color accent_fg_color #ffffff;
+@define-color accent_color #b3262c;
+"#
+        }
+        (EventTheme::Christmas, true) => {
+            r#"
+@define-color dn_shell #0e1512;
+@define-color dn_surface #141d19;
+@define-color dn_ink #ecf1ee;
+@define-color dn_ink_muted #9fb0a6;
+@define-color dn_hairline #243029;
+@define-color dn_rail #2f3d35;
+@define-color dn_wash #2b1717;
+@define-color dn_primary #ff7b7b;
+@define-color dn_primary_hover #ff9494;
+@define-color dn_primary_soft #2b1717;
+@define-color dn_primary_ink #0e1512;
+@define-color window_bg_color #0e1512;
+@define-color window_fg_color #ecf1ee;
+@define-color view_bg_color #141d19;
+@define-color view_fg_color #ecf1ee;
+@define-color headerbar_bg_color #0e1512;
+@define-color headerbar_fg_color #ecf1ee;
+@define-color headerbar_border_color #243029;
+@define-color sidebar_bg_color #0e1512;
+@define-color sidebar_fg_color #ecf1ee;
+@define-color card_bg_color #141d19;
+@define-color card_fg_color #ecf1ee;
+@define-color popover_bg_color #1a2520;
+@define-color popover_fg_color #ecf1ee;
+@define-color dialog_bg_color #141d19;
+@define-color dialog_fg_color #ecf1ee;
+@define-color borders #243029;
+@define-color accent_bg_color #ff7b7b;
+@define-color accent_fg_color #0e1512;
+@define-color accent_color #ff7b7b;
+"#
+        }
+        (EventTheme::NewYear, false) => {
+            r#"
+@define-color dn_shell #faf7ef;
+@define-color dn_surface #fffdf7;
+@define-color dn_ink #1c1807;
+@define-color dn_ink_muted #6b5f3e;
+@define-color dn_hairline #ece3c8;
+@define-color dn_rail #ddd1ae;
+@define-color dn_wash #fbf0d2;
+@define-color dn_primary #a16207;
+@define-color dn_primary_hover #854d0e;
+@define-color dn_primary_soft #fbf0d2;
+@define-color dn_primary_ink #ffffff;
+@define-color window_bg_color #faf7ef;
+@define-color window_fg_color #1c1807;
+@define-color view_bg_color #fffdf7;
+@define-color view_fg_color #1c1807;
+@define-color headerbar_bg_color #faf7ef;
+@define-color headerbar_fg_color #1c1807;
+@define-color headerbar_border_color #ece3c8;
+@define-color sidebar_bg_color #faf7ef;
+@define-color sidebar_fg_color #1c1807;
+@define-color card_bg_color #fffdf7;
+@define-color card_fg_color #1c1807;
+@define-color popover_bg_color #fffdf7;
+@define-color popover_fg_color #1c1807;
+@define-color dialog_bg_color #fffdf7;
+@define-color dialog_fg_color #1c1807;
+@define-color borders #ece3c8;
+@define-color accent_bg_color #a16207;
+@define-color accent_fg_color #ffffff;
+@define-color accent_color #a16207;
+"#
+        }
+        (EventTheme::NewYear, true) => {
+            r#"
+@define-color dn_shell #0b0d17;
+@define-color dn_surface #12152a;
+@define-color dn_ink #eef0fa;
+@define-color dn_ink_muted #9aa0c4;
+@define-color dn_hairline #232744;
+@define-color dn_rail #31365a;
+@define-color dn_wash #2a2410;
+@define-color dn_primary #f5c542;
+@define-color dn_primary_hover #f8d56f;
+@define-color dn_primary_soft #2a2410;
+@define-color dn_primary_ink #0b0d17;
+@define-color window_bg_color #0b0d17;
+@define-color window_fg_color #eef0fa;
+@define-color view_bg_color #12152a;
+@define-color view_fg_color #eef0fa;
+@define-color headerbar_bg_color #0b0d17;
+@define-color headerbar_fg_color #eef0fa;
+@define-color headerbar_border_color #232744;
+@define-color sidebar_bg_color #0b0d17;
+@define-color sidebar_fg_color #eef0fa;
+@define-color card_bg_color #12152a;
+@define-color card_fg_color #eef0fa;
+@define-color popover_bg_color #191d38;
+@define-color popover_fg_color #eef0fa;
+@define-color dialog_bg_color #12152a;
+@define-color dialog_fg_color #eef0fa;
+@define-color borders #232744;
+@define-color accent_bg_color #f5c542;
+@define-color accent_fg_color #0b0d17;
+@define-color accent_color #f5c542;
+"#
+        }
+    }
 }
 
 /// Map CSS custom properties to GTK named colors so GTK 4.14 can load the
@@ -349,6 +685,47 @@ mod tests {
         assert!(prefs.highlight_on_hover);
         assert!(prefs.show_who_to_follow);
         assert!(!prefs.chat_docked);
+        assert_eq!(prefs.event_theme, EventThemeChoice::Auto);
+    }
+
+    #[test]
+    fn event_themes_cover_the_days_around_each_holiday() {
+        let day = |month, n| NaiveDate::from_ymd_opt(2026, month, n).unwrap();
+        assert_eq!(event_for(EventThemeChoice::Auto, day(10, 28)), None);
+        assert_eq!(
+            event_for(EventThemeChoice::Auto, day(10, 29)),
+            Some(EventTheme::Halloween)
+        );
+        assert_eq!(
+            event_for(EventThemeChoice::Auto, day(11, 1)),
+            Some(EventTheme::Halloween)
+        );
+        assert_eq!(event_for(EventThemeChoice::Auto, day(11, 2)), None);
+        assert_eq!(
+            event_for(EventThemeChoice::Auto, day(12, 23)),
+            Some(EventTheme::Christmas)
+        );
+        assert_eq!(
+            event_for(EventThemeChoice::Auto, day(12, 26)),
+            Some(EventTheme::Christmas)
+        );
+        assert_eq!(event_for(EventThemeChoice::Auto, day(12, 27)), None);
+        assert_eq!(
+            event_for(EventThemeChoice::Auto, day(12, 30)),
+            Some(EventTheme::NewYear)
+        );
+        assert_eq!(
+            event_for(EventThemeChoice::Auto, day(1, 2)),
+            Some(EventTheme::NewYear)
+        );
+        assert_eq!(event_for(EventThemeChoice::Auto, day(1, 3)), None);
+        assert_eq!(event_for(EventThemeChoice::None, day(10, 31)), None);
+        assert_eq!(
+            event_for(EventThemeChoice::Christmas, day(6, 1)),
+            Some(EventTheme::Christmas)
+        );
+        assert_eq!(greeted_year_on(day(12, 31)), 2027);
+        assert_eq!(greeted_year_on(day(1, 1)), 2026);
     }
 
     #[test]

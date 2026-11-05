@@ -420,14 +420,12 @@ fn with_mentions(text: &str, mentions: CapturedMentions<'_>) -> String {
     let organizations = mentions.organizations.filter(|map| !map.is_empty());
     let spans = mention_spans(text);
     if spans.is_empty() {
-        return with_wordmarks(&with_colors(&escape(text)));
+        return decorate_plain(text);
     }
     let mut out = String::new();
     let mut last = 0;
     for mention in spans {
-        out.push_str(&with_wordmarks(&with_colors(&escape(
-            &text[last..mention.start],
-        ))));
+        out.push_str(&decorate_plain(&text[last..mention.start]));
         let token = &text[mention.start..mention.end];
         let user = users
             .and_then(|map| captured_mention(map, &mention.username))
@@ -454,11 +452,11 @@ fn with_mentions(text: &str, mentions: CapturedMentions<'_>) -> String {
                 escape(token)
             ));
         } else {
-            out.push_str(&with_wordmarks(&with_colors(&escape(token))));
+            out.push_str(&decorate_plain(token));
         }
         last = mention.end;
     }
-    out.push_str(&with_wordmarks(&with_colors(&escape(&text[last..]))));
+    out.push_str(&decorate_plain(&text[last..]));
     out
 }
 
@@ -599,6 +597,124 @@ fn with_colors(text: &str) -> String {
     }
     out.push_str(&text[last..]);
     out
+}
+
+enum PlainMark {
+    Color(String),
+    Hashtag,
+}
+
+/// Colors win when they overlap a hashtag (`#dead` is a swatch, `#rust` is a search).
+fn decorate_plain(text: &str) -> String {
+    let mut marks: Vec<(usize, usize, PlainMark)> = Vec::new();
+    for color in colors_in(text, false) {
+        marks.push((
+            color.index,
+            color.index + color.length,
+            PlainMark::Color(color.value),
+        ));
+    }
+    for (start, end) in hashtag_spans(text) {
+        let overlaps = marks
+            .iter()
+            .any(|(color_start, color_end, _)| start < *color_end && *color_start < end);
+        if !overlaps {
+            marks.push((start, end, PlainMark::Hashtag));
+        }
+    }
+    marks.sort_by_key(|(start, end, _)| (*start, *end));
+    let mut out = String::new();
+    let mut last = 0;
+    for (start, end, kind) in marks {
+        if start < last || end > text.len() {
+            continue;
+        }
+        out.push_str(&with_wordmarks(&escape(&text[last..start])));
+        match kind {
+            PlainMark::Color(value) => {
+                let token = &text[start..end];
+                if let Some(css) = css_hex(&value) {
+                    out.push_str(&format!("<span foreground=\"{css}\">■</span>{token}"));
+                } else {
+                    out.push_str(&escape(token));
+                }
+            }
+            PlainMark::Hashtag => {
+                let token = &text[start..end];
+                out.push_str(&format!(
+                    "<a href=\"hashtag:{}\"><span underline=\"none\">{}</span></a>",
+                    escape(token),
+                    escape(token)
+                ));
+            }
+        }
+        last = end;
+    }
+    out.push_str(&with_wordmarks(&escape(&text[last..])));
+    out
+}
+
+fn hashtag_spans(text: &str) -> Vec<(usize, usize)> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < text.len() {
+        let Some(ch) = text[i..].chars().next() else {
+            break;
+        };
+        let ch_len = ch.len_utf8();
+        if ch != '#' && ch != '\u{FF03}' {
+            i += ch_len;
+            continue;
+        }
+        if !hashtag_left_ok(text, i) {
+            i += ch_len;
+            continue;
+        }
+        let rest = &text[i + ch_len..];
+        let Some(first) = rest.chars().next() else {
+            i += ch_len;
+            continue;
+        };
+        if !first.is_alphabetic() {
+            i += ch_len;
+            continue;
+        }
+        let mut end = i + ch_len + first.len_utf8();
+        while end < text.len() {
+            let Some(next) = text[end..].chars().next() else {
+                break;
+            };
+            if next.is_alphanumeric() || next == '_' || is_combining_mark(next) {
+                end += next.len_utf8();
+            } else {
+                break;
+            }
+        }
+        out.push((i, end));
+        i = end;
+    }
+    out
+}
+
+fn hashtag_left_ok(text: &str, index: usize) -> bool {
+    let Some(prev) = text[..index].chars().next_back() else {
+        return true;
+    };
+    if prev.is_alphanumeric() || is_combining_mark(prev) {
+        return false;
+    }
+    !matches!(prev, '_' | '&' | '/' | '#' | '\u{FF03}' | '>' | '-')
+}
+
+fn is_combining_mark(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{0300}'..='\u{036F}'
+            | '\u{1AB0}'..='\u{1AFF}'
+            | '\u{1DC0}'..='\u{1DFF}'
+            | '\u{20D0}'..='\u{20FF}'
+            | '\u{FE20}'..='\u{FE2F}'
+    )
 }
 
 /// Hex colors in prose: 3, 4, 6 or 8 digits, a whole word like a hashtag.
@@ -1331,6 +1447,8 @@ fn prose_label(markup: &str, sender: Option<&Sender<AppMsg>>) -> gtk::Label {
                 sender.emit(AppMsg::OpenOrganization(handle.to_string()));
             } else if let Some(username) = uri.strip_prefix("mention:") {
                 sender.emit(AppMsg::OpenProfile(username.to_string()));
+            } else if let Some(tag) = uri.strip_prefix("hashtag:") {
+                sender.emit(AppMsg::RunSearch(tag.to_string()));
             } else {
                 sender.emit(AppMsg::OpenWeb(uri.to_string()));
             }
@@ -1704,6 +1822,21 @@ mod tests {
         assert!(marked.contains("foreground=\"#ff8a4c\""));
         assert!(marked.contains("■"));
         assert!(marked.contains("#ff8a4c"));
+    }
+
+    #[test]
+    fn links_hashtags_and_keeps_hex_colors_as_swatches() {
+        let marked = with_mentions(
+            "shipping #rust and #dead next to C# and #123",
+            CapturedMentions::default(),
+        );
+        assert!(marked.contains("href=\"hashtag:#rust\""));
+        assert!(marked.contains("underline=\"none\">#rust</span></a>"));
+        assert!(marked.contains("foreground=\"#ddeeaa\">■</span>#dead"));
+        assert!(!marked.contains("href=\"hashtag:#dead\""));
+        assert!(!marked.contains("href=\"hashtag:#123\""));
+        assert!(marked.contains("C#"));
+        assert!(!marked.contains("href=\"hashtag:#\""));
     }
 
     #[test]

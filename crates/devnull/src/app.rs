@@ -20,7 +20,7 @@ use devnull_api::{
 };
 use devnull_auth::{self as auth, Pkce, APP_ID};
 
-use crate::prefs::{Prefs, Theme};
+use crate::prefs::{EventTheme, EventThemeChoice, Prefs, Theme};
 use crate::ui;
 use crate::{APP_SENDER, PENDING_URI};
 
@@ -75,6 +75,7 @@ pub enum AppMsg {
     OpenSettings,
     SettingsTab(SettingsTab),
     SetTheme(Theme),
+    SetEventTheme(EventThemeChoice),
     SetWhoToFollow(bool),
     SetHighlightOnHover(bool),
     SetTimezone(Option<String>),
@@ -240,6 +241,7 @@ pub enum AppMsg {
     OmniboxGo(u64, String),
     OmniboxLoaded(u64, String, Result<SearchResults, ApiError>),
     RunSearch(String),
+    SearchTab(bool),
     SearchLoaded(Result<SearchResults, ApiError>),
     SuggestedLoaded(Result<Vec<User>, ApiError>, HashSet<String>),
     LiveFollowingLoaded(Result<Vec<User>, ApiError>),
@@ -356,6 +358,9 @@ pub struct App {
     auto_translate_retry_at: Option<Instant>,
     live_following: Vec<User>,
     hot_topics: Vec<HotTopic>,
+    search_results: SearchResults,
+    search_tab_latest: bool,
+    search_ready: bool,
     muted: Vec<User>,
     blocked: Vec<User>,
     settings_tab: SettingsTab,
@@ -414,6 +419,9 @@ pub struct App {
     new_posts_count: u32,
     new_authors: Vec<User>,
     log_scroll: gtk::ScrolledWindow,
+    log_scroll_gen: Rc<Cell<u64>>,
+    log_scroll_animating: Rc<Cell<bool>>,
+    log_scroll_programmatic: Rc<Cell<bool>>,
     log_composer: gtk::Box,
     new_posts: gtk::Button,
     aside_toast: gtk::Revealer,
@@ -641,10 +649,24 @@ impl SimpleComponent for App {
                                 gtk::Box {
                                     set_orientation: gtk::Orientation::Horizontal,
                                     set_spacing: 8,
-                                    gtk::Image {
-                                        add_css_class: "dn-mark",
-                                        set_from_file: Some(ui::mark_path(ui::adw_is_dark())),
-                                        set_pixel_size: 28,
+                                    gtk::Overlay {
+                                        set_overflow: gtk::Overflow::Visible,
+                                        #[wrap(Some)]
+                                        set_child = &gtk::Image {
+                                            add_css_class: "dn-mark",
+                                            set_from_file: Some(ui::mark_path(ui::adw_is_dark())),
+                                            set_pixel_size: 28,
+                                        },
+                                        add_overlay = &gtk::Image {
+                                            add_css_class: "dn-santa-hat",
+                                            set_from_file: Some(ui::santa_hat_path()),
+                                            set_pixel_size: 16,
+                                            set_halign: gtk::Align::End,
+                                            set_valign: gtk::Align::Start,
+                                            set_can_target: false,
+                                            #[watch]
+                                            set_visible: model.santa_hat(),
+                                        },
                                     },
                                     gtk::Label {
                                         #[watch]
@@ -1020,10 +1042,24 @@ impl SimpleComponent for App {
                                 set_child = &gtk::Box {
                                     set_orientation: gtk::Orientation::Horizontal,
                                     set_spacing: 8,
-                                    gtk::Image {
-                                        add_css_class: "dn-mark",
-                                        set_from_file: Some(ui::mark_path(ui::adw_is_dark())),
-                                        set_pixel_size: 24,
+                                    gtk::Overlay {
+                                        set_overflow: gtk::Overflow::Visible,
+                                        #[wrap(Some)]
+                                        set_child = &gtk::Image {
+                                            add_css_class: "dn-mark",
+                                            set_from_file: Some(ui::mark_path(ui::adw_is_dark())),
+                                            set_pixel_size: 24,
+                                        },
+                                        add_overlay = &gtk::Image {
+                                            add_css_class: "dn-santa-hat",
+                                            set_from_file: Some(ui::santa_hat_path()),
+                                            set_pixel_size: 14,
+                                            set_halign: gtk::Align::End,
+                                            set_valign: gtk::Align::Start,
+                                            set_can_target: false,
+                                            #[watch]
+                                            set_visible: model.santa_hat(),
+                                        },
                                     },
                                     gtk::Label {
                                         #[watch]
@@ -1484,6 +1520,28 @@ impl SimpleComponent for App {
                                 gtk::Label {
                                     set_label: "Search",
                                     add_css_class: "dn-commit-bar-title",
+                                    set_xalign: 0.0,
+                                },
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Horizontal,
+                                    set_spacing: 4,
+                                    set_hexpand: true,
+                                    set_halign: gtk::Align::End,
+                                    add_css_class: "dn-tabs",
+                                    #[watch]
+                                    set_visible: model.search_ready,
+                                    gtk::Button {
+                                        set_label: "Most relevant",
+                                        #[watch]
+                                        set_css_classes: &model.search_tab_classes(false),
+                                        connect_clicked => AppMsg::SearchTab(false),
+                                    },
+                                    gtk::Button {
+                                        set_label: "Latest",
+                                        #[watch]
+                                        set_css_classes: &model.search_tab_classes(true),
+                                        connect_clicked => AppMsg::SearchTab(true),
+                                    },
                                 },
                             },
                             #[name = "search_scroll"]
@@ -2052,6 +2110,22 @@ impl SimpleComponent for App {
 
                                 gtk::Box {
                                     set_orientation: gtk::Orientation::Vertical,
+                                    add_css_class: "dn-new-year",
+                                    #[watch]
+                                    set_visible: model.new_year_greeting(),
+                                    gtk::Label {
+                                        add_css_class: "dn-mono",
+                                        add_css_class: "dn-new-year-code",
+                                        set_xalign: 0.0,
+                                        set_wrap: true,
+                                        set_selectable: true,
+                                        #[watch]
+                                        set_markup: &model.new_year_markup(),
+                                    },
+                                },
+
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Vertical,
                                     set_spacing: 8,
                                     add_css_class: "dn-hot-topics",
                                     #[watch]
@@ -2258,7 +2332,37 @@ impl SimpleComponent for App {
                         #[watch]
                         set_visible: !model.feed_fills(),
                     },
-            }
+            },
+            add_overlay = &gtk::Label {
+                set_label: "🕸️",
+                add_css_class: "dn-halloween-decor",
+                add_css_class: "dn-halloween-corner",
+                set_halign: gtk::Align::End,
+                set_valign: gtk::Align::Start,
+                set_can_target: false,
+                #[watch]
+                set_visible: model.halloween_decor(),
+            },
+            add_overlay = &gtk::Label {
+                set_label: "🎃  💀",
+                add_css_class: "dn-halloween-decor",
+                add_css_class: "dn-halloween-ground",
+                set_halign: gtk::Align::End,
+                set_valign: gtk::Align::End,
+                set_can_target: false,
+                #[watch]
+                set_visible: model.halloween_decor(),
+            },
+            add_overlay = &gtk::Label {
+                set_label: "🦇",
+                add_css_class: "dn-halloween-decor",
+                add_css_class: "dn-halloween-bat",
+                set_halign: gtk::Align::Start,
+                set_valign: gtk::Align::Start,
+                set_can_target: false,
+                #[watch]
+                set_visible: model.halloween_bat(),
+            },
         }
         }
     }
@@ -2434,6 +2538,9 @@ impl SimpleComponent for App {
             auto_translate_retry_at: None,
             live_following: Vec::new(),
             hot_topics: Vec::new(),
+            search_results: SearchResults::default(),
+            search_tab_latest: false,
+            search_ready: false,
             muted: Vec::new(),
             blocked: Vec::new(),
             settings_tab: SettingsTab::Profile,
@@ -2487,6 +2594,9 @@ impl SimpleComponent for App {
             new_posts_count: 0,
             new_authors: Vec::new(),
             log_scroll,
+            log_scroll_gen: Rc::new(Cell::new(0)),
+            log_scroll_animating: Rc::new(Cell::new(false)),
+            log_scroll_programmatic: Rc::new(Cell::new(false)),
             log_composer: gtk::Box::new(gtk::Orientation::Horizontal, 0),
             new_posts,
             aside_toast: gtk::Revealer::new(),
@@ -2991,6 +3101,16 @@ impl SimpleComponent for App {
                 self.visible = "sign_in";
             }
             AppMsg::Select(nav) => {
+                if self.visible == "log"
+                    && self.nav == nav
+                    && matches!(
+                        nav,
+                        Nav::Following | Nav::Latest | Nav::Trending | Nav::Starred
+                    )
+                {
+                    self.scroll_log_to_top();
+                    return;
+                }
                 self.user_card.dismiss();
                 self.nav = nav;
                 self.capture_log_visit();
@@ -3039,6 +3159,17 @@ impl SimpleComponent for App {
                 self.prefs.theme = theme;
                 self.prefs.save();
                 self.render_settings(&sender);
+            }
+            AppMsg::SetEventTheme(choice) => {
+                if self.prefs.event_theme == choice {
+                    return;
+                }
+                self.prefs.event_theme = choice;
+                self.prefs.save();
+                self.render_settings(&sender);
+                if self.visible == "profile" {
+                    self.render_profile(&sender);
+                }
             }
             AppMsg::SetWhoToFollow(show) => {
                 self.prefs.show_who_to_follow = show;
@@ -3295,6 +3426,7 @@ impl SimpleComponent for App {
             }
             AppMsg::FocusSearch => {
                 if self.phase == Phase::SignedIn {
+                    self.omnibox.set_topics(&self.hot_topics);
                     self.omnibox.open(&self.recent_search_terms());
                 }
             }
@@ -3305,8 +3437,12 @@ impl SimpleComponent for App {
                 let gen = self.omnibox_gen;
                 let trimmed = query.trim().to_string();
                 if trimmed.is_empty() {
+                    self.omnibox.set_topics(&self.hot_topics);
                     self.omnibox.set_status(None);
                     self.omnibox.show_suggestions(&self.recent_search_terms());
+                    if self.omnibox.list.row_at_index(0).is_none() {
+                        self.omnibox.set_status(Some("Start typing to search"));
+                    }
                     return;
                 }
                 if trimmed == "@" {
@@ -4699,6 +4835,8 @@ impl SimpleComponent for App {
                 }
                 self.omnibox.close();
                 self.visible = "search";
+                self.search_ready = false;
+                self.search_tab_latest = false;
                 ui::clear_list(&self.search_list);
                 ui::append_commit_skeletons(&self.search_list, 3);
                 if let Some(client) = self.client.clone() {
@@ -4713,16 +4851,24 @@ impl SimpleComponent for App {
                 self.end_busy();
                 self.user_card.dismiss();
                 match result {
-                    Ok(results) => ui::append_search(
-                        &self.search_list,
-                        &results,
-                        &self.search_feed_ctx(&sender),
-                    ),
+                    Ok(results) => {
+                        self.search_results = results;
+                        self.search_ready = true;
+                        self.render_search(&sender);
+                    }
                     Err(err) => {
+                        self.search_ready = false;
                         ui::clear_list(&self.search_list);
                         self.fail(err);
                     }
                 }
+            }
+            AppMsg::SearchTab(latest) => {
+                if !self.search_ready || self.search_tab_latest == latest {
+                    return;
+                }
+                self.search_tab_latest = latest;
+                self.render_search(&sender);
             }
             AppMsg::RefreshMeAvatars => self.refresh_me_avatars(),
             AppMsg::RefreshSuggested => {
@@ -5668,6 +5814,14 @@ impl SimpleComponent for App {
                 self.load_log(&sender, false);
             }
             AppMsg::LogScrolled => {
+                if self.log_scroll_programmatic.get() {
+                    return;
+                }
+                if self.log_scroll_animating.get() {
+                    let gen = self.log_scroll_gen.get().wrapping_add(1);
+                    self.log_scroll_gen.set(gen);
+                    self.log_scroll_animating.set(false);
+                }
                 self.user_card.dismiss();
                 let away = self.log_scroll.vadjustment().value() > 48.0;
                 self.log_away = away;
@@ -5958,6 +6112,96 @@ impl App {
         } else {
             ["flat", "dn-nav-btn", "inactive"]
         }
+    }
+
+    fn render_search(&self, sender: &ComponentSender<App>) {
+        ui::append_search(
+            &self.search_list,
+            &self.search_results,
+            self.search_tab_latest,
+            &self.search_feed_ctx(sender),
+        );
+    }
+
+    fn search_tab_classes(&self, latest: bool) -> [&'static str; 3] {
+        if self.search_tab_latest == latest {
+            ["flat", "dn-tab", "active"]
+        } else {
+            ["flat", "dn-tab", "inactive"]
+        }
+    }
+
+    fn scroll_log_to_top(&self) {
+        let adj = self.log_scroll.vadjustment();
+        let from = adj.value();
+        let lower = adj.lower();
+        let distance = from - lower;
+        if distance <= 1.0 {
+            return;
+        }
+        let gen = self.log_scroll_gen.get().wrapping_add(1);
+        self.log_scroll_gen.set(gen);
+        let reduced =
+            gtk::Settings::default().is_some_and(|settings| !settings.is_gtk_enable_animations());
+        if reduced {
+            self.log_scroll_programmatic.set(true);
+            adj.set_value(lower);
+            self.log_scroll_programmatic.set(false);
+            return;
+        }
+        self.log_scroll_animating.set(true);
+        let started = Instant::now();
+        let duration_ms = ui::log_top_duration_ms(distance);
+        let gen_cell = self.log_scroll_gen.clone();
+        let programmatic = self.log_scroll_programmatic.clone();
+        let animating = self.log_scroll_animating.clone();
+        let adj = adj.clone();
+        glib::timeout_add_local(Duration::from_millis(16), move || {
+            if gen_cell.get() != gen {
+                animating.set(false);
+                return glib::ControlFlow::Break;
+            }
+            let progress = (started.elapsed().as_secs_f64() / (duration_ms / 1000.0)).min(1.0);
+            programmatic.set(true);
+            adj.set_value(lower + ui::present_offset(distance, progress));
+            programmatic.set(false);
+            if progress >= 1.0 {
+                animating.set(false);
+                glib::ControlFlow::Break
+            } else {
+                glib::ControlFlow::Continue
+            }
+        });
+    }
+
+    fn santa_hat(&self) -> bool {
+        self.prefs.active_event() == Some(EventTheme::Christmas)
+    }
+
+    fn new_year_greeting(&self) -> bool {
+        self.prefs.active_event() == Some(EventTheme::NewYear)
+    }
+
+    fn halloween_decor(&self) -> bool {
+        self.prefs.active_event() == Some(EventTheme::Halloween) && !self.aside_compact
+    }
+
+    fn halloween_bat(&self) -> bool {
+        self.prefs.active_event() == Some(EventTheme::Halloween)
+            && !self.nav_compact
+            && gtk::Settings::default().is_none_or(|settings| settings.is_gtk_enable_animations())
+    }
+
+    fn new_year_markup(&self) -> String {
+        let year = self.prefs.greeted_year();
+        let (muted, primary, success) = if ui::adw_is_dark() {
+            ("#9aa0c4", "#f5c542", "#51cf66")
+        } else {
+            ("#6b5f3e", "#a16207", "#2f9e44")
+        };
+        format!(
+            "<span foreground=\"{muted}\">// the year is over</span>\nconsole.<span foreground=\"{primary}\">log</span>(<span foreground=\"{success}\">&quot;Happy {year}!&quot;</span>);"
+        )
     }
 
     fn tab_classes(&self, item: Nav) -> [&'static str; 3] {
@@ -6960,6 +7204,14 @@ impl App {
 
     fn set_hot_topics(&mut self, topics: Vec<HotTopic>, sender: &ComponentSender<App>) {
         self.hot_topics = topics.into_iter().take(5).collect();
+        self.omnibox.set_topics(&self.hot_topics);
+        if self.omnibox.window.is_visible() && self.omnibox.entry.text().trim().is_empty() {
+            self.omnibox.set_status(None);
+            self.omnibox.show_suggestions(&self.recent_search_terms());
+            if self.omnibox.list.row_at_index(0).is_none() {
+                self.omnibox.set_status(Some("Start typing to search"));
+            }
+        }
         ui::fill_hot_topics(
             &self.hot_topics_list,
             &self.hot_topics,
@@ -7176,6 +7428,7 @@ impl App {
                     .as_ref()
                     .map(|settings| settings.translation_languages.as_slice())
                     .unwrap_or(&[]),
+                event_theme: self.prefs.event_theme,
                 sender: sender.input_sender().clone(),
             }));
     }

@@ -37,6 +37,14 @@ if [[ "$INSTALL" -eq 1 ]]; then
   ARGS+=(--install)
 fi
 
+# Avoid ostree aborting export when free disk is under the default 3% floor.
+mkdir -p "$REPO_DIR"
+if [[ ! -f "$REPO_DIR/config" ]]; then
+  ostree init --repo="$REPO_DIR" --mode=archive-z2
+fi
+ostree --repo="$REPO_DIR" config set core.min-free-space-percent 0
+ostree --repo="$REPO_DIR" config set core.min-free-space-size 0MB
+
 flatpak-builder "${ARGS[@]}" --repo="$REPO_DIR" "$BUILD_DIR" "$MANIFEST"
 
 mkdir -p "$DIST_DIR"

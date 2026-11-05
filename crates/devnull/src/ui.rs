@@ -29,7 +29,7 @@ use crate::app::{AppMsg, ConnectionsKind, Nav, ProfileFeed, SettingsTab};
 use crate::body;
 use crate::emoji;
 use crate::images;
-use crate::prefs::Theme;
+use crate::prefs::{EventThemeChoice, Theme};
 
 pub use crate::body::body_markup;
 
@@ -1069,6 +1069,17 @@ pub fn refresh_mark_images(root: &gtk::Widget) {
     } else {
         walk(root, path);
     }
+}
+
+pub fn santa_hat_path() -> &'static str {
+    static PATH: OnceLock<String> = OnceLock::new();
+    PATH.get_or_init(|| {
+        resources_dir()
+            .join("icons/hicolor/scalable/status/santa-hat.svg")
+            .to_string_lossy()
+            .into_owned()
+    })
+    .as_str()
 }
 
 pub fn mark_path(dark: bool) -> &'static str {
@@ -2817,6 +2828,58 @@ pub fn avatar_widget(user: Option<&User>, size: i32, ring: bool) -> gtk::Widget 
     }
 }
 
+fn profile_picture(user: &User) -> gtk::Widget {
+    let face = avatar_widget(Some(user), 80, true);
+    let Some(url) = user
+        .avatar_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|url| !url.is_empty())
+    else {
+        return face;
+    };
+    let button = gtk::Button::new();
+    button.add_css_class("flat");
+    button.add_css_class("dn-profile-picture");
+    button.set_has_frame(false);
+    button.set_overflow(gtk::Overflow::Visible);
+    button.set_cursor_from_name(Some("zoom-in"));
+    button.set_tooltip_text(Some(&format!(
+        "View {}'s profile picture",
+        user.display_name()
+    )));
+    button.set_child(Some(&face));
+    let id = user.id.clone();
+    let name = user.display_name().to_owned();
+    let url = large_avatar_url(url);
+    button.connect_clicked(move |button| {
+        present_avatar_lightbox(&id, &url, &name, Some(button.upcast_ref()));
+    });
+    button.upcast()
+}
+
+fn large_avatar_url(url: &str) -> String {
+    let absolute = images::absolute_url(url).unwrap_or_else(|| url.to_owned());
+    if absolute.contains("avatars.githubusercontent.com") || absolute.contains("?s=") {
+        let base = absolute.split('?').next().unwrap_or(absolute.as_str());
+        return format!("{base}?s=1024");
+    }
+    absolute
+}
+
+fn present_avatar_lightbox(id: &str, url: &str, name: &str, parent: Option<&gtk::Widget>) {
+    let dialog = lightbox_dialog(
+        vec![LightboxImage {
+            id: id.to_owned(),
+            url: url.to_owned(),
+            description: Some(format!("{name}'s profile picture")),
+        }],
+        0,
+        true,
+    );
+    dialog.present(parent);
+}
+
 fn with_lane_ring(face: impl IsA<gtk::Widget>, size: i32, hex: &str) -> gtk::Widget {
     let pad = 8;
     let wrap = gtk::Overlay::new();
@@ -3040,11 +3103,11 @@ fn present_lightbox(images: Vec<LightboxImage>, index: usize, parent: Option<&gt
         return;
     }
     let index = index.min(images.len() - 1);
-    let dialog = lightbox_dialog(images, index);
+    let dialog = lightbox_dialog(images, index, false);
     dialog.present(parent);
 }
 
-fn lightbox_dialog(images: Vec<LightboxImage>, index: usize) -> adw::Dialog {
+fn lightbox_dialog(images: Vec<LightboxImage>, index: usize, round: bool) -> adw::Dialog {
     let images = Rc::new(images);
     let index = Rc::new(RefCell::new(index));
     let caption_on = Rc::new(Cell::new(false));
@@ -3055,6 +3118,9 @@ fn lightbox_dialog(images: Vec<LightboxImage>, index: usize) -> adw::Dialog {
     dialog.set_content_height(720);
     dialog.set_follows_content_size(false);
     dialog.add_css_class("dn-lightbox");
+    if round {
+        dialog.add_css_class("dn-lightbox-avatar");
+    }
 
     let overlay = gtk::Overlay::new();
     overlay.add_css_class("dn-lightbox-surface");
@@ -7544,7 +7610,7 @@ pub fn fill_profile_hero(
     let top = gtk::Box::new(gtk::Orientation::Horizontal, 16);
     top.set_valign(gtk::Align::Start);
     top.set_hexpand(true);
-    top.append(&avatar_widget(Some(user), 80, true));
+    top.append(&profile_picture(user));
     let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
     top.append(&spacer);
@@ -8670,6 +8736,7 @@ pub struct SettingsCtx<'a> {
     pub automatic_translation: bool,
     pub translation_language: Option<String>,
     pub translation_languages: &'a [TranslationLanguage],
+    pub event_theme: EventThemeChoice,
     pub sender: Sender<AppMsg>,
 }
 
@@ -8933,9 +9000,30 @@ fn fill_appearance_settings(panel: &gtk::Box, ctx: SettingsCtx<'_>) {
                 ("Off", "dn-eye-off-symbolic", 0),
             ],
             u8::from(highlight),
-            move |value| sender.emit(AppMsg::SetHighlightOnHover(value == 1)),
+            {
+                let sender = sender.clone();
+                move |value| sender.emit(AppMsg::SetHighlightOnHover(value == 1))
+            },
         ),
     ));
+    panel.append(&settings_section(
+        "Event theme",
+        "Auto dresses the app for Halloween, Christmas, and New Year, from two days before the day to the day after, in this computer's timezone. Default keeps the usual colors.",
+        &event_theme_picker(ctx.event_theme, sender),
+    ));
+}
+
+fn event_theme_picker(current: EventThemeChoice, sender: Sender<AppMsg>) -> gtk::DropDown {
+    let dropdown =
+        gtk::DropDown::from_strings(&["Auto", "Default", "Halloween", "Christmas", "New Year"]);
+    dropdown.set_selected(current.index());
+    dropdown.connect_selected_notify(move |dropdown| {
+        let choice = EventThemeChoice::from_index(dropdown.selected());
+        if choice != current {
+            sender.emit(AppMsg::SetEventTheme(choice));
+        }
+    });
+    dropdown
 }
 
 fn fill_terminal_settings(panel: &gtk::Box, sender: Sender<AppMsg>) {
@@ -9687,6 +9775,12 @@ fn activity_graph(activity: &Activity, lane_hex: &str, sender: Sender<AppMsg>) -
     area.set_has_tooltip(true);
     let (lr, lg, lb) = rgb(lane_hex);
     let dark = adw_is_dark();
+    let (lr, lg, lb) = crate::prefs::christmas_graph_hex(dark)
+        .map(|(lane, _)| rgb(lane))
+        .unwrap_or((lr, lg, lb));
+    let (pr, pg, pb) = crate::prefs::christmas_graph_hex(dark)
+        .map(|(_, peak)| rgb(peak))
+        .unwrap_or((lr, lg, lb));
     let (sr, sg, sb) = surface(dark);
     let (wr, wg, wb) = if dark {
         (0.18, 0.18, 0.19)
@@ -9733,6 +9827,8 @@ fn activity_graph(activity: &Activity, lane_hex: &str, sender: Sender<AppMsg>) -
                 };
                 if cell.level == 0 {
                     cairo.set_source_rgb(wr, wg, wb);
+                } else if cell.level >= 4 {
+                    cairo.set_source_rgb(pr, pg, pb);
                 } else {
                     cairo.set_source_rgb(
                         sr + (lr - sr) * t,
@@ -10076,6 +10172,12 @@ fn activity_legend(lane_hex: &str, dark: bool) -> gtk::Box {
     less.add_css_class("dn-activity-legend-label");
     row.append(&less);
     let (lr, lg, lb) = rgb(lane_hex);
+    let (lr, lg, lb) = crate::prefs::christmas_graph_hex(dark)
+        .map(|(lane, _)| rgb(lane))
+        .unwrap_or((lr, lg, lb));
+    let (pr, pg, pb) = crate::prefs::christmas_graph_hex(dark)
+        .map(|(_, peak)| rgb(peak))
+        .unwrap_or((lr, lg, lb));
     let (sr, sg, sb) = surface(dark);
     let (wr, wg, wb) = if dark {
         (0.18, 0.18, 0.19)
@@ -10096,6 +10198,8 @@ fn activity_legend(lane_hex: &str, dark: bool) -> gtk::Box {
         swatch.set_draw_func(move |_, cairo, width, height| {
             if level == 0 {
                 cairo.set_source_rgb(wr, wg, wb);
+            } else if level >= 4 {
+                cairo.set_source_rgb(pr, pg, pb);
             } else {
                 cairo.set_source_rgb(sr + (lr - sr) * t, sg + (lg - sg) * t, sb + (lb - sb) * t);
             }
@@ -10562,7 +10666,7 @@ fn badge_face(badge: &Badge, lane_hex: &str) -> gtk::Box {
     } else {
         row.add_css_class("locked");
     }
-    row.append(&named_icon(badge_icon_name(&badge.icon), 14));
+    row.append(&badge_icon(&badge.icon, 14));
     let name = gtk::Label::new(Some(&badge.name));
     name.add_css_class("dn-mono");
     row.append(&name);
@@ -10587,6 +10691,26 @@ fn badge_chip(badge: &Badge, lane_hex: &str, sender: Sender<AppMsg>) -> gtk::But
         sender.emit(AppMsg::InspectAchievements);
     });
     btn
+}
+
+fn badge_icon(icon: &str, pixel_size: i32) -> gtk::Widget {
+    match icon {
+        "pastel-de-nata" | "pastel" | "sweet_tooth" | "sweet-tooth" => {
+            pastel_icon(pixel_size).upcast()
+        }
+        "mushroom-cloud" | "whoopsie" => status_icon("mushroom-cloud.svg", pixel_size).upcast(),
+        _ => named_icon(badge_icon_name(icon), pixel_size).upcast(),
+    }
+}
+
+fn status_icon(file: &str, pixel_size: i32) -> gtk::Image {
+    let image = gtk::Image::from_file(
+        resources_dir()
+            .join("icons/hicolor/scalable/status")
+            .join(file),
+    );
+    image.set_pixel_size(pixel_size);
+    image
 }
 
 fn badge_icon_name(icon: &str) -> &'static str {
@@ -10744,7 +10868,7 @@ fn achievement_badge_card(badge: &Badge) -> gtk::Box {
     icon_wrap.add_css_class("dn-badge-icon");
     icon_wrap.set_halign(gtk::Align::Center);
     icon_wrap.set_valign(gtk::Align::Center);
-    icon_wrap.append(&named_icon(badge_icon_name(&badge.icon), 14));
+    icon_wrap.append(&badge_icon(&badge.icon, 14));
     top.append(&icon_wrap);
     let name = gtk::Label::new(Some(&badge.name));
     name.add_css_class("dn-name");
@@ -11152,9 +11276,17 @@ fn suggestion_row(user: &User, sender: Sender<AppMsg>, stacked: bool) -> gtk::Bo
     row
 }
 
-pub fn append_search(list: &gtk::ListBox, results: &SearchResults, ctx: &FeedCtx) {
+pub fn append_search(list: &gtk::ListBox, results: &SearchResults, latest: bool, ctx: &FeedCtx) {
     clear_list(list);
-    if results.is_empty() {
+    let latest_commits;
+    let commits: &[Commit] = if latest {
+        latest_commits = commits_from_the_past_week(&results.commits, Utc::now());
+        &latest_commits
+    } else {
+        &results.commits
+    };
+    if !latest && results.users.is_empty() && results.organizations.is_empty() && commits.is_empty()
+    {
         list.append(&root_row("fatal: nothing matched."));
         return;
     }
@@ -11170,21 +11302,43 @@ pub fn append_search(list: &gtk::ListBox, results: &SearchResults, ctx: &FeedCtx
             list.append(&search_org_row(organization, ctx.sender.clone()));
         }
     }
-    if !results.commits.is_empty() {
+    if latest {
+        list.append(&section_row("Latest commits · past week"));
+        if commits.is_empty() {
+            list.append(&root_row(
+                "No matches from the past week. Try Most relevant for older matches, or search for another idea.",
+            ));
+            return;
+        }
+    } else if commits.is_empty() {
+        return;
+    } else {
         list.append(&section_row("Commits"));
-        let mut previous = None;
-        let mut last_day = None;
-        append_commits(
-            list,
-            &results.commits,
-            ctx,
-            &mut previous,
-            &mut last_day,
-            None,
-            None,
-            0,
-        );
     }
+    let mut previous = None;
+    let mut last_day = None;
+    append_commits(
+        list,
+        commits,
+        ctx,
+        &mut previous,
+        &mut last_day,
+        None,
+        None,
+        0,
+    );
+}
+
+/// Semantic search's Latest tab: matches from the past seven days, newest first.
+pub fn commits_from_the_past_week(commits: &[Commit], now: DateTime<Utc>) -> Vec<Commit> {
+    let since = now - ChronoDuration::days(7);
+    let mut latest: Vec<Commit> = commits
+        .iter()
+        .filter(|commit| commit.created_at.is_some_and(|at| at >= since))
+        .cloned()
+        .collect();
+    latest.sort_by_key(|left| std::cmp::Reverse(left.created_at));
+    latest
 }
 
 fn section_row(title: &str) -> gtk::ListBoxRow {
@@ -11858,6 +12012,11 @@ pub fn present_offset(start: f64, progress: f64) -> f64 {
 /// Duration grows with the square root of distance, then stops.
 pub fn glide_duration(distance: f64) -> f64 {
     (MIN_GLIDE_MS + distance.abs().sqrt() * 2.5).min(MAX_GLIDE_MS)
+}
+
+/// Reselecting a log eases back to the top. Matches the website's log scroll.
+pub fn log_top_duration_ms(distance: f64) -> f64 {
+    (250.0 + distance.abs().sqrt() * 5.0).min(800.0)
 }
 
 fn message_rows(list: &gtk::ListBox) -> Vec<gtk::ListBoxRow> {
@@ -13444,20 +13603,12 @@ pub fn go_live_dialog(sender: Sender<AppMsg>) -> adw::Dialog {
     dialog
 }
 
-const SUGGESTED_QUERIES: &[&str] = &[
-    "shipping a side project",
-    "debugging in production",
-    "testing strategies that actually work",
-    "learning a new programming language",
-    "speeding up a slow app",
-    "working with AI coding tools",
-];
-
 pub struct SearchOmnibox {
     pub window: gtk::Window,
     pub entry: gtk::Entry,
     pub status: gtk::Label,
     pub list: gtk::ListBox,
+    topics: RefCell<Vec<HotTopic>>,
     sender: Sender<AppMsg>,
 }
 
@@ -13562,8 +13713,13 @@ impl SearchOmnibox {
             entry,
             status,
             list,
+            topics: RefCell::new(Vec::new()),
             sender,
         }
+    }
+
+    pub fn set_topics(&self, topics: &[HotTopic]) {
+        *self.topics.borrow_mut() = topics.iter().take(5).cloned().collect();
     }
 
     pub fn open(&self, recent: &[String]) {
@@ -13575,6 +13731,9 @@ impl SearchOmnibox {
         self.entry.set_text("");
         self.set_status(None);
         self.show_suggestions(recent);
+        if self.list.row_at_index(0).is_none() {
+            self.set_status(Some("Start typing to search"));
+        }
         self.window.present();
         self.entry.grab_focus();
     }
@@ -13603,6 +13762,10 @@ impl SearchOmnibox {
 
     pub fn show_suggestions(&self, recent: &[String]) {
         clear_list(&self.list);
+        let topics = self.topics.borrow().clone();
+        if recent.is_empty() && topics.is_empty() {
+            return;
+        }
         if !recent.is_empty() {
             self.list
                 .append(&omnibox_heading_row(Some("dn-search-symbolic"), "Recent"));
@@ -13641,29 +13804,47 @@ impl SearchOmnibox {
             clear.connect_activate(move |_| sender.emit(AppMsg::ClearRecentSearches));
             self.list.append(&clear);
         }
-        self.list.append(&omnibox_heading_row(
-            Some("dn-sparkles-symbolic"),
-            "Try searching for…",
-        ));
-        for term in SUGGESTED_QUERIES {
-            let row = gtk::ListBoxRow::new();
-            row.set_activatable(true);
-            let inner = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            inner.add_css_class("dn-omnibox-row");
-            let label = gtk::Label::new(Some(term));
-            label.set_xalign(0.0);
-            label.set_hexpand(true);
-            label.set_ellipsize(pango::EllipsizeMode::End);
-            inner.append(&label);
-            inner.append(&named_icon("dn-arrow-right-symbolic", 16));
-            row.set_child(Some(&inner));
-            let entry = self.entry.clone();
-            let picked = (*term).to_string();
-            row.connect_activate(move |_| {
-                entry.set_text(&picked);
-                entry.set_position(-1);
-            });
-            self.list.append(&row);
+        if !topics.is_empty() {
+            self.list.append(&omnibox_heading_row(
+                Some("dn-flame-symbolic"),
+                "Hot topics",
+            ));
+            for topic in topics {
+                let row = gtk::ListBoxRow::new();
+                row.set_activatable(true);
+                let inner = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+                inner.add_css_class("dn-omnibox-row");
+                let col = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                col.set_hexpand(true);
+                let label = gtk::Label::new(Some(&topic.name));
+                label.set_xalign(0.0);
+                label.set_hexpand(true);
+                label.set_ellipsize(pango::EllipsizeMode::End);
+                col.append(&label);
+                if let Some(summary) = topic
+                    .summary
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                {
+                    let brief = gtk::Label::new(Some(summary));
+                    brief.add_css_class("dn-muted");
+                    brief.set_xalign(0.0);
+                    brief.set_ellipsize(pango::EllipsizeMode::End);
+                    col.append(&brief);
+                }
+                inner.append(&col);
+                inner.append(&named_icon("dn-arrow-right-symbolic", 16));
+                row.set_child(Some(&inner));
+                let sender = self.sender.clone();
+                let window = self.window.clone();
+                let url = topic.url();
+                row.connect_activate(move |_| {
+                    window.set_visible(false);
+                    sender.emit(AppMsg::OpenWeb(url.clone()));
+                });
+                self.list.append(&row);
+            }
         }
         select_first_activatable(&self.list);
     }
@@ -14903,6 +15084,26 @@ mod last_visit_tests {
     }
 
     #[test]
+    fn latest_search_keeps_the_past_week_newest_first() {
+        let now = DateTime::parse_from_rfc3339("2026-11-06T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let commits = [
+            commit("old", "2026-10-01T00:00:00Z", "ada"),
+            commit("mid", "2026-11-02T00:00:00Z", "ada"),
+            commit("new", "2026-11-05T12:00:00Z", "ada"),
+        ];
+        let latest = commits_from_the_past_week(&commits, now);
+        assert_eq!(
+            latest
+                .iter()
+                .map(|commit| commit.id.as_str())
+                .collect::<Vec<_>>(),
+            ["new", "mid"]
+        );
+    }
+
+    #[test]
     fn marks_first_already_seen_commit_when_others_posted() {
         let commits = [
             commit("new", "2026-10-26T12:00:00Z", "alice"),
@@ -15225,6 +15426,8 @@ mod profile_icon_tests {
         assert!(present_offset(-400.0, 0.5).abs() < 400.0 * 0.5);
         assert!((glide_duration(0.0) - MIN_GLIDE_MS).abs() < f64::EPSILON);
         assert!((glide_duration(1_000_000.0) - MAX_GLIDE_MS).abs() < f64::EPSILON);
+        assert!((log_top_duration_ms(0.0) - 250.0).abs() < f64::EPSILON);
+        assert!((log_top_duration_ms(1_000_000.0) - 800.0).abs() < f64::EPSILON);
         assert_eq!(PRESENT_MESSAGE_THRESHOLD, 25);
     }
 

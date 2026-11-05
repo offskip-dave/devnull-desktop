@@ -14,15 +14,15 @@ On a Mac this is the Homebrew GTK build, not a replacement for the Swift app at 
 
 - Sign in with GitHub in the system browser (`devnull://linux/auth` on both Linux and macOS); device redeem records terms acceptance
 - Following, Latest, Trending, and Starred logs
-- Composer: text, images, polls, scheduling, preview, emoji picker, `:` shortcodes, and `@` mention suggestions
+- Composer: text, images, polls, scheduling, preview, emoji picker, `:` shortcodes, `@` mentions, and `#hashtags`
 - Commit threads: replies, quotes, related commits, stars, pastéis, poll voting; more menu for copy link, Send in Remotes, pin / unpin, follow / mute / block, report, and delete (with 30s undo)
-- Profiles: activity graph, achievements, XP, follow / follow back, following and followers lists (Follows you chips), share link or ID, Go live / End stream, GitHub edit/sync; hover-card Remote / mute / block
+- Profiles: activity graph, achievements, XP, follow / follow back, following and followers lists (Follows you chips), share link or ID, Go live / End stream, GitHub edit/sync; a profile photo opens in the viewer; hover-card Remote / mute / block
 - Organization pages: commits, mentions, follow, claim, lane color, share
 - Notifications with filters, grouped stars, named pairs, and mention avatars
 - Remotes: Open / Stashed inbox, search, dock, settings, new org / new remote; Back to present when scrolled far up a thread
 - Aside: hot topics (with recap when the API sends one), live following, who to follow
-- Search (`Ctrl+K` or `/`)
-- Settings: Profile, Appearance, Terminal, Safety, Devices
+- Search (`Ctrl+K` or `/`): hot topics when the box is empty, then Most relevant and Latest
+- Settings: Profile, Appearance (including Halloween, Christmas, and New Year), Terminal, Safety, Devices
 - Keyboard shortcuts (`?`)
 
 The first commit on an account still has to be made on the web. Legal pages, headline discussion pages, and a few profile actions open in the browser.

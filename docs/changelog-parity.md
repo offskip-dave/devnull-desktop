@@ -38,6 +38,7 @@ Durable inventory by product area. Every production `feat` from day one is also 
 | Dim other commits on hover | Done | Prefs toggle |
 | Collapse nav / responsive shell | Done | 256→80 nav, aside hide, compact |
 | Composer: text, images, polls, schedule, preview | Done | Lane ring fills at 200 chars |
+| Hashtags in commit text | Done | `#tag` opens search; hex colors stay swatches |
 | Emoji shortcodes + picker; `@` mention suggestions | Done | |
 | Replies, quotes, related commits, ancestors | Done | |
 | Stars (incl. stargazers of your own commit) | Done | API #1310 |
@@ -63,7 +64,8 @@ Durable inventory by product area. Every production `feat` from day one is also 
 
 | Capability | Status | Notes |
 | --- | --- | --- |
-| Profile page: bio, lane, graph, streaks, achievements / XP | Done | |
+| Profile page: bio, lane, graph, streaks, achievements / XP | Done | Photo opens in the image viewer |
+| Seasonal event themes | Done | Auto / Default / Halloween / Christmas / New Year in Appearance |
 | Commits / Replies / README tabs | Done | README via API then GitHub |
 | Follow / Follow back / Follows you chips | Done | Following lists too (#1434) |
 | Following / Followers lists (+ orgs on Following) | Done | |
@@ -116,10 +118,10 @@ Durable inventory by product area. Every production `feat` from day one is also 
 
 | Capability | Status | Notes |
 | --- | --- | --- |
-| People / commit search (`Ctrl+K`, `/`) | Done | |
+| People / commit search (`Ctrl+K`, `/`) | Done | Idle omnibox lists hot topics; results have Most relevant and Latest |
 | Who to follow (+ refresh, hide, not interested) | Done | |
 | Live following | Done | |
-| Hot topics + optional summary | Partial | Aside only; headline **pages** open in browser |
+| Hot topics + optional summary | Partial | Aside and empty search; headline pages open in browser |
 | Legal / about / apps / changelog links | Done | Open in browser |
 | Remember last three searches | Done | Prefs + omnibox recent chips / clear |
 
@@ -129,6 +131,7 @@ Durable inventory by product area. Every production `feat` from day one is also 
 | --- | --- | --- |
 | Profile / Appearance / Terminal / Safety / Devices | Done | |
 | Timezone, remotes prefs, pastéis, translation | Done | |
+| Event theme (Auto, Default, Halloween, Christmas, New Year) | Done | Calendar windows match the website; Christmas graph is green with a red peak |
 | Mutes / blocks lists; unmute / unblock | Done | |
 | Export data; delete account | Done | |
 | Keyboard shortcuts dialog | Done | |
@@ -669,10 +672,16 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | add the TUI app to the apps page (#1445) | Skip | |
 | suggest mobile app | Skip | |
 | allow reclassifying commit headlines in batches | Skip | |
+| hashtags | Done | `#tag` in commit text opens search |
+| open profile pictures in the image viewer | Done | Zoom cursor; initials-only avatars stay plain |
+| use a pointer cursor for profile pictures | Done | Zoom-in cursor on photos |
+| show pastéis icon for Sweet Tooth achievement | Done | `pastel-de-nata` |
+| add instant latest tab to semantic search | Done | Search results: Most relevant / Latest (past week) |
+| draw the graph back out when folding replies away (#1449) | Partial | Replies leave immediately; the graph redraws. The website's reverse 500ms line animation is not ported |
+| expand Tom community statistics with aggregates | Skip | |
+| read public GitHub organization membership | Skip | Server-side org claims |
 
 ### 2026-11-04
-
-No new `feat` commits yet; notable non-feat changelog items:
 
 | Item | Status | Notes |
 | --- | --- | --- |
@@ -685,6 +694,24 @@ No new `feat` commits yet; notable non-feat changelog items:
 | Hide mutuals on own connections (#1442) | Skip | No Mutuals tab yet |
 | Code block language vs title (#1306) | Done | |
 | Terms yes at app sign-in (#1385) | Done | Listed under Nov 3 stream of work; redeem sends `terms_accepted` |
+| scroll to the top when reselecting a log (#1480) | Done | Ease to the top; a wheel or drag cancels it |
+| replace suggested searches with hot topics | Done | Idle omnibox lists recent searches and hot topics |
+| show latest hot topic matches | Done | Topics open the headline on the web; no search-on-hover |
+| add whoopsie achievement badge | Done | Mushroom-cloud icon |
+| add event themes for Halloween, Christmas and New Year | Done | Appearance picker; palette follows this computer's date |
+| Halloween 404, Christmas graph, Santa hat and New Year snippet | Done | Graph peak, hat on the mark, aside greeting. The website's Halloween 404 stays on the web |
+| batch incoming log commits adaptively | Skip | Website realtime batching |
+| keep live card counts and follow suggestions in sync (#1477) | Skip | Cross-device websocket; this client updates the counts it changes itself |
+| keep the web app live across tabs and devices (#1458) | Skip | Browser tabs / Reverb |
+| polish the UI on mobile (#1475) | Skip | |
+| remote mobile styling fixes (#1462) | Skip | |
+
+### 2026-11-05
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| prefetch the navigation's Log again (#1491) | Skip | Inertia prefetch |
+| store phone push tokens and push preferences for the mobile app (#1489) | Skip | Phone app |
 
 
 ## Standing gaps (priority)

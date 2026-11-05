@@ -69,7 +69,9 @@ Lane color is used on the graph rail, avatar ring, and the handle dot — not as
 
 Who to follow in the aside comes from `GET suggested` (also `suggested-users` / `me/suggested`), minus people already followed (`GET users/{me}/following`, then `me/following`, then authors on the Following log). When that payload is missing, unique authors from Trending then Latest are used, still excluding people already followed.
 
-Hot topics in the aside load from `me/hot-topics` (then `hot-topics` / `headlines/hot`), show up to five names with an optional `summary` recap, and open the web headline URL. The flame uses lane-0 orange and a light flicker. Full headline discussion pages stay on the website until a signed feed route exists.
+Hot topics in the aside load from `me/hot-topics` (then `hot-topics` / `headlines/hot`), show up to five names with an optional `summary` recap, and open the web headline URL. The same list fills the search box when it is empty. Search results split into Most relevant and Latest (the past week). The flame uses lane-0 orange and a light flicker. Full headline discussion pages stay on the website until a signed feed route exists.
+
+`#hashtags` in commit text open that search. A profile photo opens in the image viewer. Appearance can follow Halloween, Christmas, and New Year (two days before the day through the day after, on this computer's clock), or stay on the usual colors. Christmas turns the contribution graph green with red for the busiest days and puts a Santa hat on the mark. New Year leaves a `console.log` greeting in the aside.
 
 Commit rows keep star / quote / reply (and pastel / translate when relevant) on the action bar. Copy link, follow / mute / block author, report, and delete live under the ellipsis menu. Hover cards offer Remote (when Remotes is on), mute, and block.
 
@@ -89,4 +91,4 @@ Threads use 75% bubbles, 12-hour timestamps, and hover pin / reply / react. Quot
 
 **Dock** pins a 360px overlay to the bottom-right of every page (`prefs.chat_docked`). Compact windows never dock. **New remote** and **New org** open a people picker (candidates, then search). Remote settings (who can push, share pulls, turn remotes off) live in the inbox header. Pin, stash, mute, and leave org sit on the thread menu. Calls and voice-note recording are still website / Swift-app territory; see Changelog parity.
 
-Local prefs: `~/.config/sh.devnull.Client/prefs.json` on Linux, `~/Library/Application Support/sh.devnull.Client/prefs.json` on macOS (theme, who-to-follow, highlight-on-hover, chat dock, pinned remotes and messages, reactions, log visit times). The device key is not stored there.
+Local prefs: `~/.config/sh.devnull.Client/prefs.json` on Linux, `~/Library/Application Support/sh.devnull.Client/prefs.json` on macOS (theme, event theme, who-to-follow, highlight-on-hover, chat dock, pinned remotes and messages, reactions, log visit times). The device key is not stored there.

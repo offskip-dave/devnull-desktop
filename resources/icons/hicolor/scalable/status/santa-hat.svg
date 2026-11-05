@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 7" shape-rendering="crispEdges">
+  <title>Santa hat</title>
+  <rect x="8" y="0" width="1" height="1" fill="#f8f9fa"/>
+  <rect x="9" y="0" width="1" height="1" fill="#f8f9fa"/>
+  <rect x="6" y="1" width="1" height="1" fill="#d63031"/>
+  <rect x="7" y="1" width="1" height="1" fill="#d63031"/>
+  <rect x="8" y="1" width="1" height="1" fill="#f8f9fa"/>
+  <rect x="9" y="1" width="1" height="1" fill="#f8f9fa"/>
+  <rect x="4" y="2" width="5" height="1" fill="#d63031"/>
+  <rect x="2" y="3" width="7" height="1" fill="#d63031"/>
+  <rect x="1" y="4" width="8" height="1" fill="#d63031"/>
+  <rect x="0" y="5" width="10" height="2" fill="#f8f9fa"/>
+</svg>
