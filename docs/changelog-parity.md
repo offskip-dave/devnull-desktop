@@ -669,6 +669,7 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | add the TUI app to the apps page (#1445) | Skip | |
 | suggest mobile app | Skip | |
 | allow reclassifying commit headlines in batches | Skip | |
+| read public GitHub organization membership | Waiting | Port task opened; web [4e86df8](https://github.com/dev-null-sh/dev-null.sh/commit/4e86df87c0be83fa2f327c2bb45eca1c19b6357b) |
 
 ### 2026-11-04
 
