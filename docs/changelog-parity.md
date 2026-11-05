@@ -685,6 +685,7 @@ No new `feat` commits yet; notable non-feat changelog items:
 | Hide mutuals on own connections (#1442) | Skip | No Mutuals tab yet |
 | Code block language vs title (#1306) | Done | |
 | Terms yes at app sign-in (#1385) | Done | Listed under Nov 3 stream of work; redeem sends `terms_accepted` |
+| replace suggested searches with hot topics | Waiting | Port task opened; web [365479f](https://github.com/dev-null-sh/dev-null.sh/commit/365479feb94511cdcccd7874d114b04263cf284f) |
 
 
 ## Standing gaps (priority)
