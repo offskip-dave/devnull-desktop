@@ -714,6 +714,14 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | store phone push tokens and push preferences for the mobile app (#1489) | Skip | Phone app |
 
 
+### 2026-11-06
+
+Auto-imported by the changelog parity cron.
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| clear org mentions once they are seen (#1498) | Waiting | Port task opened; web [c67d9bd](https://github.com/dev-null-sh/dev-null.sh/commit/c67d9bd89b1e1b80aa3b8e62e18e054a8937b96b) |
+
 ## Standing gaps (priority)
 
 Blocked on API or hard infra — not same-day launch work:
