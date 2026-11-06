@@ -618,6 +618,7 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | search for profiles | Done |  |
 | show day-N retention by signup day and by weekly cohort on the Growth page (#1337) | Skip | |
 | release 0.4.0 mac os app | Skip | |
+| add Halloween 404, Christmas graph, Santa hat and New Year snippet | Waiting | Auto-imported from [22ff0d2](https://github.com/dev-null-sh/dev-null.sh/commit/22ff0d26914b2fd3e4527632d89f7190eb91756f); needs GTK port or API probe |
 
 ### 2026-11-01
 
@@ -705,6 +706,8 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | keep the web app live across tabs and devices (#1458) | Skip | Browser tabs / Reverb |
 | polish the UI on mobile (#1475) | Skip | |
 | remote mobile styling fixes (#1462) | Skip | |
+| poc experiment WebView (temporary, to be reverted | Waiting | Auto-imported from [344fb65](https://github.com/dev-null-sh/dev-null.sh/commit/344fb653c954b73c7755e269e4e0fe426c7ea04e); needs GTK port or API probe |
+| show latest hot topic matches and simplify mobile tab focus | Waiting | Auto-imported from [a03b721](https://github.com/dev-null-sh/dev-null.sh/commit/a03b72110ad866f3bb7344a665349ed217558891); needs GTK port or API probe |
 
 ### 2026-11-05
 
@@ -713,6 +716,15 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | prefetch the navigation's Log again (#1491) | Skip | Inertia prefetch |
 | store phone push tokens and push preferences for the mobile app (#1489) | Skip | Phone app |
 
+
+### 2026-11-06
+
+Auto-imported by the changelog parity cron.
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| add a mentions bell to org remotes (#1493) | Waiting | Auto-imported from [8889931](https://github.com/dev-null-sh/dev-null.sh/commit/8889931560fecf58d3f2e517fd892644b2b9a7e1); needs GTK port or API probe |
+| clear org mentions once they are seen (#1498) | Waiting | Auto-imported from [c67d9bd](https://github.com/dev-null-sh/dev-null.sh/commit/c67d9bd89b1e1b80aa3b8e62e18e054a8937b96b); needs GTK port or API probe |
 
 ## Standing gaps (priority)
 
