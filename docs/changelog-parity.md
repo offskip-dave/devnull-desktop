@@ -619,6 +619,7 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | search for profiles | Done |  |
 | show day-N retention by signup day and by weekly cohort on the Growth page (#1337) | Skip | |
 | release 0.4.0 mac os app | Skip | |
+| add Halloween 404, Christmas graph, Santa hat and New Year snippet | Waiting | Auto-imported from [22ff0d2](https://github.com/dev-null-sh/dev-null.sh/commit/22ff0d26914b2fd3e4527632d89f7190eb91756f); needs GTK port or API probe |
 
 ### 2026-11-01
 
@@ -706,6 +707,8 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | keep the web app live across tabs and devices (#1458) | Skip | Browser tabs / Reverb |
 | polish the UI on mobile (#1475) | Skip | |
 | remote mobile styling fixes (#1462) | Skip | |
+| poc experiment WebView (temporary, to be reverted | Waiting | Auto-imported from [344fb65](https://github.com/dev-null-sh/dev-null.sh/commit/344fb653c954b73c7755e269e4e0fe426c7ea04e); needs GTK port or API probe |
+| show latest hot topic matches and simplify mobile tab focus | Waiting | Auto-imported from [a03b721](https://github.com/dev-null-sh/dev-null.sh/commit/a03b72110ad866f3bb7344a665349ed217558891); needs GTK port or API probe |
 
 ### 2026-11-05
 
@@ -733,6 +736,18 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | remove the WebView experiment (#1501) | Skip | Website revert |
 | describe how the Mac app updates itself (#1461) | Skip | Swift Mac app docs |
 
+
+### 2026-11-07
+
+Auto-imported by the changelog parity cron.
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| draw the lite mobile app's launch and sign-in screens like the site's (#1514) | Skip | Out of scope for GTK (auto) |
+| sign in to the lite mobile app with a device key (#1512) | Skip | Out of scope for GTK (auto) |
+| try topics on the experimental links pages (#1513) | Waiting | Auto-imported from [510c5e3](https://github.com/dev-null-sh/dev-null.sh/commit/510c5e3f498cea287ee3cd2154b5bb442ff925d3); needs GTK port or API probe |
+| make stargazers have a hovercard (#1204) | Waiting | Auto-imported from [833b60c](https://github.com/dev-null-sh/dev-null.sh/commit/833b60c6f853cf2234c5ef36415f127f27ec4b6f); needs GTK port or API probe |
+| update the TUI listing for themes and remotes (#1478) | Skip | Out of scope for GTK (auto) |
 
 ## Standing gaps (priority)
 
