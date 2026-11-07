@@ -1,6 +1,6 @@
 # Changelog parity
 
-Track of [dev-null.sh/changelog](https://dev-null.sh/changelog) against this GTK client, from the platform’s first production commit on **2026-10-15** (`chore: first` — empty repo in the morning, live by lunch; see [About](https://dev-null.sh/about)) through today (~1.1k commits / ~380 non-merge `feat`s across 21 days). Prefer signed `/api/v1` surfaces. Skip Inertia-only, CLI, PWA, admin/CMS, and first-party Swift/mobile app work unless a client route exists.
+Track of [dev-null.sh/changelog](https://dev-null.sh/changelog) against this GTK client, from the platform’s first production commit on **2026-10-15** (`chore: first` — empty repo in the morning, live by lunch; see [About](https://dev-null.sh/about)) through **2026-11-06** (~1.1k commits / ~390 non-merge `feat`s across 23 days). Prefer signed `/api/v1` surfaces. Skip Inertia-only, CLI, PWA, admin/CMS, and first-party Swift/mobile app work unless a client route exists.
 
 The [capability matrix](#capability-matrix-launch--present) is the durable inventory. [Day by day](#day-by-day-oct-15--present) lists every non-merge `feat` on `production` since day one. Update both when you catch up a changelog day. Link the web PR or commit in your PR description.
 
@@ -102,6 +102,7 @@ Durable inventory by product area. Every production `feat` from day one is also 
 | Account-synced remote pins | Done | Via API prefs |
 | Back to present (≥25 msgs below) | Done | #1250 |
 | New remote / new org pickers | Done | |
+| Org Mentions bell (#1493) | Partial | Composer bell after Call; lists thread `mentions`. Jump when loaded. Clear / auto-seen Waiting on signed DELETE |
 | Voice notes (record / play / speed) | Waiting | UI stub; toast — no Opus pipeline |
 | One-to-one / org calls | Waiting | Button opens web thread URL; no WebRTC in GTK |
 | Send a commit link into Remotes | Done | More menu → share picker → push permalink |
@@ -713,6 +714,25 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | prefetch the navigation's Log again (#1491) | Skip | Inertia prefetch |
 | store phone push tokens and push preferences for the mobile app (#1489) | Skip | Phone app |
 
+### 2026-11-06
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| add a mentions bell to org remotes (#1493) | Partial | Bell lists `mentions` / `mentions_count` from the org thread payload and jumps when the message is loaded. Clear / mark-all / load-older wait on signed `DELETE remotes/orgs/{org}/mentions` (web session only today) |
+| clear org mentions once they are seen (#1498) | Waiting | Same signed clear route; web uses `message_ids` (1–99) |
+| only count mentions as seen inside the zoomed view (#1499) | Waiting | Depends on #1498 |
+| index graph parents and successors for reply paths (#1417) | Skip | Server graph perf |
+| record which apps people use each day (#1505) | Skip | Admin Growth chart; this client stays `other_app` via UA / `app_id` |
+| add the lite mobile app shell in apps/mobile (#1502) | Skip | Lite mobile |
+| drive the lite mobile app's tab bar from the site (#1503) | Skip | Lite mobile |
+| give the lite mobile app's web view a session from its device (#1510) | Skip | Lite mobile |
+| count the lite mobile app separately in the app usage metrics (#1511) | Skip | Metrics / lite mobile |
+| show the replied-to commit in the moderation queue and reports (#1509) | Skip | Moderator tools |
+| require multiple root commits for hot topics | Skip | Server hot-topic rule |
+| show linked commits for hot topics | Skip | Server / Inertia headline |
+| remove the WebView experiment (#1501) | Skip | Website revert |
+| describe how the Mac app updates itself (#1461) | Skip | Swift Mac app docs |
+
 
 ## Standing gaps (priority)
 
@@ -720,11 +740,12 @@ Blocked on API or hard infra — not same-day launch work:
 
 1. **Mutuals / Followers you know** — connections tabs when list endpoints exist on `/api/v1`  
 2. **Unclaimed GitHub profiles + wait-to-follow + mention lookup** — #1406 / #1407 / #1409  
-3. **Voice notes** — record / upload / playback (Opus)  
-4. **Calls** — WebRTC (button currently opens the web thread)  
-5. **Commit link-card picker** — API create-commit does not accept `link_preview_url` yet  
-6. **In-app headline threads** — when a signed feed route exists  
-7. **Recent search chips** — local prefs polish (web uses localStorage); optional  
+3. **Org Mentions clear / auto-seen** — signed `DELETE remotes/orgs/{org}/mentions` with `message_ids` (#1493 / #1498 / #1499); load older history when jumping  
+4. **Voice notes** — record / upload / playback (Opus)  
+5. **Calls** — WebRTC (button currently opens the web thread)  
+6. **Commit link-card picker** — API create-commit does not accept `link_preview_url` yet  
+7. **In-app headline threads** — when a signed feed route exists  
+8. **Recent search chips** — local prefs polish (web uses localStorage); optional  
 
 ## Out of scope (recurring Skip)
 

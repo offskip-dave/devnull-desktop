@@ -310,6 +310,8 @@ pub enum AppMsg {
     },
     ThreadPinsLoaded(String, bool, Result<Vec<Message>, ApiError>),
     JumpToThreadMessage(i64),
+    JumpToOrgMention(i64),
+    ClearOrgMentions(Option<Vec<i64>>),
     ReplyToRemote(Message),
     CancelRemoteReply,
     ReactToRemote {
@@ -480,6 +482,8 @@ pub struct App {
     remote_image_previews: gtk::Box,
     reply_participants_box: gtk::Box,
     remote_link_card_btn: gtk::MenuButton,
+    org_mentions_bell: gtk::MenuButton,
+    org_mentions_stamp: String,
     compose_dialog: adw::Dialog,
     compose_host: gtk::Box,
     compose_open: bool,
@@ -2003,6 +2007,8 @@ impl SimpleComponent for App {
                                             connect_clicked => AppMsg::StartCall,
                                         },
                                         #[local_ref]
+                                        org_mentions_bell -> gtk::MenuButton {},
+                                        #[local_ref]
                                         remote_link_card_btn -> gtk::MenuButton {},
                                         gtk::Overlay {
                                             add_css_class: "dn-remote-input",
@@ -2673,6 +2679,20 @@ impl SimpleComponent for App {
                 btn.set_visible(false);
                 btn
             },
+            org_mentions_bell: {
+                let btn = gtk::MenuButton::new();
+                btn.add_css_class("flat");
+                btn.add_css_class("dn-icon-btn");
+                btn.add_css_class("dn-composer-icon");
+                btn.add_css_class("dn-mentions-bell");
+                btn.set_tooltip_text(Some("Mentions"));
+                btn.set_icon_name("dn-bell-symbolic");
+                btn.set_valign(gtk::Align::End);
+                btn.set_size_request(40, 40);
+                btn.set_visible(false);
+                btn
+            },
+            org_mentions_stamp: String::new(),
             compose_dialog,
             compose_host,
             compose_open: false,
@@ -2722,6 +2742,7 @@ impl SimpleComponent for App {
         let remote_image_previews = &model.remote_image_previews;
         let reply_participants_box = &model.reply_participants_box;
         let remote_link_card_btn = &model.remote_link_card_btn;
+        let org_mentions_bell = &model.org_mentions_bell;
         let log_composer = &model.log_composer;
         let composer_rail = &model.composer_rail;
         let hot_topics_list = &model.hot_topics_list;
@@ -5533,6 +5554,7 @@ impl SimpleComponent for App {
                     self.fill_open_thread_header(None, sender.input_sender().clone());
                     ui::clear_list(&self.thread_list);
                     ui::append_thread_skeletons(&self.thread_list);
+                    self.sync_org_mentions_bell(sender.input_sender().clone());
                 }
                 self.render_inbox(&sender);
                 self.fetch_open_thread(&sender);
@@ -5666,6 +5688,21 @@ impl SimpleComponent for App {
             }
             AppMsg::JumpToThreadMessage(id) => {
                 ui::scroll_to_thread_message(&self.thread_scroll, &self.thread_list, id);
+            }
+            AppMsg::JumpToOrgMention(id) => {
+                if !matches!(self.thread_ref, Some(ThreadRef::Org { .. })) {
+                    return;
+                }
+                if !ui::scroll_to_thread_message(&self.thread_scroll, &self.thread_list, id) {
+                    self.toast("That mention isn't loaded in this thread yet.");
+                }
+                // Clearing after jump waits on signed DELETE remotes/orgs/{org}/mentions.
+            }
+            AppMsg::ClearOrgMentions(_) => {
+                if !matches!(self.thread_ref, Some(ThreadRef::Org { .. })) {
+                    return;
+                }
+                self.toast("Clearing org mentions still needs a signed API route.");
             }
             AppMsg::ReplyToRemote(mut message) => {
                 if message.user.is_none() {
@@ -8365,6 +8402,7 @@ impl App {
         self.thread_header_stamp.clear();
         ui::clear_list(&self.thread_list);
         ui::clear_box(&self.thread_header);
+        self.sync_org_mentions_bell(sender.input_sender().clone());
         self.render_inbox(sender);
     }
 
@@ -8452,6 +8490,7 @@ impl App {
             self.last_thread_ping = Some(self.last_thread_ping.unwrap_or(0).max(id));
         }
         self.open_thread = Some(thread);
+        self.sync_org_mentions_bell(sender.input_sender().clone());
         if opened {
             self.thread_follow.set(true);
         }
@@ -8465,6 +8504,34 @@ impl App {
                 }
             });
         }
+    }
+
+    fn sync_org_mentions_bell(&mut self, sender: relm4::Sender<AppMsg>) {
+        let is_org = matches!(self.thread_ref, Some(ThreadRef::Org { .. }));
+        self.org_mentions_bell.set_visible(is_org);
+        if !is_org {
+            self.org_mentions_bell.set_popover(None::<&gtk::Popover>);
+            self.org_mentions_stamp.clear();
+            return;
+        }
+        let (mentions, count) = self
+            .open_thread
+            .as_ref()
+            .map(|thread| (thread.mentions.as_slice(), thread.mentions_count))
+            .unwrap_or((&[], 0));
+        let stamp = format!(
+            "{count}:{}",
+            mentions
+                .iter()
+                .map(|message| message.id.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        if stamp == self.org_mentions_stamp {
+            return;
+        }
+        self.org_mentions_stamp = stamp;
+        ui::fill_org_mentions_bell(&self.org_mentions_bell, mentions, count, sender);
     }
 
     fn toggle_pin_remote(&mut self, sender: &ComponentSender<App>) {

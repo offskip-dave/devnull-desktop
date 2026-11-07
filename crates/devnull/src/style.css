@@ -1496,6 +1496,27 @@ menubutton.dn-thread-menu > button {
   padding: 8px 12px;
 }
 
+.dn-mentions-bell {
+  overflow: visible;
+}
+
+.dn-mentions-bell > button {
+  overflow: visible;
+}
+
+.dn-mentions-badge {
+  margin-top: -2px;
+  margin-right: -2px;
+}
+
+.dn-mentions-panel-head {
+  border-bottom: 1px solid var(--dn_hairline);
+}
+
+.dn-mentions-item:hover {
+  background: var(--dn_wash);
+}
+
 .dn-flash .dn-message-bubble {
   box-shadow: 0 0 0 2px var(--accent_bg_color);
 }

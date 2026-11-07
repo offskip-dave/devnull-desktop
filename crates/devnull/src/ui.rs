@@ -6774,6 +6774,166 @@ fn message_snippet(message: &Message) -> String {
     }
 }
 
+/// Mentions bell for an org Remotes composer: count badge, newest-first list, jump / mark-all actions.
+pub fn fill_org_mentions_bell(
+    button: &gtk::MenuButton,
+    mentions: &[Message],
+    count: i64,
+    sender: Sender<AppMsg>,
+) {
+    let count = count.max(mentions.len() as i64);
+    let tip = if count > 0 {
+        format!(
+            "{} {}",
+            format_count(count),
+            if count == 1 { "mention" } else { "mentions" }
+        )
+    } else {
+        "Mentions".into()
+    };
+    button.set_tooltip_text(Some(&tip));
+
+    let trigger = gtk::Overlay::new();
+    trigger.set_overflow(gtk::Overflow::Visible);
+    let icon = gtk::Image::from_icon_name("dn-bell-symbolic");
+    icon.set_pixel_size(20);
+    trigger.set_child(Some(&icon));
+    let badge = gtk::Label::new(Some(&badge_text(count)));
+    badge.add_css_class("dn-nav-badge");
+    badge.add_css_class("dn-mentions-badge");
+    badge.set_halign(gtk::Align::End);
+    badge.set_valign(gtk::Align::Start);
+    badge.set_can_target(false);
+    badge.set_visible(count > 0);
+    trigger.add_overlay(&badge);
+    button.set_child(Some(&trigger));
+
+    let popover = gtk::Popover::new();
+    popover.set_position(gtk::PositionType::Top);
+    popover.set_has_arrow(false);
+    popover.add_css_class("dn-mentions-popover");
+
+    let panel = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    panel.set_size_request(320, -1);
+    panel.add_css_class("dn-mentions-panel");
+
+    let head = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    head.add_css_class("dn-mentions-panel-head");
+    head.set_margin_start(12);
+    head.set_margin_end(12);
+    head.set_margin_top(10);
+    head.set_margin_bottom(10);
+    let title = gtk::Label::new(Some("Mentions"));
+    title.add_css_class("dn-name");
+    title.set_xalign(0.0);
+    head.append(&title);
+    let count_label = gtk::Label::new(Some(&format_count(count)));
+    count_label.add_css_class("dn-mono");
+    count_label.add_css_class("dn-muted");
+    head.append(&count_label);
+    if !mentions.is_empty() {
+        let mark_all = gtk::Button::with_label("mark all read");
+        mark_all.add_css_class("flat");
+        mark_all.add_css_class("dn-mono");
+        mark_all.set_halign(gtk::Align::End);
+        mark_all.set_hexpand(true);
+        mark_all.connect_clicked({
+            let sender = sender.clone();
+            let popover = popover.clone();
+            move |_| {
+                popover.popdown();
+                sender.emit(AppMsg::ClearOrgMentions(None));
+            }
+        });
+        head.append(&mark_all);
+    }
+    panel.append(&head);
+
+    if mentions.is_empty() {
+        let empty = gtk::Label::new(Some("no new mentions"));
+        empty.add_css_class("dn-mono");
+        empty.add_css_class("dn-muted");
+        empty.set_margin_top(32);
+        empty.set_margin_bottom(32);
+        empty.set_halign(gtk::Align::Center);
+        panel.append(&empty);
+    } else {
+        let scroll = gtk::ScrolledWindow::new();
+        scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+        scroll.set_min_content_height(80);
+        scroll.set_max_content_height(360);
+        scroll.set_propagate_natural_height(true);
+        let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        for message in mentions {
+            list.append(&org_mention_row(message, sender.clone(), &popover));
+        }
+        scroll.set_child(Some(&list));
+        panel.append(&scroll);
+    }
+
+    popover.set_child(Some(&panel));
+    button.set_popover(Some(&popover));
+}
+
+fn org_mention_row(
+    message: &Message,
+    sender: Sender<AppMsg>,
+    popover: &gtk::Popover,
+) -> gtk::Widget {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    row.add_css_class("dn-mentions-item");
+    row.set_margin_start(12);
+    row.set_margin_end(12);
+    row.set_margin_top(10);
+    row.set_margin_bottom(10);
+    row.append(&avatar_widget(message.user.as_ref(), 28, false));
+    let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    text.set_hexpand(true);
+    let who = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    let name = gtk::Label::new(Some(
+        message
+            .user
+            .as_ref()
+            .map(User::display_name)
+            .unwrap_or("someone"),
+    ));
+    name.add_css_class("dn-name");
+    name.set_hexpand(true);
+    name.set_xalign(0.0);
+    name.set_ellipsize(pango::EllipsizeMode::End);
+    who.append(&name);
+    let stamp = gtk::Label::new(Some(&relative_time(message.created_at)));
+    stamp.add_css_class("dn-mono");
+    stamp.add_css_class("dn-muted");
+    who.append(&stamp);
+    text.append(&who);
+    let body = gtk::Label::new(Some(&message_snippet(message)));
+    body.add_css_class("dn-muted");
+    body.set_xalign(0.0);
+    body.set_wrap(true);
+    body.set_wrap_mode(pango::WrapMode::WordChar);
+    body.set_lines(2);
+    body.set_ellipsize(pango::EllipsizeMode::End);
+    text.append(&body);
+    row.append(&text);
+
+    let id = message.id;
+    let click = gtk::GestureClick::new();
+    click.set_button(1);
+    click.connect_pressed({
+        let sender = sender.clone();
+        let popover = popover.clone();
+        move |gesture, _, _, _| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            popover.popdown();
+            sender.emit(AppMsg::JumpToOrgMention(id));
+        }
+    });
+    row.add_controller(click);
+    pointer(&row);
+    row.upcast()
+}
+
 fn pinned_banner_label(count: usize) -> String {
     format!("pinned · {count}")
 }
@@ -7011,9 +7171,9 @@ pub fn refresh_thread_pins(list: &gtk::ListBox, pinned: &HashSet<i64>, can_pin: 
     }
 }
 
-pub fn scroll_to_thread_message(scroll: &gtk::ScrolledWindow, list: &gtk::ListBox, id: i64) {
+pub fn scroll_to_thread_message(scroll: &gtk::ScrolledWindow, list: &gtk::ListBox, id: i64) -> bool {
     let Some(row) = named_row(list, &format!("dn-msg-{id}")) else {
-        return;
+        return false;
     };
     row.add_css_class("dn-flash");
     let clear = row.clone();
@@ -7030,6 +7190,7 @@ pub fn scroll_to_thread_message(scroll: &gtk::ScrolledWindow, list: &gtk::ListBo
         adj.set_value(target);
     }
     row.grab_focus();
+    true
 }
 
 fn message_meta_line(

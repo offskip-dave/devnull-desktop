@@ -2743,6 +2743,12 @@ pub struct ChatThread {
     pub typing: Vec<String>,
     #[serde(default, deserialize_with = "deserialize_vec")]
     pub pinned: Vec<Message>,
+    /// Org Remotes mentions bell: messages that @mentioned you and are not cleared yet.
+    #[serde(default, deserialize_with = "deserialize_vec")]
+    pub mentions: Vec<Message>,
+    /// Exact uncleared mention count for the org (may exceed `mentions.len()`, which is capped at 99).
+    #[serde(default)]
+    pub mentions_count: i64,
     #[serde(default)]
     pub role: Option<String>,
     #[serde(default, deserialize_with = "deserialize_opt_datetime")]
@@ -2763,6 +2769,20 @@ impl ChatThread {
             }
         }
         Vec::new()
+    }
+
+    pub fn mentions_from_value(value: &serde_json::Value) -> (Vec<Message>, i64) {
+        let root = value
+            .get("data")
+            .filter(|data| data.is_object())
+            .unwrap_or(value);
+        let mentions = root
+            .get("mentions")
+            .map(json_message_list)
+            .unwrap_or_default();
+        let count = json_count(root, &["mentions_count", "mentionsCount"])
+            .unwrap_or(mentions.len() as i64);
+        (mentions, count)
     }
 
     pub fn is_muted(&self) -> bool {
@@ -2803,6 +2823,7 @@ impl ChatThread {
             .filter_map(|item| serde_json::from_value(item).ok())
             .collect();
         let pinned = Self::pinned_from_value(&value);
+        let (mentions, mentions_count) = Self::mentions_from_value(&value);
         let role = root
             .get("role")
             .and_then(serde_json::Value::as_str)
@@ -2848,6 +2869,8 @@ impl ChatThread {
                 })
                 .unwrap_or_default(),
             pinned,
+            mentions,
+            mentions_count,
             role,
             muted_until_at: json_datetime(root, &["muted_until_at", "mutedUntilAt"]),
         }
@@ -4120,7 +4143,7 @@ mod remotes_tests {
     }
 
     #[test]
-    fn thread_parses_org_pins_and_the_viewer_role() {
+    fn thread_parses_org_pins_mentions_and_the_viewer_role() {
         let thread = ChatThread::from_value(serde_json::json!({
             "role": "maintainer",
             "messages": [{ "id": 1, "body": "hi" }],
@@ -4129,6 +4152,12 @@ mod remotes_tests {
                 { "broken": true },
                 { "id": "7", "body": "and this" }
             ],
+            "mentions": [
+                { "id": 9, "body": "@you look", "user": { "id": "3", "username": "linus", "name": "Linus" } },
+                { "broken": true },
+                { "id": "11", "body": "also you" }
+            ],
+            "mentions_count": 120,
             "members": [{
                 "user": { "id": "2", "username": "grace" },
                 "role": "contributor"
@@ -4139,6 +4168,10 @@ mod remotes_tests {
         assert_eq!(thread.pinned.len(), 2);
         assert_eq!(thread.pinned[0].id, 4);
         assert_eq!(thread.pinned[1].id, 7);
+        assert_eq!(thread.mentions.len(), 2);
+        assert_eq!(thread.mentions[0].id, 9);
+        assert_eq!(thread.mentions[1].id, 11);
+        assert_eq!(thread.mentions_count, 120);
         let contributor = ChatThread {
             members: vec![Member {
                 user: User {
