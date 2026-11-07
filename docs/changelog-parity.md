@@ -706,6 +706,7 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | keep the web app live across tabs and devices (#1458) | Skip | Browser tabs / Reverb |
 | polish the UI on mobile (#1475) | Skip | |
 | remote mobile styling fixes (#1462) | Skip | |
+| poc experiment WebView (temporary, to be reverted | Waiting | Port task opened; web [344fb65](https://github.com/dev-null-sh/dev-null.sh/commit/344fb653c954b73c7755e269e4e0fe426c7ea04e) |
 
 ### 2026-11-05
 
