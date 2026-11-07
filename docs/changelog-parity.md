@@ -619,6 +619,7 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | search for profiles | Done |  |
 | show day-N retention by signup day and by weekly cohort on the Growth page (#1337) | Skip | |
 | release 0.4.0 mac os app | Skip | |
+| add Halloween 404, Christmas graph, Santa hat and New Year snippet | Waiting | Port task opened; web [22ff0d2](https://github.com/dev-null-sh/dev-null.sh/commit/22ff0d26914b2fd3e4527632d89f7190eb91756f) |
 
 ### 2026-11-01
 
