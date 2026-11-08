@@ -734,6 +734,14 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | describe how the Mac app updates itself (#1461) | Skip | Swift Mac app docs |
 
 
+### 2026-11-07
+
+Auto-imported by the changelog parity cron.
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| rank links and their commits by stars of all time on the links pages (#1515) | Waiting | Port task opened; web [5b00d8e](https://github.com/dev-null-sh/dev-null.sh/commit/5b00d8e427f35278c8ac482d2038962ef9e1589a) |
+
 ## Standing gaps (priority)
 
 Blocked on API or hard infra — not same-day launch work:
