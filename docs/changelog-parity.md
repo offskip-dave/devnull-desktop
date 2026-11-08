@@ -734,6 +734,19 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | describe how the Mac app updates itself (#1461) | Skip | Swift Mac app docs |
 
 
+### 2026-11-07
+
+Auto-imported by the changelog parity cron.
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| draw the lite mobile app's launch and sign-in screens like the site's (#1514) | Skip | Out of scope for GTK (auto) |
+| sign in to the lite mobile app with a device key (#1512) | Skip | Out of scope for GTK (auto) |
+| try topics on the experimental links pages (#1513) | Waiting | Auto-imported from [510c5e3](https://github.com/dev-null-sh/dev-null.sh/commit/510c5e3f498cea287ee3cd2154b5bb442ff925d3); needs GTK port or API probe |
+| rank links and their commits by stars of all time on the links pages (#1515) | Waiting | Auto-imported from [5b00d8e](https://github.com/dev-null-sh/dev-null.sh/commit/5b00d8e427f35278c8ac482d2038962ef9e1589a); needs GTK port or API probe |
+| make stargazers have a hovercard (#1204) | Waiting | Auto-imported from [833b60c](https://github.com/dev-null-sh/dev-null.sh/commit/833b60c6f853cf2234c5ef36415f127f27ec4b6f); needs GTK port or API probe |
+| update the TUI listing for themes and remotes (#1478) | Skip | Out of scope for GTK (auto) |
+
 ## Standing gaps (priority)
 
 Blocked on API or hard infra — not same-day launch work:
