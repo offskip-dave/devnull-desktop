@@ -734,6 +734,14 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | describe how the Mac app updates itself (#1461) | Skip | Swift Mac app docs |
 
 
+### 2026-11-07
+
+Auto-imported by the changelog parity cron.
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| make stargazers have a hovercard (#1204) | Waiting | Port task opened; web [833b60c](https://github.com/dev-null-sh/dev-null.sh/commit/833b60c6f853cf2234c5ef36415f127f27ec4b6f) |
+
 ## Standing gaps (priority)
 
 Blocked on API or hard infra — not same-day launch work:
