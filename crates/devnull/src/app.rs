@@ -6580,9 +6580,10 @@ impl App {
     }
 
     fn can_post_as(&self) -> bool {
+        // Org commits are always on (web 6e71709); `/me` lists the orgs you can post as.
         self.user
             .as_ref()
-            .is_some_and(|user| user.can_post_as_organization && !user.organizations.is_empty())
+            .is_some_and(|user| !user.organizations.is_empty())
     }
 
     fn posting_as_handle(&self) -> Option<String> {
@@ -6923,6 +6924,8 @@ impl App {
                 user.username()
                     .eq_ignore_ascii_case(&self.connections_handle)
             }),
+            self.user.as_ref().map(|user| user.user.id.clone()),
+            Some(self.user_card.clone()),
             sender.input_sender().clone(),
         );
     }

@@ -11523,6 +11523,8 @@ pub fn fill_connections(
     star_count: i64,
     me: Option<&str>,
     own_profile: bool,
+    me_id: Option<String>,
+    user_card: Option<Rc<UserCard>>,
     sender: Sender<AppMsg>,
 ) {
     clear_list(list);
@@ -11577,8 +11579,10 @@ pub fn fill_connections(
         list.append(&connection_user_row(
             user,
             me,
+            me_id.clone(),
             kind,
             own_profile,
+            user_card.clone(),
             sender.clone(),
         ));
     }
@@ -11636,8 +11640,10 @@ pub fn stargazers_error_row(sender: Sender<AppMsg>) -> gtk::ListBoxRow {
 fn connection_user_row(
     user: &User,
     me: Option<&str>,
+    me_id: Option<String>,
     kind: ConnectionsKind,
     own_profile: bool,
+    user_card: Option<Rc<UserCard>>,
     sender: Sender<AppMsg>,
 ) -> gtk::ListBoxRow {
     let row = gtk::ListBoxRow::new();
@@ -11648,11 +11654,13 @@ fn connection_user_row(
     inner.append(&avatar_widget(Some(user), 40, true));
     let col = gtk::Box::new(gtk::Orientation::Vertical, 2);
     col.set_hexpand(true);
+    let identity = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    identity.set_hexpand(true);
     let name = gtk::Label::new(Some(user.display_name()));
     name.add_css_class("dn-name");
     name.set_xalign(0.0);
     name.set_tooltip_text(Some(user.display_name()));
-    col.append(&name);
+    identity.append(&name);
     let handle_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
     handle_row.append(&handle_dot(Some(user)));
     let handle = gtk::Label::new(Some(&format!("@{}", user.username)));
@@ -11664,7 +11672,13 @@ fn connection_user_row(
         chip.add_css_class("dn-profile-chip");
         handle_row.append(&chip);
     }
-    col.append(&handle_row);
+    identity.append(&handle_row);
+    if kind == ConnectionsKind::Stargazers {
+        if let Some(card) = &user_card {
+            card.bind(&identity, user, sender.clone(), me_id);
+        }
+    }
+    col.append(&identity);
     inner.append(&col);
     let own = me.is_some_and(|me| me.eq_ignore_ascii_case(&user.username));
     if !own && me.is_some() {
@@ -12787,21 +12801,19 @@ pub fn append_related(list: &gtk::ListBox, commits: &[Commit], ctx: &FeedCtx) {
         return;
     }
     list.append(&section_heading("Related commits"));
-    let dark = adw_is_dark();
-    let mut previous = None;
+    // Unrelated threads: each card ends on its own dot (web #1459), not one rail.
     for commit in commits {
         list.append(&commit_row(
             commit,
-            previous.as_deref(),
+            None,
             ctx,
             CommitChrome {
-                connected: true,
+                connected: false,
                 terminator: true,
                 ..CommitChrome::default()
             },
             None,
         ));
-        previous = Some(lane_color(commit.author.as_ref(), dark));
     }
 }
 
@@ -16065,6 +16077,26 @@ mod reply_rail_tests {
             } => {
                 assert!(!terminator);
                 assert!(!reply_tail);
+            }
+            other => panic!("expected a commit rail, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn related_commits_end_on_their_own_dot() {
+        let chrome = CommitChrome {
+            connected: false,
+            terminator: true,
+            ..CommitChrome::default()
+        };
+        match chrome.commit_kind(true) {
+            RailKind::Commit {
+                incoming,
+                terminator,
+                ..
+            } => {
+                assert!(!incoming);
+                assert!(terminator);
             }
             other => panic!("expected a commit rail, got {other:?}"),
         }

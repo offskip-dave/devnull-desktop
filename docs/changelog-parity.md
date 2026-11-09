@@ -1,6 +1,6 @@
 # Changelog parity
 
-Track of [dev-null.sh/changelog](https://dev-null.sh/changelog) against this GTK client, from the platform’s first production commit on **2026-10-15** (`chore: first` — empty repo in the morning, live by lunch; see [About](https://dev-null.sh/about)) through **2026-11-06** (~1.1k commits / ~390 non-merge `feat`s across 23 days). Prefer signed `/api/v1` surfaces. Skip Inertia-only, CLI, PWA, admin/CMS, and first-party Swift/mobile app work unless a client route exists.
+Track of [dev-null.sh/changelog](https://dev-null.sh/changelog) against this GTK client, from the platform’s first production commit on **2026-10-15** (`chore: first` — empty repo in the morning, live by lunch; see [About](https://dev-null.sh/about)) through **2026-11-08**. Prefer signed `/api/v1` surfaces. Skip Inertia-only, CLI, PWA, admin/CMS, and first-party Swift/mobile app work unless a client route exists.
 
 The [capability matrix](#capability-matrix-launch--present) is the durable inventory. [Day by day](#day-by-day-oct-15--present) lists every non-merge `feat` on `production` since day one. Update both when you catch up a changelog day. Link the web PR or commit in your PR description.
 
@@ -41,7 +41,7 @@ Durable inventory by product area. Every production `feat` from day one is also 
 | Hashtags in commit text | Done | `#tag` opens search; hex colors stay swatches |
 | Emoji shortcodes + picker; `@` mention suggestions | Done | |
 | Replies, quotes, related commits, ancestors | Done | |
-| Stars (incl. stargazers of your own commit) | Done | API #1310 |
+| Stars (incl. stargazers of your own commit) | Done | API #1310; stargazer hover cards (#1204) |
 | Pastéis mode | Done | |
 | Report / mute / block / delete own commit | Done | Delete via more menu |
 | Commit more menu (follow / mute / block / pin / send) | Done | #1371 Send in Remotes via share picker |
@@ -87,7 +87,7 @@ Durable inventory by product area. Every production `feat` from day one is also 
 | Org page: follow, claim, lane color, share | Done | |
 | Org commits tab (API) | Done | #1386 |
 | Org mentions tab | Done | |
-| Post / schedule as organization | Done | Composer “post as” |
+| Post / schedule as organization | Done | Composer “post as”; feature flag removed on the web (6e71709) |
 | Org remotes (groups), pin messages, leave | Done | |
 | Org admin moderation (timeout / ban posters) | Skip | Moderator tools, Inertia |
 | Org calls | Waiting | Same as remotes calls (WebRTC) |
@@ -732,6 +732,30 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | show linked commits for hot topics | Skip | Server / Inertia headline |
 | remove the WebView experiment (#1501) | Skip | Website revert |
 | describe how the Mac app updates itself (#1461) | Skip | Swift Mac app docs |
+
+### 2026-11-07
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| make stargazers have a hovercard (#1204) | Done | Connections stargazers list binds the same hover card as the log |
+| end each related commit with its own dot (#1459) | Done | Related list no longer chains a solid rail |
+| try topics on the experimental links pages (#1513) | Skip | Inertia `/links` |
+| rank links and their commits by stars of all time on the links pages (#1515) | Skip | Inertia `/links` ranking |
+| use the page's title and favicon for GitHub links too (#1517) | Skip | Inertia `/links` chrome |
+| draw the lite mobile app's launch and sign-in screens like the site's (#1514) | Skip | Lite mobile |
+| sign in to the lite mobile app with a device key (#1512) | Skip | Lite mobile |
+| update the TUI listing for themes and remotes (#1478) | Skip | TUI |
+
+### 2026-11-08
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| removes feature flag around org commits (6e71709) | Done | Post-as follows `/me` organizations; no client feature gate |
+| end each search result with its own dot (#1455) | Done | Search feed already uses disconnected cards (`connected: false`) |
+| adjusts partners page | Skip | Website partners |
+| keep formatting out of unselected lines (#1412) | Skip | Website editor |
+| fit the replies picker on small screens (#1500) | Skip | Website layout |
+| let Tom search repository history when asked who worked on a feature (#1487) | Skip | Tom / admin |
 
 
 ## Standing gaps (priority)
