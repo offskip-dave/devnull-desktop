@@ -7171,7 +7171,11 @@ pub fn refresh_thread_pins(list: &gtk::ListBox, pinned: &HashSet<i64>, can_pin: 
     }
 }
 
-pub fn scroll_to_thread_message(scroll: &gtk::ScrolledWindow, list: &gtk::ListBox, id: i64) -> bool {
+pub fn scroll_to_thread_message(
+    scroll: &gtk::ScrolledWindow,
+    list: &gtk::ListBox,
+    id: i64,
+) -> bool {
     let Some(row) = named_row(list, &format!("dn-msg-{id}")) else {
         return false;
     };

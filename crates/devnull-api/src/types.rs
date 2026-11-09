@@ -2780,8 +2780,8 @@ impl ChatThread {
             .get("mentions")
             .map(json_message_list)
             .unwrap_or_default();
-        let count = json_count(root, &["mentions_count", "mentionsCount"])
-            .unwrap_or(mentions.len() as i64);
+        let count =
+            json_count(root, &["mentions_count", "mentionsCount"]).unwrap_or(mentions.len() as i64);
         (mentions, count)
     }
 
