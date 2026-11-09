@@ -21,21 +21,46 @@ jobs:
       options: --privileged
     steps:
       - uses: actions/checkout@v7
-      # Compile succeeds; export often fails when ostree's 3% free-space floor
-      # trips on crowded Actions disks (only ~17MB short in recent runs).
-      - name: Prepare ostree repo
+      # Avoid flatpak/flatpak-github-actions/flatpak-builder: it always passes
+      # --install-deps-from=flathub, which *updates* the image SDK and dies on
+      # Actions overlayfs with "Invalid cross-device link" / xvfb exit 139
+      # (flatpak/flatpak-github-actions#267). Keep Flatpak's system install on
+      # the workspace FS so ostree rename stays same-device, then build without
+      # --install-deps-from.
+      - name: Install Flatpak SDKs on the workspace
         run: |
           df -h
+          # Drop the image's /var/lib/flatpak copy; we reinstall under the workspace.
+          rm -rf /var/lib/flatpak/*
+          export FLATPAK_SYSTEM_DIR="${GITHUB_WORKSPACE}/.flatpak-system"
+          mkdir -p "$FLATPAK_SYSTEM_DIR"
+          echo "FLATPAK_SYSTEM_DIR=$FLATPAK_SYSTEM_DIR" >> "$GITHUB_ENV"
+          flatpak remote-add --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install -y --noninteractive flathub \
+            org.gnome.Platform//49 \
+            org.gnome.Sdk//49 \
+            org.freedesktop.Sdk.Extension.rust-stable//25.08
+          df -h
+      # Export can fail when ostree's 3% free-space floor trips on crowded
+      # Actions disks (only ~17MB short in recent runs).
+      - name: Prepare ostree repo
+        run: |
           mkdir -p repo
           ostree init --repo=repo --mode=archive-z2
           ostree --repo=repo config set core.min-free-space-percent 0
           ostree --repo=repo config set core.min-free-space-size 0MB
-      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
-        with:
-          bundle: devnull.flatpak
-          manifest-path: flatpak/sh.devnull.Client.yml
-          cache: false
-          repo-dir: repo
+      - name: Build Flatpak
+        run: |
+          flatpak-builder \
+            --force-clean \
+            --disable-rofiles-fuse \
+            --repo=repo \
+            --default-branch=master \
+            --arch=x86_64 \
+            --state-dir=.flatpak-builder \
+            flatpak_app \
+            flatpak/sh.devnull.Client.yml
+          flatpak build-bundle repo devnull.flatpak sh.devnull.Client master
       - uses: actions/upload-artifact@v7
         with:
           name: flatpak-x86_64

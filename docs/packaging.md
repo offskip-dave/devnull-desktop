@@ -14,6 +14,8 @@ From the repo root:
 
 The **Packaging** GitHub Actions workflow (`.github/workflows/packaging.yml`) runs those targets on `workflow_dispatch`, pushes to `main` / `production`, and `v*` tags. It uploads artifacts for ~14 days. PR CI stays on the lighter [CI](../.github/workflows/ci.yml) workflow (fmt / clippy / tests only).
 
+Flatpak CI uses `ghcr.io/flathub-infra/flatpak-github-actions:gnome-49` and calls `flatpak-builder` directly (not `flatpak/flatpak-github-actions/flatpak-builder`). That action always passes `--install-deps-from=flathub`, which tries to *update* the image’s preinstalled GNOME 49 SDK and fails on GitHub’s overlayfs with `Invalid cross-device link` / xvfb exit 139. The job sets `FLATPAK_SYSTEM_DIR` under the workspace (same filesystem as the build), installs Platform/Sdk 49 plus the Rust extension there, then builds without `--install-deps-from`.
+
 Dependabot (`.github/dependabot.yml`) opens weekly PRs for Cargo and GitHub Actions.
 
 ## Flatpak
