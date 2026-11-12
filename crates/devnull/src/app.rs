@@ -13,7 +13,7 @@ use relm4::prelude::*;
 
 use devnull_api::{
     ApiError, ChatThread, Client, Commit, CommitPage, CommitTranslation, ConversationSummary,
-    CurrentUser, DeviceKey, HotTopic, InboxPage, InboxTab, Lane, LogKind, LogPage,
+    CurrentUser, DeviceKey, HeadlinePage, HotTopic, InboxPage, InboxTab, Lane, LogKind, LogPage,
     MentionSuggestions, Message, MessageReaction, Notification, NotificationFilter, Organization,
     Page, PastelAward, Profile, RemoteCandidate, ReplyParticipant, SearchResults, ThreadRef,
     Upload, User, UserPreview, UserSettings,
@@ -161,6 +161,7 @@ pub enum AppMsg {
     GivePastel(String),
     PastelGiven(String, Result<PastelAward, ApiError>),
     StartQuote(Commit),
+    QuoteClosed,
     SubmitQuote(String, String),
     ReplyTo(String),
     CancelReply,
@@ -243,9 +244,15 @@ pub enum AppMsg {
     RunSearch(String),
     SearchTab(bool),
     SearchLoaded(Result<SearchResults, ApiError>),
+    OpenHeadline(String),
+    HeadlineLoaded(Result<HeadlinePage, ApiError>),
     SuggestedLoaded(Result<Vec<User>, ApiError>, HashSet<String>),
     LiveFollowingLoaded(Result<Vec<User>, ApiError>),
     HotTopicsLoaded(Result<Vec<HotTopic>, ApiError>),
+    ConfirmOpenWeb {
+        url: String,
+        trust_domain: Option<String>,
+    },
     FollowUser(String, bool),
     UserFollowed(String, bool),
     RefreshSuggested,
@@ -363,6 +370,9 @@ pub struct App {
     search_results: SearchResults,
     search_tab_latest: bool,
     search_ready: bool,
+    open_headline: Option<HotTopic>,
+    headline_commits: Vec<Commit>,
+    quote_view: Option<gtk::TextView>,
     muted: Vec<User>,
     blocked: Vec<User>,
     settings_tab: SettingsTab,
@@ -1522,18 +1532,20 @@ impl SimpleComponent for App {
                                     connect_clicked => AppMsg::Back,
                                 },
                                 gtk::Label {
-                                    set_label: "Search",
+                                    #[watch]
+                                    set_label: &model.search_bar_title(),
                                     add_css_class: "dn-commit-bar-title",
                                     set_xalign: 0.0,
+                                    set_ellipsize: pango::EllipsizeMode::End,
+                                    set_hexpand: true,
                                 },
                                 gtk::Box {
                                     set_orientation: gtk::Orientation::Horizontal,
                                     set_spacing: 4,
-                                    set_hexpand: true,
                                     set_halign: gtk::Align::End,
                                     add_css_class: "dn-tabs",
                                     #[watch]
-                                    set_visible: model.search_ready,
+                                    set_visible: model.search_ready && model.open_headline.is_none(),
                                     gtk::Button {
                                         set_label: "Most relevant",
                                         #[watch]
@@ -2547,6 +2559,9 @@ impl SimpleComponent for App {
             search_results: SearchResults::default(),
             search_tab_latest: false,
             search_ready: false,
+            open_headline: None,
+            headline_commits: Vec::new(),
+            quote_view: None,
             muted: Vec::new(),
             blocked: Vec::new(),
             settings_tab: SettingsTab::Profile,
@@ -3707,6 +3722,7 @@ impl SimpleComponent for App {
                     }
                     self.set_live_following(self.live_following.clone(), &sender);
                     self.queue_auto_translations(&page.data, &sender);
+                    self.seed_reply_previews(&page.data, &sender);
                     let ctx = self.feed_ctx(&sender);
                     let offset = if more {
                         self.log_commits.len().saturating_sub(page.data.len())
@@ -3737,7 +3753,6 @@ impl SimpleComponent for App {
                     if self.log_cursor.is_some() && self.near_log_end() {
                         sender.input(AppMsg::LoadMore);
                     }
-                    self.queue_reply_previews(&page.data, &sender);
                 }
             }
             AppMsg::LogLoaded(Err(err)) => {
@@ -3801,7 +3816,14 @@ impl SimpleComponent for App {
                 }
             }
             AppMsg::StartQuote(commit) => {
-                ui::quote_window(&commit, sender.input_sender().clone()).present();
+                let (win, view) = ui::quote_window(&commit, sender.input_sender().clone());
+                self.quote_view = Some(view);
+                let clear = sender.clone();
+                win.connect_destroy(move |_| clear.input(AppMsg::QuoteClosed));
+                win.present();
+            }
+            AppMsg::QuoteClosed => {
+                self.quote_view = None;
             }
             AppMsg::SubmitQuote(id, body) => {
                 if body.trim().is_empty() {
@@ -4175,9 +4197,8 @@ impl SimpleComponent for App {
                     ProfileFeed::Readme => self.load_readme(&sender),
                     ProfileFeed::Commits | ProfileFeed::Replies | ProfileFeed::Mentions => {
                         self.queue_auto_translations_visible(&sender);
+                        self.seed_reply_previews(&self.profile_commits.clone(), &sender);
                         self.render_profile_feed(&sender, false);
-                        let ids = reply_preview_ids(&self.profile_commits);
-                        self.queue_reply_previews_ids(ids, &sender);
                     }
                 }
             }
@@ -4201,9 +4222,8 @@ impl SimpleComponent for App {
                     self.profile_commits.clear();
                 }
                 self.queue_auto_translations_visible(&sender);
+                self.seed_reply_previews(&self.profile_commits.clone(), &sender);
                 self.render_profile_feed(&sender, false);
-                let ids = reply_preview_ids(&self.profile_commits);
-                self.queue_reply_previews_ids(ids, &sender);
             }
             AppMsg::GoLive => {
                 if self.user.as_ref().is_some_and(|user| user.user.is_live()) {
@@ -4856,6 +4876,8 @@ impl SimpleComponent for App {
                 }
                 self.omnibox.close();
                 self.visible = "search";
+                self.open_headline = None;
+                self.headline_commits.clear();
                 self.search_ready = false;
                 self.search_tab_latest = false;
                 ui::clear_list(&self.search_list);
@@ -4873,8 +4895,11 @@ impl SimpleComponent for App {
                 self.user_card.dismiss();
                 match result {
                     Ok(results) => {
+                        self.open_headline = None;
+                        self.headline_commits.clear();
                         self.search_results = results;
                         self.search_ready = true;
+                        self.seed_reply_previews(&self.search_results.commits.clone(), &sender);
                         self.render_search(&sender);
                     }
                     Err(err) => {
@@ -4884,8 +4909,65 @@ impl SimpleComponent for App {
                     }
                 }
             }
+            AppMsg::OpenHeadline(id) => {
+                let id = id.trim().to_string();
+                if id.is_empty() {
+                    return;
+                }
+                self.omnibox.close();
+                self.visible = "search";
+                self.search_ready = false;
+                self.search_tab_latest = false;
+                self.open_headline = Some(HotTopic {
+                    id: id.clone(),
+                    name: "Hot topic".into(),
+                    summary: None,
+                });
+                self.headline_commits.clear();
+                ui::clear_list(&self.search_list);
+                ui::append_commit_skeletons(&self.search_list, 3);
+                if let Some(client) = self.client.clone() {
+                    self.begin_busy();
+                    let sender2 = sender.clone();
+                    relm4::spawn(async move {
+                        sender2.input(AppMsg::HeadlineLoaded(client.headline(&id).await));
+                    });
+                }
+            }
+            AppMsg::HeadlineLoaded(result) => {
+                self.end_busy();
+                self.user_card.dismiss();
+                match result {
+                    Ok(page) => {
+                        let id = self
+                            .open_headline
+                            .as_ref()
+                            .map(|topic| topic.id.clone())
+                            .unwrap_or_default();
+                        self.open_headline = Some(HotTopic {
+                            id,
+                            name: page.name,
+                            summary: page.summary,
+                        });
+                        self.headline_commits = page.data;
+                        self.search_ready = true;
+                        self.seed_reply_previews(&self.headline_commits.clone(), &sender);
+                        self.render_search(&sender);
+                    }
+                    Err(err) => {
+                        self.open_headline = None;
+                        self.headline_commits.clear();
+                        self.search_ready = false;
+                        ui::clear_list(&self.search_list);
+                        self.fail(err);
+                    }
+                }
+            }
             AppMsg::SearchTab(latest) => {
-                if !self.search_ready || self.search_tab_latest == latest {
+                if self.open_headline.is_some()
+                    || !self.search_ready
+                    || self.search_tab_latest == latest
+                {
                     return;
                 }
                 self.search_tab_latest = latest;
@@ -5871,7 +5953,13 @@ impl SimpleComponent for App {
                     sender.input(AppMsg::LoadMore);
                 }
             }
-            AppMsg::OpenWeb(url) => open_web(&url),
+            AppMsg::OpenWeb(url) => self.open_link(&url, &sender),
+            AppMsg::ConfirmOpenWeb { url, trust_domain } => {
+                if let Some(domain) = trust_domain {
+                    self.prefs.trust_external_domain(&domain);
+                }
+                open_web(&url);
+            }
         }
     }
 
@@ -5889,7 +5977,11 @@ impl App {
             return "Profile";
         }
         if self.visible == "search" {
-            return "Search";
+            return if self.open_headline.is_some() {
+                "Topic"
+            } else {
+                "Search"
+            };
         }
         if self.visible == "connections" {
             return self.connections_kind.title();
@@ -6152,6 +6244,21 @@ impl App {
     }
 
     fn render_search(&self, sender: &ComponentSender<App>) {
+        if let Some(topic) = &self.open_headline {
+            ui::append_headline(
+                &self.search_list,
+                &topic.name,
+                topic.summary.as_deref(),
+                &self.headline_commits,
+                &ui::FeedCtx {
+                    connected: false,
+                    join_staged: false,
+                    who_to_follow_after: None,
+                    ..self.feed_ctx(sender)
+                },
+            );
+            return;
+        }
         ui::append_search(
             &self.search_list,
             &self.search_results,
@@ -6741,6 +6848,9 @@ impl App {
     }
 
     fn pick_emoji_view(&self) -> gtk::TextView {
+        if let Some(view) = &self.quote_view {
+            return view.clone();
+        }
         if self.visible == "remotes" {
             self.remote_composer.clone()
         } else if self.visible == "commit" {
@@ -6748,6 +6858,38 @@ impl App {
         } else {
             self.composer.clone()
         }
+    }
+
+    fn search_bar_title(&self) -> String {
+        self.open_headline
+            .as_ref()
+            .map(|topic| topic.name.clone())
+            .filter(|name| !name.trim().is_empty())
+            .unwrap_or_else(|| "Search".into())
+    }
+
+    fn open_link(&mut self, url: &str, sender: &ComponentSender<App>) {
+        match parse_external_link(url) {
+            Some((href, domain)) if !self.prefs.trusts_external_domain(&domain) => {
+                ui::confirm_external_link(&href, &domain, sender.input_sender().clone());
+            }
+            _ => open_web(url),
+        }
+    }
+
+    fn seed_reply_previews(&mut self, commits: &[Commit], sender: &ComponentSender<App>) {
+        for commit in commits {
+            if commit.reply_preview.is_empty() || self.nested_replies.contains_key(&commit.id) {
+                continue;
+            }
+            let replies = newest_replies(commit.reply_preview.clone());
+            if replies.len() == ui::PREVIEW_REPLIES {
+                self.previewed_replies.insert(commit.id.clone());
+            }
+            self.queue_auto_translations(&replies, sender);
+            self.nested_replies.insert(commit.id.clone(), replies);
+        }
+        self.queue_reply_previews(commits, sender);
     }
 
     fn insert_emoji(&mut self, glyph: &str) {
@@ -9228,9 +9370,28 @@ fn newest_replies(mut replies: Vec<Commit>) -> Vec<Commit> {
 fn reply_preview_ids(commits: &[Commit]) -> Vec<String> {
     commits
         .iter()
-        .filter(|commit| !commit.is_deleted() && commit.replies_count.unwrap_or(0) > 0)
+        .filter(|commit| {
+            !commit.is_deleted()
+                && commit.replies_count.unwrap_or(0) > 0
+                && commit.reply_preview.is_empty()
+        })
         .map(|commit| commit.id.clone())
         .collect()
+}
+
+/// HTTP(S) destinations outside this app's host. Same-site and non-web links return `None`.
+fn parse_external_link(url: &str) -> Option<(String, String)> {
+    let parsed = url::Url::parse(url).ok()?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return None;
+    }
+    let host = parsed.host_str()?.to_ascii_lowercase();
+    let base = url::Url::parse(&devnull_api::default_base_url()).ok()?;
+    let home = base.host_str()?.to_ascii_lowercase();
+    if host == home {
+        return None;
+    }
+    Some((parsed.to_string(), host))
 }
 
 fn fill_feed_list(list: &gtk::ListBox) {

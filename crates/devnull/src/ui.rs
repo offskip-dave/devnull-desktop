@@ -1854,7 +1854,8 @@ pub fn staged_avatar_top() -> i32 {
     RAIL_NODE_Y as i32 - RAIL_AVATAR / 2
 }
 const RAIL_AVATAR_TOP: i32 = 10;
-const RAIL_TERMINATOR_PAD: f64 = 20.0;
+/// Centre of the end dot on the actions row (web #1544: 14px up on a 28px row).
+const RAIL_TERMINATOR_PAD: f64 = 14.0;
 const RAIL_DOT_RING: f64 = 7.0;
 const RAIL_DOT_FILL: f64 = 4.0;
 /// Clearance under a live avatar so the rail does not run through the LIVE badge.
@@ -5833,9 +5834,15 @@ pub fn fill_thread_header(header: &gtk::Box, state: ThreadHeaderState<'_>, sende
                 item.map(|item| item.members.iter().map(|member| &member.user).collect())
                     .unwrap_or_default()
             } else {
+                // API lists maintainers first, then everyone by name (#1234).
                 members.iter().map(|member| &member.user).collect()
             };
-            people.sort_by_key(|user| me.is_some_and(|me| me.id == user.id));
+            if let Some(me) = me {
+                if let Some(index) = people.iter().position(|user| user.id == me.id) {
+                    let self_user = people.remove(index);
+                    people.push(self_user);
+                }
+            }
             identity.append(&member_stack(&people, 32, 4));
             let names = gtk::Box::new(gtk::Orientation::Vertical, 0);
             names.set_hexpand(true);
@@ -7097,6 +7104,33 @@ fn pinned_item(
         row.append(&unpin);
     }
     row.upcast()
+}
+
+pub fn confirm_external_link(url: &str, domain: &str, sender: Sender<AppMsg>) {
+    let dialog = adw::AlertDialog::new(
+        Some("Leave /dev/null?"),
+        Some(&format!("You're about to visit {domain}.\n\n{url}")),
+    );
+    let check =
+        gtk::CheckButton::with_label(&format!("Don't warn me about links to {domain} again"));
+    check.set_margin_top(8);
+    dialog.set_extra_child(Some(&check));
+    dialog.add_response("stay", "Stay here");
+    dialog.add_response("visit", "Visit site");
+    dialog.set_response_appearance("visit", adw::ResponseAppearance::Suggested);
+    dialog.set_default_response(Some("stay"));
+    dialog.set_close_response("stay");
+    let url = url.to_owned();
+    let domain = domain.to_owned();
+    dialog.connect_response(None, move |_, response| {
+        if response == "visit" {
+            sender.emit(AppMsg::ConfirmOpenWeb {
+                url: url.clone(),
+                trust_domain: check.is_active().then(|| domain.clone()),
+            });
+        }
+    });
+    dialog.present(toplevel().as_ref());
 }
 
 pub fn confirm_pin_org_message(id: i64, sender: Sender<AppMsg>) {
@@ -10474,14 +10508,6 @@ fn achievements_shelf(
     title.add_css_class("dn-mono");
     ellipsize_label(&title);
     inner.append(&title);
-    let sep = gtk::Label::new(Some("·"));
-    sep.add_css_class("dn-mono");
-    sep.add_css_class("dn-muted");
-    inner.append(&sep);
-    let xp = gtk::Label::new(Some(&format!("{} XP", achievements.xp)));
-    xp.add_css_class("dn-mono");
-    xp.add_css_class("dn-muted");
-    inner.append(&xp);
     open.set_child(Some(&inner));
     let inspect = sender.clone();
     open.connect_clicked(move |_| inspect.emit(AppMsg::InspectAchievements));
@@ -10890,6 +10916,7 @@ fn badge_icon_name(icon: &str) -> &'static str {
         "star" => "dn-star-symbolic",
         "sparkles" => "dn-sparkles-symbolic",
         "git-merge" => "dn-git-merge-symbolic",
+        "git-commit-horizontal" | "git-blame" => "dn-git-commit-horizontal-symbolic",
         "key" => "dn-key-symbolic",
         _ => "dn-terminal-symbolic",
     }
@@ -11170,9 +11197,9 @@ fn hot_topic_row(topic: &HotTopic, sender: Sender<AppMsg>) -> gtk::Button {
         col.append(&brief);
     }
     row.set_child(Some(&col));
-    let url = topic.url();
+    let id = topic.id.clone();
     row.connect_clicked(move |_| {
-        sender.emit(AppMsg::OpenWeb(url.clone()));
+        sender.emit(AppMsg::OpenHeadline(id.clone()));
     });
     row
 }
@@ -11492,6 +11519,59 @@ pub fn append_search(list: &gtk::ListBox, results: &SearchResults, latest: bool,
         None,
         0,
     );
+}
+
+/// Headline discussion: each commit ends on its own dot (web #1454).
+pub fn append_headline(
+    list: &gtk::ListBox,
+    name: &str,
+    summary: Option<&str>,
+    commits: &[Commit],
+    ctx: &FeedCtx,
+) {
+    clear_list(list);
+    list.append(&headline_intro_row(name, summary));
+    if commits.is_empty() {
+        list.append(&root_row("No commits on this topic in the past week."));
+        return;
+    }
+    let mut previous = None;
+    let mut last_day = None;
+    append_commits(
+        list,
+        commits,
+        ctx,
+        &mut previous,
+        &mut last_day,
+        None,
+        None,
+        0,
+    );
+}
+
+fn headline_intro_row(name: &str, summary: Option<&str>) -> gtk::ListBoxRow {
+    let row = gtk::ListBoxRow::new();
+    row.set_activatable(false);
+    row.add_css_class("dn-headline-intro");
+    let col = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    col.set_margin_top(8);
+    col.set_margin_bottom(8);
+    col.set_margin_start(12);
+    col.set_margin_end(12);
+    let title = gtk::Label::new(Some(name));
+    title.add_css_class("dn-name");
+    title.set_xalign(0.0);
+    title.set_wrap(true);
+    col.append(&title);
+    if let Some(summary) = summary.map(str::trim).filter(|text| !text.is_empty()) {
+        let brief = gtk::Label::new(Some(summary));
+        brief.add_css_class("dn-muted");
+        brief.set_xalign(0.0);
+        brief.set_wrap(true);
+        col.append(&brief);
+    }
+    row.set_child(Some(&col));
+    row
 }
 
 /// Semantic search's Latest tab: matches from the past seven days, newest first.
@@ -13247,7 +13327,7 @@ fn wash_rgb(dark: bool) -> (f64, f64, f64) {
     }
 }
 
-pub fn quote_window(commit: &Commit, sender: Sender<AppMsg>) -> gtk::Window {
+pub fn quote_window(commit: &Commit, sender: Sender<AppMsg>) -> (gtk::Window, gtk::TextView) {
     let win = gtk::Window::new();
     win.set_title(Some(&format!(
         "Quote @{}",
@@ -13279,7 +13359,17 @@ pub fn quote_window(commit: &Commit, sender: Sender<AppMsg>) -> gtk::Window {
     outer.append(&view);
     outer.append(&quoted_commit_widget(Some(commit), sender.clone()));
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    row.set_halign(gtk::Align::End);
+    let emoji = gtk::Button::from_icon_name("dn-smile-symbolic");
+    emoji.add_css_class("flat");
+    emoji.add_css_class("dn-composer-icon");
+    emoji.set_tooltip_text(Some("Emoji"));
+    pointer(&emoji);
+    let emoji_sender = sender.clone();
+    emoji.connect_clicked(move |_| emoji_sender.emit(AppMsg::PickEmoji));
+    row.append(&emoji);
+    let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    row.append(&spacer);
     let cancel = gtk::Button::with_label("Cancel");
     cancel.add_css_class("flat");
     pointer(&cancel);
@@ -13291,8 +13381,9 @@ pub fn quote_window(commit: &Commit, sender: Sender<AppMsg>) -> gtk::Window {
     pointer(&submit);
     let id = commit.id.clone();
     let win_submit = win.clone();
+    let view_submit = view.clone();
     submit.connect_clicked(move |_| {
-        let buf = view.buffer();
+        let buf = view_submit.buffer();
         let body = buf
             .text(&buf.start_iter(), &buf.end_iter(), false)
             .to_string();
@@ -13302,7 +13393,7 @@ pub fn quote_window(commit: &Commit, sender: Sender<AppMsg>) -> gtk::Window {
     row.append(&submit);
     outer.append(&row);
     win.set_child(Some(&outer));
-    win
+    (win, view)
 }
 
 const REPORT_REASONS: &[(&str, &str)] = &[
@@ -14015,10 +14106,10 @@ impl SearchOmnibox {
                 row.set_child(Some(&inner));
                 let sender = self.sender.clone();
                 let window = self.window.clone();
-                let url = topic.url();
+                let id = topic.id.clone();
                 row.connect_activate(move |_| {
                     window.set_visible(false);
-                    sender.emit(AppMsg::OpenWeb(url.clone()));
+                    sender.emit(AppMsg::OpenHeadline(id.clone()));
                 });
                 self.list.append(&row);
             }
@@ -14332,7 +14423,7 @@ fn move_omnibox_selection(list: &gtk::ListBox, step: i32) {
     }
 }
 
-const MAX_ORG_MEMBERS: usize = 15;
+const MAX_ORG_MEMBERS: usize = 256;
 
 pub fn remote_settings_button(sender: Sender<AppMsg>) -> gtk::MenuButton {
     let button = gtk::MenuButton::new();

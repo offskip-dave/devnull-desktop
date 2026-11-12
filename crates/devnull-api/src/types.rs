@@ -611,6 +611,17 @@ pub struct HotTopic {
     pub summary: Option<String>,
 }
 
+/// Commits attached to a headline, newest first, from the past week.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct HeadlinePage {
+    #[serde(default)]
+    pub name: String,
+    #[serde(default, deserialize_with = "deserialize_opt_ok")]
+    pub summary: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_vec")]
+    pub data: Vec<Commit>,
+}
+
 impl HotTopic {
     pub fn list_from_value(value: serde_json::Value) -> Vec<Self> {
         let data = value.get("data").cloned().unwrap_or(value.clone());
@@ -651,6 +662,16 @@ impl HotTopic {
             crate::default_base_url().trim_end_matches('/'),
             self.id
         )
+    }
+}
+
+impl HeadlinePage {
+    pub fn from_value(value: serde_json::Value) -> Result<Self, serde_json::Error> {
+        let mut page: Self = serde_json::from_value(value.clone())?;
+        if page.data.is_empty() {
+            page.data = Commit::list_from_value(value);
+        }
+        Ok(page)
     }
 }
 
@@ -1661,6 +1682,9 @@ pub struct Commit {
     pub parent: Option<Box<Commit>>,
     #[serde(default)]
     pub poll: Option<Poll>,
+    /// Newest replies embedded when the client asks for `replies_per_page`.
+    #[serde(default, deserialize_with = "deserialize_vec")]
+    pub reply_preview: Vec<Commit>,
     /// Captured `@handle`s: developers and GitHub organizations.
     #[serde(default, flatten)]
     pub captured: MentionMaps,
@@ -3629,6 +3653,36 @@ mod unread_count_tests {
         assert_eq!(topics[0].name, "Alpha");
         assert_eq!(topics[0].summary.as_deref(), Some("Shipped overnight."));
         assert!(topics[0].url().ends_with("/headlines/a"));
+    }
+
+    #[test]
+    fn headlines_api_list_reads_data_wrapper() {
+        let topics = HotTopic::list_from_value(json!({
+            "data": [
+                { "id": "a", "name": "Alpha", "summary": "Fresh." },
+                { "id": "b", "name": "Beta", "summary": null }
+            ]
+        }));
+        assert_eq!(topics.len(), 2);
+        assert_eq!(topics[0].summary.as_deref(), Some("Fresh."));
+        assert_eq!(topics[1].summary, None);
+    }
+
+    #[test]
+    fn headline_page_reads_name_summary_and_commits() {
+        let page = HeadlinePage::from_value(json!({
+            "name": "Database indexing",
+            "summary": "Developers compare strategies.",
+            "data": [{ "id": "1", "body": "newest" }, { "id": "2", "body": "older" }]
+        }))
+        .unwrap();
+        assert_eq!(page.name, "Database indexing");
+        assert_eq!(
+            page.summary.as_deref(),
+            Some("Developers compare strategies.")
+        );
+        assert_eq!(page.data.len(), 2);
+        assert_eq!(page.data[0].id, "1");
     }
 
     #[test]

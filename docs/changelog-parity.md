@@ -1,6 +1,6 @@
 # Changelog parity
 
-Track of [dev-null.sh/changelog](https://dev-null.sh/changelog) against this GTK client, from the platform’s first production commit on **2026-10-15** (`chore: first` — empty repo in the morning, live by lunch; see [About](https://dev-null.sh/about)) through **2026-11-08**. Prefer signed `/api/v1` surfaces. Skip Inertia-only, CLI, PWA, admin/CMS, and first-party Swift/mobile app work unless a client route exists.
+Track of [dev-null.sh/changelog](https://dev-null.sh/changelog) against this GTK client, from the platform’s first production commit on **2026-10-15** (`chore: first` — empty repo in the morning, live by lunch; see [About](https://dev-null.sh/about)) through **2026-11-11**. Prefer signed `/api/v1` surfaces. Skip Inertia-only, CLI, PWA, admin/CMS, and first-party Swift/mobile app work unless a client route exists.
 
 The [capability matrix](#capability-matrix-launch--present) is the durable inventory. [Day by day](#day-by-day-oct-15--present) lists every non-merge `feat` on `production` since day one. Update both when you catch up a changelog day. Link the web PR or commit in your PR description.
 
@@ -122,7 +122,7 @@ Durable inventory by product area. Every production `feat` from day one is also 
 | People / commit search (`Ctrl+K`, `/`) | Done | Idle omnibox lists hot topics; results have Most relevant and Latest |
 | Who to follow (+ refresh, hide, not interested) | Done | |
 | Live following | Done | |
-| Hot topics + optional summary | Partial | Aside and empty search; headline pages open in browser |
+| Hot topics + optional summary | Done | Aside, omnibox, and in-app headline pages via `GET /api/v1/headlines` |
 | Legal / about / apps / changelog links | Done | Open in browser |
 | Remember last three searches | Done | Prefs + omnibox recent chips / clear |
 
@@ -143,8 +143,8 @@ Durable inventory by product area. Every production `feat` from day one is also 
 
 | Capability | Status | Notes |
 | --- | --- | --- |
-| Hot-topic aside list | Partial | From hot-topics API when present |
-| Headline discussion pages / recap pipeline | Skip / Waiting | Server + Inertia; in-app thread Waiting on `/api/v1` |
+| Hot-topic aside list | Done | `GET /api/v1/headlines` |
+| Headline discussion pages / recap pipeline | Done | `GET /api/v1/headlines/{id}`; each commit ends on its own dot |
 
 ## Day by day (Oct 15 → present)
 
@@ -626,7 +626,7 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 
 | Item | Status | Notes |
 | --- | --- | --- |
-| add shared commit headlines (#1355) | Waiting | Needs signed headline route |
+| add shared commit headlines (#1355) | Done | Signed headline routes (#1531) |
 | let members post commits as their organization (#1361) | Done |  |
 | let members schedule commits as their organization, canceled if they left it by then (#… | Done |  |
 | show commits from organizations, under their handle and to their followers (#1359) | Done |  |
@@ -647,7 +647,7 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 
 | Item | Status | Notes |
 | --- | --- | --- |
-| show hot topics and headline discussions | Partial | Aside list Done; discussion pages web |
+| show hot topics and headline discussions | Done | Aside + in-app headline feed (#1531) |
 | list an organization's own commits in the API, as its page's Commits tab (#1386) | Done |  |
 | list who starred your own commit in the API (#1310) | Done |  |
 | split daily active users into regulars and people back after a week away (#1382) | Done |  |
@@ -665,8 +665,8 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | give anyone on GitHub a page, looked up when a member first opens it (#1406) | Waiting | No stable `/api/v1` yet |
 | link mentions of anyone to their page, which looks them up on GitHub (#1409) | Waiting | No stable `/api/v1` yet |
 | let members wait to follow developers who aren't on /dev/null yet (#1407) | Waiting | No stable `/api/v1` yet |
-| flicker the hot topics flame every five seconds | Partial | Aside list Done; discussion pages web |
-| preview recaps below bold hot topic headlines | Partial | Aside list Done; discussion pages web |
+| flicker the hot topics flame every five seconds | Done | Aside list; discussion pages in-app |
+| preview recaps below bold hot topic headlines | Done | Aside + headline intro |
 | move commit actions into a menu, with follow, mute, block and delete (#1371) | Done | Includes Send in Remotes |
 | glide back to the present in conversations (#1250) | Done |  |
 | offer a remote from the profile preview menu (#1308) | Done |  |
@@ -697,7 +697,7 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | Terms yes at app sign-in (#1385) | Done | Listed under Nov 3 stream of work; redeem sends `terms_accepted` |
 | scroll to the top when reselecting a log (#1480) | Done | Ease to the top; a wheel or drag cancels it |
 | replace suggested searches with hot topics | Done | Idle omnibox lists recent searches and hot topics |
-| show latest hot topic matches | Done | Topics open the headline on the web; no search-on-hover |
+| show latest hot topic matches | Done | Topics open the in-app headline page |
 | add whoopsie achievement badge | Done | Mushroom-cloud icon |
 | add event themes for Halloween, Christmas and New Year | Done | Appearance picker; palette follows this computer's date |
 | Halloween 404, Christmas graph, Santa hat and New Year snippet | Done | Graph peak, hat on the mark, aside greeting. The website's Halloween 404 stays on the web |
@@ -729,7 +729,7 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | count the lite mobile app separately in the app usage metrics (#1511) | Skip | Metrics / lite mobile |
 | show the replied-to commit in the moderation queue and reports (#1509) | Skip | Moderator tools |
 | require multiple root commits for hot topics | Skip | Server hot-topic rule |
-| show linked commits for hot topics | Skip | Server / Inertia headline |
+| show linked commits for hot topics | Done | Headline page via signed API |
 | remove the WebView experiment (#1501) | Skip | Website revert |
 | describe how the Mac app updates itself (#1461) | Skip | Swift Mac app docs |
 
@@ -757,6 +757,41 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | fit the replies picker on small screens (#1500) | Skip | Website layout |
 | let Tom search repository history when asked who worked on a feature (#1487) | Skip | Tom / admin |
 
+### 2026-11-09
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| end each hot topic commit with its own dot (#1454) | Done | Headline feed uses `connected: false` |
+
+### 2026-11-10
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| fixes ci (7973e75) | Skip | Website CI |
+| follow a theme another tab picks (#1524) | Skip | Multi-tab web theme sync |
+| keep sidebar focus outlines whole (#1527) | Skip | Website CSS |
+
+### 2026-11-11
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| translate binary and Morse code posts (5911a76) | Done | Server translation; client already shows translations |
+| cloudflare `turnstile` / cloudflare on sign in | Skip | Web OAuth bot checks |
+| warn before visiting external links (#1536) | Done | Leave-site dialog + trusted domains in prefs |
+| read hot topics and headlines through the API (#1531) | Done | `GET headlines` + `GET headlines/{id}`; aside and omnibox open in-app |
+| show XP only once in the profile achievements shelf (#1353) | Done | Header keeps Lv/rank; XP stays on the progress row |
+| let API clients request features and report bugs (#1543) | Waiting | Signed `POST issues` exists; composer `/feature` `/bug` UI not ported |
+| match link statistics to commits visible to the viewer (#1416) | Skip | Inertia `/links` |
+| let API clients ask for more reply previews (#1528) | Done | Lists send `replies_per_page=3`; seeds nested previews from `reply_preview` |
+| list an org's maintainers first, then everyone by name (#1234) | Done | Preserves API member order in remotes header |
+| add emoji picker to quote composer (#1468) | Done | Smile button on quote window |
+| let an org hold up to 256 people (#1233) | Done | Org picker cap raised to 256 |
+| git blame achievement for contributors (#1271) | Done | `git-commit-horizontal` badge icon |
+| let people pick a GitHub account after signing out (#1079) | Skip | Web OAuth account picker |
+| centre the end dot on the actions row on desktop (#1544) | Done | `RAIL_TERMINATOR_PAD` 14px to match the 28px actions row |
+| sponsors (847aaf1) | Skip | Website partners / sponsors page |
+| restore offline GitHub and deterministic org tests (#1551) | Skip | Website tests |
+
 
 ## Standing gaps (priority)
 
@@ -768,7 +803,7 @@ Blocked on API or hard infra — not same-day launch work:
 4. **Voice notes** — record / upload / playback (Opus)  
 5. **Calls** — WebRTC (button currently opens the web thread)  
 6. **Commit link-card picker** — API create-commit does not accept `link_preview_url` yet  
-7. **In-app headline threads** — when a signed feed route exists  
+7. **Feature / bug report from composer** — signed `POST /api/v1/issues` (#1543); slash-command UI  
 8. **Recent search chips** — local prefs polish (web uses localStorage); optional  
 
 ## Out of scope (recurring Skip)

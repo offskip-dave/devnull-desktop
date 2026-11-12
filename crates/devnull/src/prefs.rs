@@ -155,6 +155,9 @@ pub struct Prefs {
     /// Auto follows Halloween, Christmas, and New Year where this computer is.
     #[serde(default)]
     pub event_theme: EventThemeChoice,
+    /// Domains that skip the leave-site warning for external links.
+    #[serde(default)]
+    pub trusted_external_domains: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -175,6 +178,7 @@ impl Default for Prefs {
             message_reactions: HashMap::new(),
             recent_searches: HashMap::new(),
             event_theme: EventThemeChoice::Auto,
+            trusted_external_domains: Vec::new(),
         }
     }
 }
@@ -269,6 +273,22 @@ impl Prefs {
             return;
         }
         self.pin_warning_dismissed = true;
+        self.persist();
+    }
+
+    pub fn trusts_external_domain(&self, domain: &str) -> bool {
+        let domain = domain.to_ascii_lowercase();
+        self.trusted_external_domains
+            .iter()
+            .any(|known| known.eq_ignore_ascii_case(&domain))
+    }
+
+    pub fn trust_external_domain(&mut self, domain: &str) {
+        let domain = domain.trim();
+        if domain.is_empty() || self.trusts_external_domain(domain) {
+            return;
+        }
+        self.trusted_external_domains.push(domain.to_owned());
         self.persist();
     }
 

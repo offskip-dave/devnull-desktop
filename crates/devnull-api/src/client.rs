@@ -23,6 +23,9 @@ pub const USER_AGENT: &str = "DevNull-macOS/0.1";
 #[cfg(not(target_os = "macos"))]
 pub const USER_AGENT: &str = "DevNull-Linux/0.1";
 
+/// How many newest replies lists embed under each commit (`?replies_per_page=`).
+const REPLIES_PER_PAGE: &str = "3";
+
 #[derive(Debug)]
 pub struct Upload {
     pub data: Vec<u8>,
@@ -159,8 +162,14 @@ impl Client {
     }
 
     pub async fn log(&self, kind: LogKind, cursor: Option<&str>) -> Result<LogPage, ApiError> {
-        self.get(&format!("log/{}", kind.as_str()), &[("cursor", cursor)])
-            .await
+        self.get(
+            &format!("log/{}", kind.as_str()),
+            &[
+                ("cursor", cursor),
+                ("replies_per_page", Some(REPLIES_PER_PAGE)),
+            ],
+        )
+        .await
     }
 
     pub async fn commit(&self, id: &str) -> Result<CommitPage, ApiError> {
@@ -392,7 +401,7 @@ impl Client {
             .execute(self.signed_request(
                 Method::GET,
                 "search",
-                &[("q", Some(q))],
+                &[("q", Some(q)), ("replies_per_page", Some(REPLIES_PER_PAGE))],
                 None,
                 JSON_NAMESPACE,
             )?)
@@ -554,9 +563,9 @@ impl Client {
         Ok(Vec::new())
     }
 
-    /// Up to five hot topics for the desktop aside. Empty until the API ships the list.
+    /// Up to five hot topics for the desktop aside (`GET /api/v1/headlines`).
     pub async fn hot_topics(&self) -> Result<Vec<HotTopic>, ApiError> {
-        for path in ["me/hot-topics", "hot-topics", "headlines/hot"] {
+        for path in ["headlines", "me/hot-topics", "hot-topics", "headlines/hot"] {
             match self
                 .execute(self.signed_request(Method::GET, path, &[], None, JSON_NAMESPACE)?)
                 .await
@@ -573,13 +582,37 @@ impl Client {
         Ok(Vec::new())
     }
 
+    /// A headline's recent commits, newest first (`GET /api/v1/headlines/{id}`).
+    pub async fn headline(&self, id: &str) -> Result<crate::HeadlinePage, ApiError> {
+        let bytes = self
+            .execute(self.signed_request(
+                Method::GET,
+                &format!("headlines/{id}"),
+                &[],
+                None,
+                JSON_NAMESPACE,
+            )?)
+            .await?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|_| ApiError::decode())?;
+        crate::HeadlinePage::from_value(value).map_err(|_| ApiError::decode())
+    }
+
     pub async fn related_commits(&self, id: &str) -> Result<Vec<Commit>, ApiError> {
         let value: serde_json::Value = self.get(&format!("commits/{id}/related"), &[]).await?;
         Ok(Commit::list_from_value(value))
     }
 
     pub async fn starred(&self, cursor: Option<&str>) -> Result<LogPage, ApiError> {
-        let page: Page<Commit> = self.get("starred", &[("cursor", cursor)]).await?;
+        let page: Page<Commit> = self
+            .get(
+                "starred",
+                &[
+                    ("cursor", cursor),
+                    ("replies_per_page", Some(REPLIES_PER_PAGE)),
+                ],
+            )
+            .await?;
         Ok(LogPage {
             data: page.data,
             links: page.links,
@@ -741,7 +774,10 @@ impl Client {
         match self
             .get(
                 &format!("organizations/{handle}/commits"),
-                &[("cursor", cursor)],
+                &[
+                    ("cursor", cursor),
+                    ("replies_per_page", Some(REPLIES_PER_PAGE)),
+                ],
             )
             .await
         {
@@ -877,7 +913,11 @@ impl Client {
         let replies = if replies { Some("1") } else { None };
         self.get(
             &format!("users/{username}/commits"),
-            &[("replies", replies), ("cursor", cursor)],
+            &[
+                ("replies", replies),
+                ("cursor", cursor),
+                ("replies_per_page", Some(REPLIES_PER_PAGE)),
+            ],
         )
         .await
     }
