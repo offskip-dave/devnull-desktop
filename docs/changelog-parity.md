@@ -791,7 +791,28 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | centre the end dot on the actions row on desktop (#1544) | Done | `RAIL_TERMINATOR_PAD` 14px to match the 28px actions row |
 | sponsors (847aaf1) | Skip | Website partners / sponsors page |
 | restore offline GitHub and deterministic org tests (#1551) | Skip | Website tests |
+| cloudflare on sign in | Waiting | Auto-imported from [53fd087](https://github.com/dev-null-sh/dev-null.sh/commit/53fd0876c873fcce9754b91164b537be3ee628a9); needs GTK port or API probe |
+| cloudflare `turnstile` to avoid bots | Waiting | Auto-imported from [5e2d62e](https://github.com/dev-null-sh/dev-null.sh/commit/5e2d62ec36e36fd855518ef25be78f6406d8c0e0); needs GTK port or API probe |
 
+
+### 2026-11-12
+
+Auto-imported by the changelog parity cron.
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| dont appear modearations that are not yet done | Waiting | Auto-imported from [17bc041](https://github.com/dev-null-sh/dev-null.sh/commit/17bc041695e5e53b907c5924fc6b54b4a134fd68); needs GTK port or API probe |
+| count the commits that mention developers who aren't on /dev/null yet (#1548) | Waiting | Auto-imported from [7599b63](https://github.com/dev-null-sh/dev-null.sh/commit/7599b63261142bb1692510c60e1d7523bddb4db5); needs GTK port or API probe |
+| og for partners | Skip | Out of scope for GTK (auto) |
+| choose nostalgic remotes notification sounds | Waiting | Auto-imported from [dcd7c54](https://github.com/dev-null-sh/dev-null.sh/commit/dcd7c5413c1041094b7a245aea43c471581efd04); needs GTK port or API probe |
+
+### 2026-11-13
+
+Auto-imported by the changelog parity cron.
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| notify users about timeouts and show moderation history (#1561) | Skip | Out of scope for GTK (auto) |
 
 ## Standing gaps (priority)
 
