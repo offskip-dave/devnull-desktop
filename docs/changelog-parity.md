@@ -793,6 +793,14 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | restore offline GitHub and deterministic org tests (#1551) | Skip | Website tests |
 
 
+### 2026-11-12
+
+Auto-imported by the changelog parity cron.
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| count the commits that mention developers who aren't on /dev/null yet (#1548) | Waiting | Port task opened; web [7599b63](https://github.com/dev-null-sh/dev-null.sh/commit/7599b63261142bb1692510c60e1d7523bddb4db5) |
+
 ## Standing gaps (priority)
 
 Blocked on API or hard infra — not same-day launch work:
