@@ -2704,6 +2704,7 @@ impl SimpleComponent for App {
                 btn.set_icon_name("dn-bell-symbolic");
                 btn.set_valign(gtk::Align::End);
                 btn.set_size_request(40, 40);
+                btn.set_overflow(gtk::Overflow::Visible);
                 btn.set_visible(false);
                 btn
             },
