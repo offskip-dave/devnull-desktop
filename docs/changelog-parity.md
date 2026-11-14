@@ -791,6 +791,7 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | centre the end dot on the actions row on desktop (#1544) | Done | `RAIL_TERMINATOR_PAD` 14px to match the 28px actions row |
 | sponsors (847aaf1) | Skip | Website partners / sponsors page |
 | restore offline GitHub and deterministic org tests (#1551) | Skip | Website tests |
+| cloudflare `turnstile` to avoid bots | Waiting | Port task opened; web [5e2d62e](https://github.com/dev-null-sh/dev-null.sh/commit/5e2d62ec36e36fd855518ef25be78f6406d8c0e0) |
 
 ### 2026-11-12
 
