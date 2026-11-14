@@ -3816,7 +3816,15 @@ impl SimpleComponent for App {
                 }
             }
             AppMsg::StartQuote(commit) => {
-                let (win, view) = ui::quote_window(&commit, sender.input_sender().clone());
+                let me = self.user.as_ref().map(|user| &user.user);
+                let orgs = self
+                    .user
+                    .as_ref()
+                    .map(|user| user.organizations.as_slice())
+                    .unwrap_or(&[]);
+                let selected = self.composer_as.as_ref();
+                let (win, view) =
+                    ui::quote_window(&commit, me, orgs, selected, sender.input_sender().clone());
                 self.quote_view = Some(view);
                 let clear = sender.clone();
                 win.connect_destroy(move |_| clear.input(AppMsg::QuoteClosed));
@@ -5380,6 +5388,10 @@ impl SimpleComponent for App {
                         "{}/",
                         devnull_api::default_base_url()
                     )));
+                } else if err.is_author_error() {
+                    self.composer_as = None;
+                    self.refresh_me_avatars();
+                    self.toast(&err.message);
                 } else {
                     self.fail(err);
                 }
@@ -6687,7 +6699,7 @@ impl App {
     }
 
     fn can_post_as(&self) -> bool {
-        // Org commits are always on (web 6e71709); `/me` lists the orgs you can post as.
+        // `/me` lists memberships (#1492). Empty means you can't post as an org.
         self.user
             .as_ref()
             .is_some_and(|user| !user.organizations.is_empty())

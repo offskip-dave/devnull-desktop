@@ -44,6 +44,15 @@ impl ApiError {
         self.status == 403 && self.message.to_ascii_lowercase().contains("commit")
     }
 
+    /// The chosen organization author was refused (removed while composing, etc.).
+    pub fn is_author_error(&self) -> bool {
+        let message = self.message.to_ascii_lowercase();
+        message.contains("organization")
+            || message.contains("post as")
+            || message.contains("author")
+            || self.code.as_deref() == Some("author")
+    }
+
     /// Laravel's throttle and similar 429 replies. Background work should stay quiet.
     pub fn is_rate_limited(&self) -> bool {
         if self.status == 429 {
@@ -72,14 +81,22 @@ pub fn from_body(status: u16, data: &[u8]) -> ApiError {
     let json: serde_json::Value = serde_json::from_slice(data).unwrap_or(serde_json::Value::Null);
     let code = json.get("code").and_then(|v| v.as_str()).map(str::to_owned);
 
-    let message = json
-        .get("errors")
-        .and_then(|errors| errors.as_object())
+    let errors = json.get("errors").and_then(|errors| errors.as_object());
+    let author_message = errors
+        .and_then(|map| map.get("author"))
+        .and_then(|v| v.as_array())
+        .and_then(|arr| arr.first())
+        .and_then(|v| v.as_str())
+        .map(str::to_owned);
+    let first_error = errors
         .and_then(|map| map.values().next())
         .and_then(|v| v.as_array())
         .and_then(|arr| arr.first())
         .and_then(|v| v.as_str())
-        .map(str::to_owned)
+        .map(str::to_owned);
+    let message = author_message
+        .clone()
+        .or(first_error)
         .or_else(|| {
             json.get("message")
                 .and_then(|v| v.as_str())
@@ -93,6 +110,11 @@ pub fn from_body(status: u16, data: &[u8]) -> ApiError {
                 "Something went wrong.".into()
             }
         });
+    let code = if author_message.is_some() {
+        Some("author".into())
+    } else {
+        code
+    };
 
     ApiError {
         status,

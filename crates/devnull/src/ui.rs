@@ -1534,6 +1534,72 @@ pub fn clock_time(dt: Option<DateTime<Utc>>) -> String {
     format!("{hour12}:{minute:02} {ampm}")
 }
 
+fn absolute_local_time(dt: DateTime<Utc>) -> String {
+    dt.with_timezone(&Local)
+        .format("%a, %d %b %Y %H:%M:%S %Z")
+        .to_string()
+}
+
+/// Relative stamp that reveals absolute times on tap (web #1549) as well as hover.
+fn commit_time_label(commit: &Commit) -> gtk::Widget {
+    let relative = relative_time(commit.created_at);
+    let time = gtk::Label::new(Some(&relative));
+    time.add_css_class("dn-mono");
+    time.add_css_class("dn-muted");
+    let Some(at) = commit.created_at else {
+        return time.upcast();
+    };
+    let yours = absolute_local_time(at);
+    let mut tip = yours.clone();
+    if let Some(zone) = commit
+        .author
+        .as_ref()
+        .and_then(|author| author.timezone.as_deref())
+        .map(str::trim)
+        .filter(|zone| !zone.is_empty())
+    {
+        tip = format!("{yours}\nAuthor timezone: {zone}");
+    }
+    time.set_tooltip_text(Some(&tip));
+    let btn = gtk::Button::new();
+    btn.add_css_class("flat");
+    btn.add_css_class("dn-time-btn");
+    btn.set_child(Some(&time));
+    pointer(&btn);
+    let popover = gtk::Popover::new();
+    popover.set_autohide(true);
+    popover.set_has_arrow(true);
+    popover.set_position(gtk::PositionType::Bottom);
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    body.set_margin_top(8);
+    body.set_margin_bottom(8);
+    body.set_margin_start(10);
+    body.set_margin_end(10);
+    let yours_label = gtk::Label::new(Some(&format!("Your time\n{yours}")));
+    yours_label.set_xalign(0.0);
+    yours_label.add_css_class("dn-mono");
+    body.append(&yours_label);
+    if let Some(zone) = commit
+        .author
+        .as_ref()
+        .and_then(|author| author.timezone.as_deref())
+        .map(str::trim)
+        .filter(|zone| !zone.is_empty())
+    {
+        let theirs = gtk::Label::new(Some(&format!("Author timezone\n{zone}")));
+        theirs.set_xalign(0.0);
+        theirs.add_css_class("dn-mono");
+        theirs.add_css_class("dn-muted");
+        body.append(&theirs);
+    }
+    popover.set_child(Some(&body));
+    popover.set_parent(&btn);
+    btn.connect_clicked(move |_| {
+        popover.popup();
+    });
+    btn.upcast()
+}
+
 pub fn lane_color(user: Option<&User>, dark: bool) -> String {
     user.and_then(|u| u.lane.as_ref())
         .map(|l| l.css_color(dark))
@@ -3602,16 +3668,7 @@ pub fn commit_row(
         sep.add_css_class("dn-muted");
         names.append(&sep);
     }
-    let time = gtk::Label::new(Some(&relative_time(commit.created_at)));
-    time.add_css_class("dn-mono");
-    time.add_css_class("dn-muted");
-    time.set_tooltip_text(
-        commit
-            .created_at
-            .map(|d| d.with_timezone(&Local).to_rfc2822())
-            .as_deref(),
-    );
-    names.append(&time);
+    names.append(&commit_time_label(commit));
     names.append(&commit_hash_link(commit, sender.clone()));
     header.append(&names);
     content.append(&header);
@@ -4994,12 +5051,16 @@ fn notification_row(
     header.set_hexpand(true);
     header.set_valign(gtk::Align::Center);
     header.set_size_request(-1, 40);
-    let moderation = matches!(kind, "approved" | "rejected");
+    let moderation = matches!(kind, "approved" | "rejected" | "timed_out" | "timeout");
     if moderation {
-        let chip = gtk::Label::new(Some(kind));
+        let chip = gtk::Label::new(Some(if matches!(kind, "timed_out" | "timeout") {
+            "timeout"
+        } else {
+            kind
+        }));
         chip.add_css_class("dn-mono");
         chip.add_css_class("dn-notif-chip");
-        if kind == "rejected" {
+        if matches!(kind, "rejected" | "timed_out" | "timeout") {
             chip.add_css_class("dn-over");
         } else {
             chip.add_css_class("dn-muted");
@@ -5067,6 +5128,34 @@ fn notification_row(
             shrink_label(&excerpt);
             col.append(&excerpt);
         }
+    } else if matches!(kind, "timed_out" | "timeout") {
+        if let Some(timeout) = &item.timeout {
+            let mut lines = Vec::new();
+            if let Some(duration) = timeout
+                .duration
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+            {
+                lines.push(format!("Duration: {duration}"));
+            }
+            if let Some(ends) = timeout.ends_at {
+                lines.push(format!(
+                    "Ends {}",
+                    ends.with_timezone(&Local).format("%a, %d %b %Y %H:%M")
+                ));
+            }
+            if !lines.is_empty() {
+                let excerpt = gtk::Label::new(Some(&lines.join(" · ")));
+                excerpt.add_css_class("dn-body");
+                excerpt.add_css_class("dn-muted");
+                excerpt.set_wrap(true);
+                excerpt.set_wrap_mode(pango::WrapMode::WordChar);
+                excerpt.set_xalign(0.0);
+                shrink_label(&excerpt);
+                col.append(&excerpt);
+            }
+        }
     }
     if item.is_grouped() {
         col.append(&notification_group_controls(item, groups, sender.clone()));
@@ -5105,7 +5194,7 @@ fn notification_rail(item: &Notification, sender: Sender<AppMsg>) -> gtk::Widget
     let gray = if dark { "#36363a" } else { "#d3d7dd" };
     let actor = notification_lane_user(item);
     let kind = item.kind();
-    let moderation = matches!(kind, "approved" | "rejected");
+    let moderation = matches!(kind, "approved" | "rejected" | "timed_out" | "timeout");
     let avatar = matches!(kind, "reply" | "replied" | "mention" | "mentioned");
     let color = if moderation {
         gray.to_owned()
@@ -5164,6 +5253,7 @@ fn notification_icon(kind: &str) -> &'static str {
         "leveled_up" => "dn-chevrons-up-symbolic",
         "approved" => "dn-check-symbolic",
         "rejected" => "dn-x-symbolic",
+        "timed_out" | "timeout" => "dn-clock-3-symbolic",
         _ => "dn-bell-symbolic",
     }
 }
@@ -5184,7 +5274,10 @@ fn notification_and_rest(people: &[&User], others: i64, action: &str) -> String 
 
 fn notification_headline_row(item: &Notification, sender: Sender<AppMsg>) -> gtk::Widget {
     let kind = item.kind();
-    if matches!(kind, "approved" | "rejected" | "leveled_up") {
+    if matches!(
+        kind,
+        "approved" | "rejected" | "leveled_up" | "timed_out" | "timeout"
+    ) {
         let title = gtk::Label::new(Some(&item.action()));
         shrink_label(&title);
         return title.upcast();
@@ -5510,7 +5603,7 @@ fn notification_event_line(item: &Notification, sender: Sender<AppMsg>) -> gtk::
     let meta = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     meta.set_valign(gtk::Align::Center);
     let icon = named_icon(notification_icon(kind), 16);
-    if !matches!(kind, "approved" | "rejected") {
+    if !matches!(kind, "approved" | "rejected" | "timed_out" | "timeout") {
         icon.add_css_class("dn-notif-icon");
         icon.add_css_class(&hex_tone_class(&lane_color(actor, adw_is_dark())));
     } else {
@@ -13327,7 +13420,13 @@ fn wash_rgb(dark: bool) -> (f64, f64, f64) {
     }
 }
 
-pub fn quote_window(commit: &Commit, sender: Sender<AppMsg>) -> (gtk::Window, gtk::TextView) {
+pub fn quote_window(
+    commit: &Commit,
+    me: Option<&User>,
+    orgs: &[User],
+    selected: Option<&User>,
+    sender: Sender<AppMsg>,
+) -> (gtk::Window, gtk::TextView) {
     let win = gtk::Window::new();
     win.set_title(Some(&format!(
         "Quote @{}",
@@ -13351,12 +13450,40 @@ pub fn quote_window(commit: &Commit, sender: Sender<AppMsg>) -> (gtk::Window, gt
     intro.set_xalign(0.0);
     intro.add_css_class("dn-muted");
     outer.append(&intro);
+    let compose = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    compose.set_valign(gtk::Align::Start);
+    if me.is_some() {
+        let face = selected.or(me);
+        let avatar = gtk::Button::new();
+        avatar.add_css_class("flat");
+        avatar.add_css_class("dn-composer-avatar");
+        avatar.set_tooltip_text(Some(if orgs.is_empty() {
+            "Your profile"
+        } else {
+            "Post as"
+        }));
+        pointer(&avatar);
+        let avatar_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        fill_author_avatar(&avatar_box, face, 36, false);
+        avatar.set_child(Some(&avatar_box));
+        if !orgs.is_empty() {
+            let menu = gtk::Popover::new();
+            menu.set_autohide(true);
+            menu.set_has_arrow(true);
+            menu.set_position(gtk::PositionType::Bottom);
+            fill_author_menu(&menu, me, orgs, selected, sender.clone());
+            menu.set_parent(&avatar);
+            avatar.connect_clicked(move |_| menu.popup());
+        }
+        compose.append(&avatar);
+    }
     let view = gtk::TextView::new();
     view.set_wrap_mode(gtk::WrapMode::WordChar);
     view.add_css_class("dn-composer-text");
     view.set_hexpand(true);
     view.set_height_request(80);
-    outer.append(&view);
+    compose.append(&view);
+    outer.append(&compose);
     outer.append(&quoted_commit_widget(Some(commit), sender.clone()));
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let emoji = gtk::Button::from_icon_name("dn-smile-symbolic");

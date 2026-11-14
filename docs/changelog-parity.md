@@ -1,6 +1,6 @@
 # Changelog parity
 
-Track of [dev-null.sh/changelog](https://dev-null.sh/changelog) against this GTK client, from the platform’s first production commit on **2026-10-15** (`chore: first` — empty repo in the morning, live by lunch; see [About](https://dev-null.sh/about)) through **2026-11-11**. Prefer signed `/api/v1` surfaces. Skip Inertia-only, CLI, PWA, admin/CMS, and first-party Swift/mobile app work unless a client route exists.
+Track of [dev-null.sh/changelog](https://dev-null.sh/changelog) against this GTK client, from the platform’s first production commit on **2026-10-15** (`chore: first` — empty repo in the morning, live by lunch; see [About](https://dev-null.sh/about)) through **2026-11-13**. Prefer signed `/api/v1` surfaces. Skip Inertia-only, CLI, PWA, admin/CMS, and first-party Swift/mobile app work unless a client route exists.
 
 The [capability matrix](#capability-matrix-launch--present) is the durable inventory. [Day by day](#day-by-day-oct-15--present) lists every non-merge `feat` on `production` since day one. Update both when you catch up a changelog day. Link the web PR or commit in your PR description.
 
@@ -792,19 +792,51 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | sponsors (847aaf1) | Skip | Website partners / sponsors page |
 | restore offline GitHub and deterministic org tests (#1551) | Skip | Website tests |
 
+### 2026-11-12
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| choose nostalgic remotes notification sounds (dcd7c54) | Waiting | Prefs + MSN/ICQ/AIM assets; GTK still uses the system message sound |
+| leave Navi sounds out pending permission (78daafc) | Skip | Website sound asset gating |
+| dont appear moderations that are not yet done (17bc041) | Skip | Server / admin moderation list |
+| og for partners (7a1c746) | Skip | Website partners OG |
+| count the commits that mention developers who aren't on /dev/null yet (#1548) | Waiting | Depends on unclaimed GitHub profiles (#1406) |
+
+### 2026-11-13
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| notify users about timeouts and show moderation history (#1561) | Partial | `timed_out` notifications Done; own history Waiting on signed `GET me/moderation-history` (#1575 open) |
+| align moderation history and show it to moderators (#1562) | Skip | Moderator / admin web |
+| align moderation history with profile stats (bf8975e) | Skip | Website profile chrome |
+| let members quote a commit as their organization (#1568) | Done | Quote dialog AuthorSwitcher; submit already sent `author` |
+| show the author error in the main and reply composers (#1574) | Done | Clears refused org and toasts `errors.author` |
+| open timezone and language pickers on first click (#1556) | Skip | Website dropdown focus |
+| show the images a profile readme keeps beside it (#1555) | Done | Server resolves relative README images |
+| give every minute limit its own counter (#1573) | Skip | Server rate-limit counters |
+| show a timestamp's times on tap on touch screens (#1549) | Done | Commit time opens absolute-time popover |
+| add the milestones since the stream to the about timeline (#1546) | Skip | Website about |
+| list your organizations and Post as in the API's current user (#1492) | Done | `/me` organizations (+ role); Post as already wired |
+| add public guilds with memberships and bulletin boards (#1576) | Waiting | Admin-default preview; no signed guild routes yet |
+| removes vet in favour of `cooldown/period` (6500841) | Skip | Server chore |
+| fix ci (a7a1582) | Skip | Website CI |
+
 
 ## Standing gaps (priority)
 
 Blocked on API or hard infra — not same-day launch work:
 
 1. **Mutuals / Followers you know** — connections tabs when list endpoints exist on `/api/v1`  
-2. **Unclaimed GitHub profiles + wait-to-follow + mention lookup** — #1406 / #1407 / #1409  
+2. **Unclaimed GitHub profiles + wait-to-follow + mention lookup** — #1406 / #1407 / #1409 / #1548  
 3. **Org Mentions clear / auto-seen** — signed `DELETE remotes/orgs/{org}/mentions` with `message_ids` (#1493 / #1498 / #1499); load older history when jumping  
 4. **Voice notes** — record / upload / playback (Opus)  
 5. **Calls** — WebRTC (button currently opens the web thread)  
 6. **Commit link-card picker** — API create-commit does not accept `link_preview_url` yet  
 7. **Feature / bug report from composer** — signed `POST /api/v1/issues` (#1543); slash-command UI  
-8. **Recent search chips** — local prefs polish (web uses localStorage); optional  
+8. **Own moderation history** — when `GET /api/v1/me/moderation-history` (#1575) merges  
+9. **Guilds** — when signed routes exist and the feature leaves admin preview (#1576)  
+10. **Remotes nostalgic sounds** — prefs + bundled MSN/ICQ/AIM cues  
+11. **Recent search chips** — local prefs polish (web uses localStorage); optional  
 
 ## Out of scope (recurring Skip)
 

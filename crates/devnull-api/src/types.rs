@@ -96,6 +96,9 @@ pub struct User {
     pub has_sponsors_listing: Option<bool>,
     #[serde(default)]
     pub timezone: Option<String>,
+    /// Membership role when this user is listed under `/me` organizations.
+    #[serde(default)]
+    pub role: Option<String>,
     #[serde(default)]
     pub followed_by_following_count: Option<i64>,
     #[serde(default, deserialize_with = "deserialize_opt_live")]
@@ -1945,6 +1948,20 @@ pub struct Notification {
     /// Set when a member is hearing about their organization's commit or mention.
     #[serde(default)]
     pub organization: Option<Organization>,
+    /// Present on private `timed_out` notifications.
+    #[serde(default)]
+    pub timeout: Option<TimeoutNotice>,
+}
+
+/// Why a timeout was applied and when it ends.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct TimeoutNotice {
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub duration: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_opt_datetime")]
+    pub ends_at: Option<DateTime<Utc>>,
 }
 
 impl Notification {
@@ -1991,13 +2008,38 @@ impl Notification {
                     "Your".into()
                 }
             ),
+            "timed_out" | "timeout" => self.timeout_title(),
             other if !other.is_empty() => other.to_owned(),
             _ => "notified you".into(),
         }
     }
 
+    fn timeout_title(&self) -> String {
+        let Some(timeout) = &self.timeout else {
+            return "You were put in a timeout.".into();
+        };
+        let reason = timeout
+            .reason
+            .as_deref()
+            .map(str::trim)
+            .filter(|reason| !reason.is_empty())
+            .unwrap_or("a moderation timeout");
+        let duration = timeout
+            .duration
+            .as_deref()
+            .map(str::trim)
+            .filter(|duration| !duration.is_empty());
+        match duration {
+            Some(duration) => format!("Timeout for {duration}: {reason}"),
+            None => format!("Timeout: {reason}"),
+        }
+    }
+
     pub fn title(&self) -> String {
-        if matches!(self.kind(), "approved" | "rejected" | "leveled_up") {
+        if matches!(
+            self.kind(),
+            "approved" | "rejected" | "leveled_up" | "timed_out" | "timeout"
+        ) {
             return self.action();
         }
         let actor = self
@@ -2277,7 +2319,7 @@ impl NotificationFilter {
             }
             Self::Follows => "No followers yet. When someone follows you, it shows up here.",
             Self::Moderation => {
-                "No moderation updates. Approved and rejected commits show up here."
+                "No moderation updates. Approvals, rejections, and timeouts show up here."
             }
         }
     }
@@ -3543,6 +3585,21 @@ mod unread_count_tests {
             ..Default::default()
         };
         assert_eq!(approved.title(), "@laravel's commit was approved.");
+    }
+
+    #[test]
+    fn timed_out_notification_names_the_reason_and_duration() {
+        let notice = Notification {
+            kind: Some("timed_out".into()),
+            timeout: Some(TimeoutNotice {
+                reason: Some("Spam".into()),
+                duration: Some("1 day".into()),
+                ends_at: None,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(notice.title(), "Timeout for 1 day: Spam");
+        assert_eq!(notice.action(), "Timeout for 1 day: Spam");
     }
 
     #[test]
