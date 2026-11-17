@@ -4,9 +4,9 @@ use chrono::{
 use devnull_api::{
     event_line, Achievements, Activity, ActivityCell, ApiError, Badge, ChatThread, Client, Commit,
     CommitImage, CommitTranslation, ConversationSummary, CurrentUser, Embed, HotTopic, Lane,
-    LinkPreview, MentionSuggestions, Message, MessageImage, MessageReaction, Notification,
-    Organization, Poll, Profile, RemoteCandidate, RemotesSettings, SearchResults, Streaks,
-    ThreadRef, TranslationLanguage, Upload, User, UserPreview,
+    LinkPreview, MentionSuggestions, Message, MessageImage, MessageReaction, ModerationHistory,
+    Notification, Organization, Poll, Profile, RemoteCandidate, RemotesSettings, SearchResults,
+    Streaks, ThreadRef, TranslationLanguage, Upload, User, UserPreview,
 };
 use relm4::adw;
 use relm4::adw::prelude::{AdwDialogExt, AlertDialogExt};
@@ -1354,7 +1354,7 @@ fn user_menu_item(
     btn
 }
 
-fn pastel_path() -> &'static str {
+pub fn pastel_path() -> &'static str {
     static PATH: OnceLock<String> = OnceLock::new();
     PATH.get_or_init(|| {
         resources_dir()
@@ -1362,6 +1362,7 @@ fn pastel_path() -> &'static str {
             .to_string_lossy()
             .into_owned()
     })
+    .as_str()
 }
 
 fn named_icon(name: &str, pixel_size: i32) -> gtk::Image {
@@ -3695,9 +3696,9 @@ pub fn commit_row(
         };
         let mentions = body::CapturedMentions::from_commit(commit);
         content.append(&if chrome.focused {
-            body::body_widget(body, class, mentions, Some(&sender))
+            body::body_widget(body, class, mentions, Some(&sender), ctx.pasteis_mode)
         } else {
-            body::folded_body_widget(body, class, mentions, Some(&sender))
+            body::folded_body_widget(body, class, mentions, Some(&sender), ctx.pasteis_mode)
         });
         if let Some(notice) = translation_notice(commit, ctx) {
             content.append(&notice);
@@ -4275,6 +4276,7 @@ fn quoted_commit_widget(quoted: Option<&Commit>, sender: Sender<AppMsg>) -> gtk:
                     body::CapturedMentions::from_commit(commit),
                     Some(&sender),
                     150,
+                    false,
                 ));
             }
             if !commit.images.is_empty() {
@@ -4746,6 +4748,7 @@ fn readme_content(source: &str, github_login: &str, sender: Sender<AppMsg>) -> g
                     "dn-readme-body",
                     body::CapturedMentions::default(),
                     Some(&sender),
+                    false,
                 );
                 wrap.append(&body);
             }
@@ -5102,6 +5105,7 @@ fn notification_row(
                     body::CapturedMentions::from_commit(commit),
                     Some(&sender),
                     if own { 73 } else { 160 },
+                    false,
                 );
                 if own {
                     let card = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -6371,6 +6375,7 @@ fn message_row(
             },
             body::CapturedMentions::users_only(message.mentions.as_ref()),
             Some(&sender),
+            false,
         );
         text.set_hexpand(false);
         bubble.append(&text);
@@ -7881,6 +7886,7 @@ pub fn fill_profile_hero(
     me: Option<&CurrentUser>,
     follow_label: &str,
     tab: ProfileFeed,
+    moderation_history: Option<&ModerationHistory>,
     sender: Sender<AppMsg>,
 ) {
     while let Some(child) = hero.first_child() {
@@ -7967,6 +7973,9 @@ pub fn fill_profile_hero(
     }
     header.append(&profile_meta(user, sender.clone()));
     header.append(&profile_counts(user, sender.clone()));
+    if let Some(history) = moderation_history.filter(|_| own) {
+        header.append(&moderation_history_trigger(history, sender.clone()));
+    }
     if me.is_some_and(|current| current.pasteis_on()) {
         if let Some(received) = profile.pasteis_received {
             let pastel = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -11013,6 +11022,199 @@ fn badge_icon_name(icon: &str) -> &'static str {
         "key" => "dn-key-symbolic",
         _ => "dn-terminal-symbolic",
     }
+}
+
+fn moderation_history_trigger(history: &ModerationHistory, sender: Sender<AppMsg>) -> gtk::Button {
+    let timeout_label = if history.timeouts_count == 1 {
+        "1 timeout".into()
+    } else {
+        format!("{} timeouts", history.timeouts_count)
+    };
+    let ban_label = if history.bans_count == 1 {
+        "1 ban".into()
+    } else {
+        format!("{} bans", history.bans_count)
+    };
+    let btn = gtk::Button::new();
+    btn.add_css_class("flat");
+    btn.add_css_class("dn-moderation-history");
+    btn.set_halign(gtk::Align::Start);
+    btn.set_tooltip_text(Some("View moderation history"));
+    pointer(&btn);
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+    row.append(&named_icon("dn-shield-symbolic", 18));
+    let label = gtk::Label::new(Some(&format!("{timeout_label} · {ban_label}")));
+    label.add_css_class("dn-mono");
+    label.add_css_class("dn-muted");
+    label.set_xalign(0.0);
+    row.append(&label);
+    btn.set_child(Some(&row));
+    btn.connect_clicked(move |_| sender.emit(AppMsg::InspectModerationHistory));
+    btn
+}
+
+pub fn moderation_history_dialog(history: &ModerationHistory) -> adw::Dialog {
+    let dialog = adw::Dialog::new();
+    dialog.set_title("Moderation history");
+    dialog.set_content_width(480);
+    dialog.set_content_height(520);
+    dialog.set_follows_content_size(false);
+
+    let toolbar = adw::ToolbarView::new();
+    toolbar.add_top_bar(&adw::HeaderBar::new());
+
+    let scroll = gtk::ScrolledWindow::new();
+    scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    scroll.set_vexpand(true);
+
+    let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    body.add_css_class("dn-moderation-history-dialog");
+    body.set_margin_top(8);
+    body.set_margin_bottom(16);
+    body.set_margin_start(16);
+    body.set_margin_end(16);
+
+    let title = gtk::Label::new(Some("Moderation history"));
+    title.add_css_class("dn-title");
+    title.set_xalign(0.0);
+    body.append(&title);
+
+    let blurb = gtk::Label::new(Some(
+        "This record of timeouts and bans is visible to you and site moderators.",
+    ));
+    blurb.add_css_class("dn-muted");
+    blurb.set_wrap(true);
+    blurb.set_xalign(0.0);
+    body.append(&blurb);
+
+    body.append(&moderation_history_section(
+        "Timeouts",
+        "dn-clock-3-symbolic",
+        history.timeouts_count,
+        history.timeouts.is_empty(),
+        "No timeouts recorded.",
+        |list| {
+            for timeout in &history.timeouts {
+                list.append(&moderation_timeout_row(timeout));
+            }
+        },
+    ));
+    body.append(&moderation_history_section(
+        "Bans",
+        "dn-ban-symbolic",
+        history.bans_count,
+        history.bans.is_empty(),
+        "No bans recorded.",
+        |list| {
+            for ban in &history.bans {
+                list.append(&moderation_ban_row(ban));
+            }
+        },
+    ));
+
+    scroll.set_child(Some(&body));
+    toolbar.set_content(Some(&scroll));
+    dialog.set_child(Some(&toolbar));
+    dialog
+}
+
+fn moderation_history_section(
+    heading: &str,
+    icon: &str,
+    count: i64,
+    empty: bool,
+    empty_label: &str,
+    fill: impl FnOnce(&gtk::Box),
+) -> gtk::Box {
+    let section = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    section.add_css_class("dn-moderation-section");
+    let head = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    head.append(&named_icon(icon, 16));
+    let title = gtk::Label::new(Some(heading));
+    title.add_css_class("dn-title");
+    title.set_xalign(0.0);
+    title.set_hexpand(true);
+    head.append(&title);
+    let n = gtk::Label::new(Some(&count.to_string()));
+    n.add_css_class("dn-mono");
+    n.add_css_class("dn-muted");
+    head.append(&n);
+    section.append(&head);
+    if empty {
+        let empty = gtk::Label::new(Some(empty_label));
+        empty.add_css_class("dn-muted");
+        empty.set_xalign(0.0);
+        section.append(&empty);
+    } else {
+        let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        fill(&list);
+        section.append(&list);
+    }
+    section
+}
+
+fn moderation_timeout_row(timeout: &devnull_api::ModerationTimeout) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    row.add_css_class("dn-moderation-row");
+    row.set_margin_top(8);
+    row.set_margin_bottom(8);
+    let top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let reason = gtk::Label::new(Some(&timeout.reason));
+    reason.set_xalign(0.0);
+    reason.set_hexpand(true);
+    reason.set_wrap(true);
+    top.append(&reason);
+    if !timeout.duration.is_empty() {
+        let duration = gtk::Label::new(Some(&timeout.duration));
+        duration.add_css_class("dn-mono");
+        duration.add_css_class("dn-muted");
+        top.append(&duration);
+    }
+    row.append(&top);
+    let range = match (timeout.started_at, timeout.ends_at) {
+        (Some(start), Some(end)) => Some(format!(
+            "{} → {}",
+            start.with_timezone(&Local).format("%a, %d %b %Y %H:%M"),
+            end.with_timezone(&Local).format("%a, %d %b %Y %H:%M")
+        )),
+        (Some(start), None) => Some(
+            start
+                .with_timezone(&Local)
+                .format("%a, %d %b %Y %H:%M")
+                .to_string(),
+        ),
+        _ => None,
+    };
+    if let Some(range) = range {
+        let when = gtk::Label::new(Some(&range));
+        when.add_css_class("dn-muted");
+        when.set_xalign(0.0);
+        when.set_wrap(true);
+        row.append(&when);
+    }
+    row
+}
+
+fn moderation_ban_row(ban: &devnull_api::ModerationBan) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    row.add_css_class("dn-moderation-row");
+    row.set_margin_top(8);
+    row.set_margin_bottom(8);
+    let reason = gtk::Label::new(Some(&ban.reason));
+    reason.set_xalign(0.0);
+    reason.set_wrap(true);
+    row.append(&reason);
+    if let Some(at) = ban.banned_at {
+        let when = gtk::Label::new(Some(
+            &at.with_timezone(&Local)
+                .format("%a, %d %b %Y %H:%M")
+                .to_string(),
+        ));
+        when.add_css_class("dn-muted");
+        when.set_xalign(0.0);
+        row.append(&when);
+    }
+    row
 }
 
 pub fn achievements_dialog(

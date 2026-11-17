@@ -1964,6 +1964,43 @@ pub struct TimeoutNotice {
     pub ends_at: Option<DateTime<Utc>>,
 }
 
+/// Own timeouts and lifted bans from `GET /api/v1/me/moderation-history` (#1575).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ModerationHistory {
+    #[serde(default, deserialize_with = "deserialize_i64ish")]
+    pub timeouts_count: i64,
+    #[serde(default, deserialize_with = "deserialize_i64ish")]
+    pub bans_count: i64,
+    #[serde(default)]
+    pub timeouts: Vec<ModerationTimeout>,
+    #[serde(default)]
+    pub bans: Vec<ModerationBan>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ModerationTimeout {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default)]
+    pub duration: String,
+    #[serde(default, deserialize_with = "deserialize_opt_datetime")]
+    pub started_at: Option<DateTime<Utc>>,
+    #[serde(default, deserialize_with = "deserialize_opt_datetime")]
+    pub ends_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct ModerationBan {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub reason: String,
+    #[serde(default, deserialize_with = "deserialize_opt_datetime")]
+    pub banned_at: Option<DateTime<Utc>>,
+}
+
 impl Notification {
     pub fn organization_handle(&self) -> Option<&str> {
         self.organization
@@ -3462,6 +3499,33 @@ mod unread_count_tests {
         }))
         .unwrap();
         assert_eq!(user.username, "local_dev");
+    }
+
+    #[test]
+    fn moderation_history_reads_timeouts_and_bans() {
+        let history: ModerationHistory = serde_json::from_value(json!({
+            "timeouts_count": 2,
+            "bans_count": 1,
+            "timeouts": [{
+                "id": "t1",
+                "reason": "Spam or self-promotion",
+                "duration": "3 hours",
+                "started_at": "2026-11-13T10:00:00Z",
+                "ends_at": "2026-11-13T13:00:00Z"
+            }],
+            "bans": [{
+                "id": "b1",
+                "reason": "Low-effort posts",
+                "banned_at": "2026-11-06T12:00:00Z"
+            }]
+        }))
+        .unwrap();
+        assert_eq!(history.timeouts_count, 2);
+        assert_eq!(history.bans_count, 1);
+        assert_eq!(history.timeouts[0].duration, "3 hours");
+        assert_eq!(history.bans[0].reason, "Low-effort posts");
+        assert!(history.timeouts[0].started_at.is_some());
+        assert!(history.bans[0].banned_at.is_some());
     }
 
     #[test]

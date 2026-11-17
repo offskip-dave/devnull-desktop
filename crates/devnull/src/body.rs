@@ -53,8 +53,9 @@ pub fn body_widget(
     class: &str,
     mentions: CapturedMentions<'_>,
     sender: Option<&Sender<AppMsg>>,
+    pasteis_mode: bool,
 ) -> gtk::Widget {
-    body_from(text, text, class, mentions, sender)
+    body_from(text, text, class, mentions, sender, pasteis_mode)
 }
 
 fn body_from(
@@ -63,6 +64,7 @@ fn body_from(
     class: &str,
     mentions: CapturedMentions<'_>,
     sender: Option<&Sender<AppMsg>>,
+    pasteis_mode: bool,
 ) -> gtk::Widget {
     let sender = sender.cloned();
     let wrap = gtk::Box::new(gtk::Orientation::Vertical, 4);
@@ -75,14 +77,16 @@ fn body_from(
         if prose.is_empty() {
             return;
         }
-        wrap.append(&prose_label(prose, sender.as_ref()));
+        wrap.append(&prose_widget(prose, sender.as_ref()));
         prose.clear();
     };
     let copy_blocks = block_sources(source);
     let mut block_i = 0;
     for segment in without_fade_ellipsis(segments(display), &copy_blocks) {
         match segment {
-            Segment::Text(text) => prose.push_str(&prose_markup(&text, mentions)),
+            Segment::Text(text) => {
+                prose.push_str(&prose_markup(&text, mentions, pasteis_mode));
+            }
             Segment::Code(code) => {
                 let chip = if is_dark() { "#232326" } else { "#eef0f2" };
                 prose.push_str(&format!(
@@ -118,7 +122,7 @@ fn body_from(
 }
 
 pub fn body_markup(text: &str) -> String {
-    render_markup(text, CapturedMentions::default())
+    render_markup(text, CapturedMentions::default(), false)
 }
 
 /// Lists show a longer body folded to its first characters and lines. Keep in sync with
@@ -131,13 +135,21 @@ pub fn folded_body_widget(
     class: &str,
     mentions: CapturedMentions<'_>,
     sender: Option<&Sender<AppMsg>>,
+    pasteis_mode: bool,
 ) -> gtk::Widget {
     let Some(preview) = excerpt(text) else {
-        return body_widget(text, class, mentions, sender);
+        return body_widget(text, class, mentions, sender, pasteis_mode);
     };
     let wrap = gtk::Box::new(gtk::Orientation::Vertical, 2);
     wrap.set_hexpand(true);
-    wrap.append(&body_from(&preview, text, class, mentions, sender));
+    wrap.append(&body_from(
+        &preview,
+        text,
+        class,
+        mentions,
+        sender,
+        pasteis_mode,
+    ));
     let more = gtk::Button::with_label("Show more");
     more.add_css_class("flat");
     more.add_css_class("dn-show-more");
@@ -165,6 +177,7 @@ pub fn folded_body_widget(
                 organizations: organizations.as_ref(),
             },
             sender.as_ref(),
+            pasteis_mode,
         ));
     });
     wrap.append(&more);
@@ -177,6 +190,7 @@ pub fn clamped_body_widget(
     mentions: CapturedMentions<'_>,
     sender: Option<&Sender<AppMsg>>,
     max_height: i32,
+    pasteis_mode: bool,
 ) -> gtk::Widget {
     let preview = excerpt(text).unwrap_or_else(|| text.to_owned());
     let scroll = gtk::ScrolledWindow::new();
@@ -186,7 +200,13 @@ pub fn clamped_body_widget(
     scroll.set_propagate_natural_height(true);
     scroll.set_hexpand(true);
     scroll.set_overflow(gtk::Overflow::Hidden);
-    scroll.set_child(Some(&body_widget(&preview, class, mentions, sender)));
+    scroll.set_child(Some(&body_widget(
+        &preview,
+        class,
+        mentions,
+        sender,
+        pasteis_mode,
+    )));
     scroll.upcast()
 }
 
@@ -311,11 +331,11 @@ fn char_take(text: &str, n: usize) -> String {
     text.chars().take(n).collect()
 }
 
-fn prose_markup(text: &str, mentions: CapturedMentions<'_>) -> String {
-    markdown_markup(&crate::emoji::emojify(text), mentions)
+fn prose_markup(text: &str, mentions: CapturedMentions<'_>, pasteis_mode: bool) -> String {
+    markdown_markup(&crate::emoji::emojify(text), mentions, pasteis_mode)
 }
 
-fn render_markup(text: &str, mentions: CapturedMentions<'_>) -> String {
+fn render_markup(text: &str, mentions: CapturedMentions<'_>, pasteis_mode: bool) -> String {
     let mut out = String::new();
     for (index, segment) in segments(text).into_iter().enumerate() {
         if index > 0 && !out.ends_with('\n') {
@@ -325,7 +345,7 @@ fn render_markup(text: &str, mentions: CapturedMentions<'_>) -> String {
             }
         }
         match segment {
-            Segment::Text(text) => out.push_str(&prose_markup(&text, mentions)),
+            Segment::Text(text) => out.push_str(&prose_markup(&text, mentions, pasteis_mode)),
             Segment::Code(code) => {
                 out.push_str("<tt>");
                 out.push_str(&escape(&code));
@@ -337,6 +357,100 @@ fn render_markup(text: &str, mentions: CapturedMentions<'_>) -> String {
         }
     }
     out
+}
+
+/// A pastel word drawn as an icon, or the prose between those words. Escaped `\pastel`
+/// keeps the word and drops the backslash. Keep in sync with `resources/js/lib/pasteis.ts`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PasteisPart {
+    pub text: String,
+    pub pastel: bool,
+}
+
+/// Splits text into pastel words and the prose between them (#1583).
+pub fn pasteis_parts(text: &str) -> Vec<PasteisPart> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut parts = Vec::new();
+    let mut prose = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if let Some((escaped, word, end)) = take_pastel_word(&chars, i) {
+            if escaped {
+                prose.push_str(&word);
+            } else {
+                if !prose.is_empty() {
+                    parts.push(PasteisPart {
+                        text: std::mem::take(&mut prose),
+                        pastel: false,
+                    });
+                }
+                parts.push(PasteisPart {
+                    text: word.to_owned(),
+                    pastel: true,
+                });
+            }
+            i = end;
+            continue;
+        }
+        prose.push(chars[i]);
+        i += 1;
+    }
+    if !prose.is_empty() {
+        parts.push(PasteisPart {
+            text: prose,
+            pastel: false,
+        });
+    }
+    parts
+}
+
+/// Match `(?<![\p{L}\p{M}\p{N}_\\])(\\?)(pastel|pasteis|pastéis)(?![\p{L}\p{M}\p{N}_])`.
+fn take_pastel_word(chars: &[char], i: usize) -> Option<(bool, String, usize)> {
+    let before = i.checked_sub(1).map(|j| chars[j]);
+    if before.is_some_and(|c| is_pastel_boundary_char(c) || c == '\\') {
+        return None;
+    }
+    let escaped = chars.get(i) == Some(&'\\');
+    let word_at = if escaped { i + 1 } else { i };
+    if word_at >= chars.len() {
+        return None;
+    }
+    let word_len = pastel_word_len(&chars[word_at..])?;
+    let end = word_at + word_len;
+    if chars.get(end).copied().is_some_and(is_pastel_boundary_char) {
+        return None;
+    }
+    let word: String = chars[word_at..end].iter().collect();
+    Some((escaped, word, end))
+}
+
+fn pastel_word_len(chars: &[char]) -> Option<usize> {
+    let lower: String = chars.iter().copied().flat_map(char::to_lowercase).collect();
+    if lower.starts_with("pastéis") {
+        Some("pastéis".chars().count())
+    } else if lower.starts_with("pasteis") {
+        Some(7)
+    } else if lower.starts_with("pastel") {
+        Some(6)
+    } else {
+        None
+    }
+}
+
+fn is_pastel_boundary_char(c: char) -> bool {
+    // JS `\p{L}\p{M}\p{N}_`
+    c == '_' || c.is_alphanumeric() || unicode_general_category_mark(c)
+}
+
+fn unicode_general_category_mark(c: char) -> bool {
+    matches!(
+        c,
+        '\u{0300}'..='\u{036F}'
+            | '\u{1AB0}'..='\u{1AFF}'
+            | '\u{1DC0}'..='\u{1DFF}'
+            | '\u{20D0}'..='\u{20FF}'
+            | '\u{FE20}'..='\u{FE2F}'
+    )
 }
 
 fn is_dark() -> bool {
@@ -1073,7 +1187,7 @@ struct ListState {
     next: u64,
 }
 
-fn markdown_markup(text: &str, mentions: CapturedMentions<'_>) -> String {
+fn markdown_markup(text: &str, mentions: CapturedMentions<'_>, pasteis_mode: bool) -> String {
     let mut out = String::new();
     let mut in_link = false;
     let mut lists = Vec::new();
@@ -1102,9 +1216,13 @@ fn markdown_markup(text: &str, mentions: CapturedMentions<'_>) -> String {
             }
             Event::Text(t) | Event::Html(t) | Event::InlineHtml(t) => {
                 if in_link {
-                    out.push_str(&with_wordmarks(&with_colors(&escape(&t))));
+                    out.push_str(&with_pasteis(&t, pasteis_mode, |chunk| {
+                        with_wordmarks(&with_colors(&escape(chunk)))
+                    }));
                 } else {
-                    out.push_str(&with_urls(&t, mentions));
+                    out.push_str(&with_pasteis(&t, pasteis_mode, |chunk| {
+                        with_urls(chunk, mentions)
+                    }));
                 }
             }
             Event::SoftBreak | Event::HardBreak => out.push('\n'),
@@ -1164,6 +1282,26 @@ fn push_break(out: &mut String, blank_line: bool) {
     if blank_line {
         out.push('\n');
     }
+}
+
+/// Sentinel in Pango markup for a pastel word; `prose_widget` swaps it for the nata icon.
+const PASTEL_MARK: char = '\u{E000}';
+
+/// When Pastéis mode is on, mark pastel words and strip the escape backslash from `\pastel`.
+/// Keep matching `pasteisParts` on the web.
+fn with_pasteis(text: &str, pasteis_mode: bool, decorate: impl Fn(&str) -> String) -> String {
+    if !pasteis_mode {
+        return decorate(text);
+    }
+    let mut out = String::new();
+    for part in pasteis_parts(text) {
+        if part.pastel {
+            out.push(PASTEL_MARK);
+        } else {
+            out.push_str(&decorate(&part.text));
+        }
+    }
+    out
 }
 
 /// Keep in sync with `app/Services/Urls.php` and `linkified-text.tsx`.
@@ -1430,6 +1568,43 @@ fn shorten_url_label(url: &str) -> String {
     format!("{host}{kept}…")
 }
 
+fn prose_widget(markup: &str, sender: Option<&Sender<AppMsg>>) -> gtk::Widget {
+    if !markup.contains(PASTEL_MARK) {
+        return prose_label(markup, sender).upcast();
+    }
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+    row.set_hexpand(true);
+    row.add_css_class("dn-pastel-prose");
+    // FlowBox keeps pastel icons inline with wrapping prose chunks.
+    let flow = gtk::FlowBox::new();
+    flow.set_selection_mode(gtk::SelectionMode::None);
+    flow.set_homogeneous(false);
+    flow.set_hexpand(true);
+    flow.set_max_children_per_line(64);
+    flow.set_min_children_per_line(1);
+    flow.set_column_spacing(2);
+    flow.set_row_spacing(0);
+    flow.set_valign(gtk::Align::Start);
+    for (index, chunk) in markup.split(PASTEL_MARK).enumerate() {
+        if index > 0 {
+            let icon = gtk::Image::from_file(ui::pastel_path());
+            icon.set_pixel_size(18);
+            icon.set_valign(gtk::Align::Center);
+            icon.set_tooltip_text(Some("pastel"));
+            flow.insert(&icon, -1);
+        }
+        if chunk.is_empty() {
+            continue;
+        }
+        let label = prose_label(chunk, sender);
+        label.set_hexpand(false);
+        label.set_width_chars(-1);
+        flow.insert(&label, -1);
+    }
+    row.append(&flow);
+    row.upcast()
+}
+
 fn prose_label(markup: &str, sender: Option<&Sender<AppMsg>>) -> gtk::Label {
     let label = gtk::Label::new(None);
     label.set_wrap(true);
@@ -1663,6 +1838,97 @@ mod tests {
             matches!(&segs[3], Segment::Block { language, filename, code } if language.as_deref() == Some("rust") && filename.is_none() && code == "let x = 1;")
         );
         assert!(matches!(&segs[4], Segment::Text(t) if t == "done"));
+    }
+
+    #[test]
+    fn pasteis_draws_pastel_words_in_any_case() {
+        assert_eq!(
+            pasteis_parts("one Pastel, two PASTÉIS, more pasteis"),
+            vec![
+                PasteisPart {
+                    text: "one ".into(),
+                    pastel: false
+                },
+                PasteisPart {
+                    text: "Pastel".into(),
+                    pastel: true
+                },
+                PasteisPart {
+                    text: ", two ".into(),
+                    pastel: false
+                },
+                PasteisPart {
+                    text: "PASTÉIS".into(),
+                    pastel: true
+                },
+                PasteisPart {
+                    text: ", more ".into(),
+                    pastel: false
+                },
+                PasteisPart {
+                    text: "pasteis".into(),
+                    pastel: true
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn pasteis_leaves_words_inside_other_words() {
+        assert_eq!(
+            pasteis_parts("pastels and pastelaria"),
+            vec![PasteisPart {
+                text: "pastels and pastelaria".into(),
+                pastel: false
+            }]
+        );
+    }
+
+    #[test]
+    fn pasteis_keeps_escaped_words_without_the_backslash() {
+        assert_eq!(
+            pasteis_parts("I love \\pastel de nata, not \\Pastéis"),
+            vec![PasteisPart {
+                text: "I love pastel de nata, not Pastéis".into(),
+                pastel: false
+            }]
+        );
+        assert_eq!(
+            pasteis_parts("\\pastel or pastel"),
+            vec![
+                PasteisPart {
+                    text: "pastel or ".into(),
+                    pastel: false
+                },
+                PasteisPart {
+                    text: "pastel".into(),
+                    pastel: true
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn pasteis_leaves_backslash_after_a_word_or_backslash() {
+        assert_eq!(
+            pasteis_parts("path\\pastel and \\\\pastel"),
+            vec![PasteisPart {
+                text: "path\\pastel and \\\\pastel".into(),
+                pastel: false
+            }]
+        );
+    }
+
+    #[test]
+    fn pasteis_keeps_text_without_a_pastel_whole() {
+        assert!(pasteis_parts("").is_empty());
+        assert_eq!(
+            pasteis_parts("custard"),
+            vec![PasteisPart {
+                text: "custard".into(),
+                pastel: false
+            }]
+        );
     }
 
     #[test]
@@ -1920,6 +2186,7 @@ mod tests {
         let marked = render_markup(
             "thanks @taylorotwell for `@Override`\n```java\n@Deprecated\nvoid run() {}\n```",
             CapturedMentions::users_only(Some(&mentions)),
+            false,
         );
         assert!(marked.contains("href=\"mention:taylorotwell\""));
         assert!(!marked.contains("mention:override"));

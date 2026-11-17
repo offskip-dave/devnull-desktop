@@ -1,6 +1,6 @@
 # Changelog parity
 
-Track of [dev-null.sh/changelog](https://dev-null.sh/changelog) against this GTK client, from the platform’s first production commit on **2026-10-15** (`chore: first` — empty repo in the morning, live by lunch; see [About](https://dev-null.sh/about)) through **2026-11-13**. Prefer signed `/api/v1` surfaces. Skip Inertia-only, CLI, PWA, admin/CMS, and first-party Swift/mobile app work unless a client route exists.
+Track of [dev-null.sh/changelog](https://dev-null.sh/changelog) against this GTK client, from the platform’s first production commit on **2026-10-15** (`chore: first` — empty repo in the morning, live by lunch; see [About](https://dev-null.sh/about)) through **2026-11-16**. Prefer signed `/api/v1` surfaces. Skip Inertia-only, CLI, PWA, admin/CMS, and first-party Swift/mobile app work unless a client route exists.
 
 The [capability matrix](#capability-matrix-launch--present) is the durable inventory. [Day by day](#day-by-day-oct-15--present) lists every non-merge `feat` on `production` since day one. Update both when you catch up a changelog day. Link the web PR or commit in your PR description.
 
@@ -42,7 +42,8 @@ Durable inventory by product area. Every production `feat` from day one is also 
 | Emoji shortcodes + picker; `@` mention suggestions | Done | |
 | Replies, quotes, related commits, ancestors | Done | |
 | Stars (incl. stargazers of your own commit) | Done | API #1310; stargazer hover cards (#1204) |
-| Pastéis mode | Done | |
+| Pastéis mode | Done | Award button + pastel words in bodies; `\pastel` escape (#1583) |
+| Own moderation history on profile | Done | `GET me/moderation-history` (#1575); owner-only dialog |
 | Report / mute / block / delete own commit | Done | Delete via more menu |
 | Commit more menu (follow / mute / block / pin / send) | Done | #1371 Send in Remotes via share picker |
 | Translate commits; translation language / automatic | Done | Settings |
@@ -114,6 +115,7 @@ Durable inventory by product area. Every production `feat` from day one is also 
 | Inbox with filters, groups, expand | Done | |
 | Grouped stars, mention avatars, lane-colored actors | Done | |
 | Follow back from notifications | Done | Via follow actions |
+| Timeout (`timed_out`) notices | Done | Reason, duration, ends-at (#1561) |
 
 ### Search and aside
 
@@ -806,7 +808,7 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 
 | Item | Status | Notes |
 | --- | --- | --- |
-| notify users about timeouts and show moderation history (#1561) | Partial | `timed_out` notifications Done; own history Waiting on signed `GET me/moderation-history` (#1575 open) |
+| notify users about timeouts and show moderation history (#1561) | Done | `timed_out` notifications + own history via #1575 |
 | align moderation history and show it to moderators (#1562) | Skip | Moderator / admin web |
 | align moderation history with profile stats (bf8975e) | Skip | Website profile chrome |
 | let members quote a commit as their organization (#1568) | Done | Quote dialog AuthorSwitcher; submit already sent `author` |
@@ -821,6 +823,21 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | removes vet in favour of `cooldown/period` (6500841) | Skip | Server chore |
 | fix ci (a7a1582) | Skip | Website CI |
 
+### 2026-11-14
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| let API clients read your own moderation history (#1575) | Done | `GET me/moderation-history`; own-profile trigger + dialog |
+| escape pastel words with a backslash (#1583) | Done | `pasteis_parts` + `\pastel` / `\pastéis` keep the word |
+| skip transparent pixels in the christmas santa hat (#1582) | Done | SVG already omits empty cells (no fill-less rects) |
+| go `MIT` (2ef29e7) | Skip | Website / repo license docs |
+
+### 2026-11-16
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| headline cache (7513965) | Skip | Server cache |
+
 
 ## Standing gaps (priority)
 
@@ -833,10 +850,9 @@ Blocked on API or hard infra — not same-day launch work:
 5. **Calls** — WebRTC (button currently opens the web thread)  
 6. **Commit link-card picker** — API create-commit does not accept `link_preview_url` yet  
 7. **Feature / bug report from composer** — signed `POST /api/v1/issues` (#1543); slash-command UI  
-8. **Own moderation history** — when `GET /api/v1/me/moderation-history` (#1575) merges  
-9. **Guilds** — when signed routes exist and the feature leaves admin preview (#1576)  
-10. **Remotes nostalgic sounds** — prefs + bundled MSN/ICQ/AIM cues  
-11. **Recent search chips** — local prefs polish (web uses localStorage); optional  
+8. **Guilds** — when signed routes exist and the feature leaves admin preview (#1576)  
+9. **Remotes nostalgic sounds** — prefs + bundled MSN/ICQ/AIM cues  
+10. **Recent search chips** — local prefs polish (web uses localStorage); optional  
 
 ## Out of scope (recurring Skip)
 

@@ -16,9 +16,9 @@ On a Mac this is the Homebrew GTK build, not a replacement for the Swift app at 
 - Following, Latest, Trending, and Starred logs
 - Composer: text, images, polls, scheduling, preview, emoji picker, `:` shortcodes, `@` mentions, and `#hashtags`
 - Commit threads: replies, quotes, related commits, stars, pastéis, poll voting; more menu for copy link, Send in Remotes, pin / unpin, follow / mute / block, report, and delete (with 30s undo)
-- Profiles: activity graph, achievements, XP, follow / follow back, following and followers lists (Follows you chips), share link or ID, Go live / End stream, GitHub edit/sync; a profile photo opens in the viewer; hover-card Remote / mute / block
+- Profiles: activity graph, achievements, XP, follow / follow back, following and followers lists (Follows you chips), share link or ID, Go live / End stream, GitHub edit/sync, own moderation history; a profile photo opens in the viewer; hover-card Remote / mute / block
 - Organization pages: commits, mentions, follow, claim, lane color, share
-- Notifications with filters, grouped stars, named pairs, and mention avatars
+- Notifications with filters, grouped stars, named pairs, mention avatars, and timeout notices
 - Remotes: Open / Stashed inbox, search, dock, settings, new org / new remote; Back to present when scrolled far up a thread; org Mentions bell (jump when loaded; clear waits on a signed API route)
 - Aside: hot topics (with recap when the API sends one), live following, who to follow
 - Search (`Ctrl+K` or `/`): hot topics when the box is empty, then Most relevant and Latest

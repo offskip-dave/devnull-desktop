@@ -631,6 +631,11 @@ impl Client {
         .await
     }
 
+    /// Own timeout and ban history (`GET me/moderation-history`). Banned accounts cannot call it.
+    pub async fn moderation_history(&self) -> Result<ModerationHistory, ApiError> {
+        self.get("me/moderation-history", &[]).await
+    }
+
     pub async fn user_settings(&self) -> Result<UserSettings, ApiError> {
         self.get("me/settings", &[]).await
     }

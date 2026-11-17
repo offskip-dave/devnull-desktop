@@ -14,9 +14,9 @@ use relm4::prelude::*;
 use devnull_api::{
     ApiError, ChatThread, Client, Commit, CommitPage, CommitTranslation, ConversationSummary,
     CurrentUser, DeviceKey, HeadlinePage, HotTopic, InboxPage, InboxTab, Lane, LogKind, LogPage,
-    MentionSuggestions, Message, MessageReaction, Notification, NotificationFilter, Organization,
-    Page, PastelAward, Profile, RemoteCandidate, ReplyParticipant, SearchResults, ThreadRef,
-    Upload, User, UserPreview, UserSettings,
+    MentionSuggestions, Message, MessageReaction, ModerationHistory, Notification,
+    NotificationFilter, Organization, Page, PastelAward, Profile, RemoteCandidate,
+    ReplyParticipant, SearchResults, ThreadRef, Upload, User, UserPreview, UserSettings,
 };
 use devnull_auth::{self as auth, Pkce, APP_ID};
 
@@ -238,6 +238,8 @@ pub enum AppMsg {
     SetLane(Option<Lane>),
     LaneSaved(Result<CurrentUser, ApiError>),
     InspectAchievements,
+    InspectModerationHistory,
+    ModerationHistoryLoaded(Result<ModerationHistory, ApiError>),
     OmniboxQuery(String),
     OmniboxGo(u64, String),
     OmniboxLoaded(u64, String, Result<SearchResults, ApiError>),
@@ -357,6 +359,7 @@ pub struct App {
     organization: Option<Organization>,
     profile_tab: ProfileFeed,
     profile_readme: Option<(String, Result<Option<String>, ApiError>)>,
+    moderation_history: Option<ModerationHistory>,
     suggested: Vec<User>,
     following: HashSet<String>,
     user_settings: Option<UserSettings>,
@@ -2546,6 +2549,7 @@ impl SimpleComponent for App {
             organization: None,
             profile_tab: ProfileFeed::Commits,
             profile_readme: None,
+            moderation_history: None,
             suggested: Vec::new(),
             following: HashSet::new(),
             user_settings: None,
@@ -4107,6 +4111,7 @@ impl SimpleComponent for App {
                 self.visible = "profile";
                 self.profile_tab = ProfileFeed::Commits;
                 self.profile_readme = None;
+                self.moderation_history = None;
                 self.organization = None;
                 self.profile_bar_scrolled = false;
                 self.load_profile(&sender, username, false);
@@ -4117,6 +4122,7 @@ impl SimpleComponent for App {
                 self.profile = None;
                 self.profile_tab = ProfileFeed::Commits;
                 self.profile_readme = None;
+                self.moderation_history = None;
                 self.profile_bar_scrolled = false;
                 self.load_organization(&sender, handle);
             }
@@ -4184,6 +4190,23 @@ impl SimpleComponent for App {
                         return;
                     }
                 }
+                let own = self.user.as_ref().is_some_and(|me| {
+                    self.profile
+                        .as_ref()
+                        .is_some_and(|profile| me.username() == profile.username())
+                });
+                if own {
+                    if let Some(client) = self.client.clone() {
+                        let sender2 = sender.clone();
+                        relm4::spawn(async move {
+                            sender2.input(AppMsg::ModerationHistoryLoaded(
+                                client.moderation_history().await,
+                            ));
+                        });
+                    }
+                } else {
+                    self.moderation_history = None;
+                }
                 self.render_profile(&sender);
                 if let Ok(page) = commits {
                     let pinned = if self.profile_tab == ProfileFeed::Replies {
@@ -4218,6 +4241,7 @@ impl SimpleComponent for App {
                     Ok(organization) => {
                         self.organization = Some(*organization);
                         self.profile = None;
+                        self.moderation_history = None;
                     }
                     Err(err) => {
                         self.fail(err);
@@ -4873,6 +4897,30 @@ impl SimpleComponent for App {
                     let lane_class = ui::lane_class(Some(&profile.user));
                     ui::achievements_dialog(&achievements, &profile.user, &lane, lane_class)
                         .present(Some(&self.log_scroll));
+                }
+            }
+            AppMsg::InspectModerationHistory => {
+                if let Some(history) = self.moderation_history.clone() {
+                    ui::moderation_history_dialog(&history).present(Some(&self.log_scroll));
+                }
+            }
+            AppMsg::ModerationHistoryLoaded(result) => {
+                let own = self.user.as_ref().is_some_and(|me| {
+                    self.profile
+                        .as_ref()
+                        .is_some_and(|profile| me.username() == profile.username())
+                });
+                if !own {
+                    return;
+                }
+                match result {
+                    Ok(history) => {
+                        self.moderation_history = Some(history);
+                        self.render_profile(&sender);
+                    }
+                    Err(_) => {
+                        self.moderation_history = None;
+                    }
                 }
             }
             AppMsg::RunSearch(q) => {
@@ -7677,6 +7725,7 @@ impl App {
                 self.user.as_ref(),
                 self.follow_label(),
                 self.profile_tab,
+                self.moderation_history.as_ref(),
                 sender.input_sender().clone(),
             );
         }
