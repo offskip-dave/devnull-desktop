@@ -822,6 +822,14 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | fix ci (a7a1582) | Skip | Website CI |
 
 
+### 2026-11-14
+
+Auto-imported by the changelog parity cron.
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| escape pastel words with a backslash (#1583) | Waiting | Port task opened; web [a6f17a3](https://github.com/dev-null-sh/dev-null.sh/commit/a6f17a3c2bebc71165a485eabeb989e8c9e1d3a0) |
+
 ## Standing gaps (priority)
 
 Blocked on API or hard infra — not same-day launch work:
