@@ -839,6 +839,16 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | headline cache (7513965) | Skip | Server cache |
 
 
+### 2026-11-17
+
+Auto-imported by the changelog parity cron.
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| paginate and search the guild directory | Waiting | Auto-imported from [00c4fed](https://github.com/dev-null-sh/dev-null.sh/commit/00c4fed970a993685b368ffa5bb36ed7348dd66e); needs GTK port or API probe |
+| browse guild members in pages of fifty | Waiting | Auto-imported from [173bf55](https://github.com/dev-null-sh/dev-null.sh/commit/173bf55f9a034d622242e5df7edaa4fd0608ce11); needs GTK port or API probe |
+| keep guild board commits attached to their guild | Waiting | Auto-imported from [d27f6a3](https://github.com/dev-null-sh/dev-null.sh/commit/d27f6a34792c893c7bc85ad6331ab974304c0b1c); needs GTK port or API probe |
+
 ## Standing gaps (priority)
 
 Blocked on API or hard infra — not same-day launch work:
