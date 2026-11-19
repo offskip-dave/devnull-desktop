@@ -839,6 +839,14 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | headline cache (7513965) | Skip | Server cache |
 
 
+### 2026-11-18
+
+Auto-imported by the changelog parity cron.
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| send phone push notifications through Firebase | Waiting | Port task opened; web [c2eccd8](https://github.com/dev-null-sh/dev-null.sh/commit/c2eccd80d1682e38d3718ca9f3b1c6c70e0c7690) |
+
 ## Standing gaps (priority)
 
 Blocked on API or hard infra — not same-day launch work:
