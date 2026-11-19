@@ -839,6 +839,14 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | headline cache (7513965) | Skip | Server cache |
 
 
+### 2026-11-18
+
+Auto-imported by the changelog parity cron.
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| share one link preview per canonical URL (#1625) | Waiting | Port task opened; web [c200235](https://github.com/dev-null-sh/dev-null.sh/commit/c200235e0a142108177e1879deed28ca17f07458) |
+
 ## Standing gaps (priority)
 
 Blocked on API or hard infra — not same-day launch work:
