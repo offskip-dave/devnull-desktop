@@ -20,6 +20,7 @@ use devnull_api::{
 };
 use devnull_auth::{self as auth, Pkce, APP_ID};
 
+use crate::body;
 use crate::prefs::{EventTheme, EventThemeChoice, Prefs, Theme};
 use crate::ui;
 use crate::{APP_SENDER, PENDING_URI};
@@ -149,6 +150,12 @@ pub enum AppMsg {
     ComposerChanged,
     ReplyComposerChanged,
     RemoteComposerChanged,
+    /// Wrap the last ambiguous `#hex` hashtag as `color(#hex)` in a composer (#1634).
+    UseAsColor {
+        log: bool,
+        reply: bool,
+        remote: bool,
+    },
     EmojiMove(i32),
     EmojiPick,
     EmojiDismiss,
@@ -1321,6 +1328,41 @@ impl SimpleComponent for App {
                                     },
                                     gtk::Box {
                                         set_orientation: gtk::Orientation::Horizontal,
+                                        set_spacing: 8,
+                                        add_css_class: "dn-color-hint",
+                                        set_height_request: 28,
+                                        #[watch]
+                                        set_visible: !model.composer_preview,
+                                        #[watch]
+                                        set_opacity: if model.composer_color_hint().is_some() {
+                                            1.0
+                                        } else {
+                                            0.0
+                                        },
+                                        #[watch]
+                                        set_sensitive: model.composer_color_hint().is_some(),
+                                        gtk::Label {
+                                            #[watch]
+                                            set_markup: &model.composer_color_hint_markup(),
+                                            add_css_class: "dn-muted",
+                                            set_xalign: 0.0,
+                                            set_hexpand: true,
+                                        },
+                                        gtk::Button {
+                                            set_label: "Use as color",
+                                            add_css_class: "flat",
+                                            add_css_class: "dn-color-hint-btn",
+                                            #[watch]
+                                            set_sensitive: model.composer_color_hint().is_some(),
+                                            connect_clicked => AppMsg::UseAsColor {
+                                                log: true,
+                                                reply: false,
+                                                remote: false,
+                                            },
+                                        },
+                                    },
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Horizontal,
                                         set_spacing: 4,
                                         gtk::Button {
                                             set_icon_name: "dn-image-plus-symbolic",
@@ -1444,6 +1486,39 @@ impl SimpleComponent for App {
                                     set_min_content_height: 60,
                                     set_max_content_height: 120,
                                     set_child: Some(&model.reply_composer),
+                                },
+                                gtk::Box {
+                                    set_orientation: gtk::Orientation::Horizontal,
+                                    set_spacing: 8,
+                                    add_css_class: "dn-color-hint",
+                                    set_height_request: 28,
+                                    #[watch]
+                                    set_opacity: if model.reply_color_hint().is_some() {
+                                        1.0
+                                    } else {
+                                        0.0
+                                    },
+                                    #[watch]
+                                    set_sensitive: model.reply_color_hint().is_some(),
+                                    gtk::Label {
+                                        #[watch]
+                                        set_markup: &model.reply_color_hint_markup(),
+                                        add_css_class: "dn-muted",
+                                        set_xalign: 0.0,
+                                        set_hexpand: true,
+                                    },
+                                    gtk::Button {
+                                        set_label: "Use as color",
+                                        add_css_class: "flat",
+                                        add_css_class: "dn-color-hint-btn",
+                                        #[watch]
+                                        set_sensitive: model.reply_color_hint().is_some(),
+                                        connect_clicked => AppMsg::UseAsColor {
+                                            log: false,
+                                            reply: true,
+                                            remote: false,
+                                        },
+                                    },
                                 },
                                 gtk::Box {
                                     set_orientation: gtk::Orientation::Horizontal,
@@ -1962,6 +2037,39 @@ impl SimpleComponent for App {
                                             set_tooltip_text: Some("Cancel reply"),
                                             set_valign: gtk::Align::Center,
                                             connect_clicked => AppMsg::CancelRemoteReply,
+                                        },
+                                    },
+                                    gtk::Box {
+                                        set_orientation: gtk::Orientation::Horizontal,
+                                        set_spacing: 8,
+                                        add_css_class: "dn-color-hint",
+                                        set_height_request: 28,
+                                        #[watch]
+                                        set_opacity: if model.remote_color_hint().is_some() {
+                                            1.0
+                                        } else {
+                                            0.0
+                                        },
+                                        #[watch]
+                                        set_sensitive: model.remote_color_hint().is_some(),
+                                        gtk::Label {
+                                            #[watch]
+                                            set_markup: &model.remote_color_hint_markup(),
+                                            add_css_class: "dn-muted",
+                                            set_xalign: 0.0,
+                                            set_hexpand: true,
+                                        },
+                                        gtk::Button {
+                                            set_label: "Use as color",
+                                            add_css_class: "flat",
+                                            add_css_class: "dn-color-hint-btn",
+                                            #[watch]
+                                            set_sensitive: model.remote_color_hint().is_some(),
+                                            connect_clicked => AppMsg::UseAsColor {
+                                                log: false,
+                                                reply: false,
+                                                remote: true,
+                                            },
                                         },
                                     },
                                     gtk::Box {
@@ -3657,6 +3765,36 @@ impl SimpleComponent for App {
                 self.sync_remote_link_card_ui(&sender);
                 self.ping_remote_typing();
             }
+            AppMsg::UseAsColor { log, reply, remote } => {
+                let view = if log {
+                    self.composer.clone()
+                } else if reply {
+                    self.reply_view().clone()
+                } else if remote {
+                    self.remote_composer.clone()
+                } else {
+                    return;
+                };
+                let draft = buffer_text(&view);
+                let Some((next, caret)) = body::apply_color_swatch_hint(&draft) else {
+                    return;
+                };
+                if next.chars().count() > MAX_BODY {
+                    return;
+                }
+                let buffer = view.buffer();
+                buffer.set_text(&next);
+                let insert = buffer.iter_at_offset(caret as i32);
+                buffer.place_cursor(&insert);
+                view.grab_focus();
+                if log {
+                    sender.input(AppMsg::ComposerChanged);
+                } else if reply {
+                    sender.input(AppMsg::ReplyComposerChanged);
+                } else {
+                    sender.input(AppMsg::RemoteComposerChanged);
+                }
+            }
             AppMsg::EmojiMove(step) => self.emoji.move_selection(step),
             AppMsg::EmojiPick => {
                 if let Some(glyph) = self.emoji.active_emoji() {
@@ -3858,6 +3996,7 @@ impl SimpleComponent for App {
                                     None,
                                     None,
                                     author.as_deref(),
+                                    None,
                                     None,
                                 )
                                 .await,
@@ -5311,6 +5450,7 @@ impl SimpleComponent for App {
                                     None,
                                     author.as_deref(),
                                     recipients.as_deref(),
+                                    None,
                                 )
                                 .await,
                         ));
@@ -5369,6 +5509,7 @@ impl SimpleComponent for App {
                                     poll,
                                     scheduled.as_deref(),
                                     author.as_deref(),
+                                    None,
                                     None,
                                 )
                                 .await,
@@ -6294,6 +6435,42 @@ impl App {
         } else {
             ui::body_markup(&body)
         }
+    }
+
+    fn composer_color_hint(&self) -> Option<(usize, String)> {
+        body::ambiguous_color_in_draft(&buffer_text(&self.composer))
+    }
+
+    fn reply_color_hint(&self) -> Option<(usize, String)> {
+        body::ambiguous_color_in_draft(&buffer_text(self.reply_view()))
+    }
+
+    fn composer_color_hint_markup(&self) -> String {
+        color_hint_markup(
+            self.composer_color_hint()
+                .as_ref()
+                .map(|(_, hex)| hex.as_str()),
+        )
+    }
+
+    fn reply_color_hint_markup(&self) -> String {
+        color_hint_markup(
+            self.reply_color_hint()
+                .as_ref()
+                .map(|(_, hex)| hex.as_str()),
+        )
+    }
+
+    fn remote_color_hint(&self) -> Option<(usize, String)> {
+        body::ambiguous_color_in_draft(&buffer_text(&self.remote_composer))
+    }
+
+    fn remote_color_hint_markup(&self) -> String {
+        color_hint_markup(
+            self.remote_color_hint()
+                .as_ref()
+                .map(|(_, hex)| hex.as_str()),
+        )
     }
 
     fn nav_classes(&self, item: Sidebar) -> [&'static str; 3] {
@@ -9168,6 +9345,15 @@ fn typing_copy(thread: &ChatThread, reference: Option<&ThreadRef>) -> String {
         return "typing…".into();
     }
     String::new()
+}
+
+fn color_hint_markup(hex: Option<&str>) -> String {
+    let example = hex.unwrap_or("#a1234567");
+    let markup = format!("color({example})");
+    format!(
+        "For a swatch, use <tt>{}</tt>.",
+        glib::markup_escape_text(&markup)
+    )
 }
 
 fn buffer_text(view: &gtk::TextView) -> String {

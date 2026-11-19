@@ -261,6 +261,7 @@ impl Client {
         scheduled_at: Option<&str>,
         author: Option<&str>,
         reply_recipients: Option<&[String]>,
+        guild_handle: Option<&str>,
     ) -> Result<Commit, ApiError> {
         let mut payload = serde_json::json!({ "body": body });
         if let Some(parent) = parent_id {
@@ -283,6 +284,12 @@ impl Client {
         }
         if let Some(recipients) = reply_recipients.filter(|ids| !ids.is_empty()) {
             payload["reply_recipients"] = serde_json::json!(recipients);
+        }
+        if let Some(handle) = guild_handle
+            .map(str::trim)
+            .filter(|handle| !handle.is_empty())
+        {
+            payload["guild_handle"] = serde_json::json!(handle);
         }
         if images.is_empty() {
             self.send_json(Method::POST, "commits", &[], &payload).await
@@ -634,6 +641,23 @@ impl Client {
     /// Own timeout and ban history (`GET me/moderation-history`). Banned accounts cannot call it.
     pub async fn moderation_history(&self) -> Result<ModerationHistory, ApiError> {
         self.get("me/moderation-history", &[]).await
+    }
+
+    /// Guild directory (`GET guilds`), 24 a page. Returns 404 while guilds are not available to the user.
+    pub async fn guilds(
+        &self,
+        query: Option<&str>,
+        page: Option<u32>,
+    ) -> Result<Page<Guild>, ApiError> {
+        let page = page.map(|n| n.to_string());
+        self.get(
+            "guilds",
+            &[
+                ("q", query.map(str::trim).filter(|q| !q.is_empty())),
+                ("page", page.as_deref()),
+            ],
+        )
+        .await
     }
 
     pub async fn user_settings(&self) -> Result<UserSettings, ApiError> {

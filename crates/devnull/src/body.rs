@@ -517,6 +517,8 @@ pub fn segments(text: &str) -> Vec<Segment> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ColorSpan {
     value: String,
+    /// Shown next to the swatch; for `color(#hex)` this is `#hex`, not the wrapper.
+    label: String,
     index: usize,
     length: usize,
 }
@@ -701,11 +703,13 @@ fn with_colors(text: &str) -> String {
     let mut last = 0;
     for color in colors_in(text, false) {
         out.push_str(&text[last..color.index]);
-        let token = &text[color.index..color.index + color.length];
         if let Some(css) = css_hex(&color.value) {
-            out.push_str(&format!("<span foreground=\"{css}\">■</span>{token}"));
+            out.push_str(&format!(
+                "<span foreground=\"{css}\">■</span>{}",
+                escape(&color.label)
+            ));
         } else {
-            out.push_str(token);
+            out.push_str(&escape(&text[color.index..color.index + color.length]));
         }
         last = color.index + color.length;
     }
@@ -714,18 +718,21 @@ fn with_colors(text: &str) -> String {
 }
 
 enum PlainMark {
-    Color(String),
+    Color { value: String, label: String },
     Hashtag,
 }
 
-/// Colors win when they overlap a hashtag (`#dead` is a swatch, `#rust` is a search).
+/// Explicit `color(#hex)` and digit-led bare hex win over hashtags. Letter-led `#dead` is a hashtag (#1630).
 fn decorate_plain(text: &str) -> String {
     let mut marks: Vec<(usize, usize, PlainMark)> = Vec::new();
     for color in colors_in(text, false) {
         marks.push((
             color.index,
             color.index + color.length,
-            PlainMark::Color(color.value),
+            PlainMark::Color {
+                value: color.value,
+                label: color.label,
+            },
         ));
     }
     for (start, end) in hashtag_spans(text) {
@@ -745,12 +752,14 @@ fn decorate_plain(text: &str) -> String {
         }
         out.push_str(&with_wordmarks(&escape(&text[last..start])));
         match kind {
-            PlainMark::Color(value) => {
-                let token = &text[start..end];
+            PlainMark::Color { value, label } => {
                 if let Some(css) = css_hex(&value) {
-                    out.push_str(&format!("<span foreground=\"{css}\">■</span>{token}"));
+                    out.push_str(&format!(
+                        "<span foreground=\"{css}\">■</span>{}",
+                        escape(&label)
+                    ));
                 } else {
-                    out.push_str(&escape(token));
+                    out.push_str(&escape(&text[start..end]));
                 }
             }
             PlainMark::Hashtag => {
@@ -831,8 +840,9 @@ fn is_combining_mark(ch: char) -> bool {
     )
 }
 
-/// Hex colors in prose: 3, 4, 6 or 8 digits, a whole word like a hashtag.
-/// Short forms need a letter or a leading zero so `#123` stays an issue reference.
+/// Hex colors in prose. Keep in sync with `resources/js/lib/colors.ts` (#1630):
+/// `color(#hex)` always, digit-led bare `#000` / `#333333`, and full-width `＃fff`.
+/// Letter-led `#dead` / `#ff8a4c` need the explicit wrapper.
 fn colors_in(text: &str, starts_text: bool) -> Vec<ColorSpan> {
     let hay = if starts_text {
         format!("\n{text}")
@@ -843,40 +853,100 @@ fn colors_in(text: &str, starts_text: bool) -> Vec<ColorSpan> {
     let mut out = Vec::new();
     let mut i = 0;
     while i < hay.len() {
+        if let Some(span) = take_explicit_color(&hay, i) {
+            out.push(ColorSpan {
+                value: span.value,
+                label: span.label,
+                index: span.index.saturating_sub(shift),
+                length: span.length,
+            });
+            i = span.index + span.length;
+            continue;
+        }
+        if let Some(span) = take_bare_color(&hay, i) {
+            out.push(ColorSpan {
+                value: span.value,
+                label: span.label,
+                index: span.index.saturating_sub(shift),
+                length: span.length,
+            });
+            i = span.index + span.length;
+            continue;
+        }
         let Some(next) = hay[i..].chars().next() else {
             break;
         };
-        let hash_len = match next {
-            '#' => 1,
-            '\u{FF03}' => next.len_utf8(),
-            _ => {
-                i += next.len_utf8();
-                continue;
-            }
-        };
-        if !color_left_ok(&hay, i) {
-            i += next.len_utf8();
-            continue;
-        }
-        let hex_at = i + hash_len;
-        let Some((digits, hex_len)) = take_color_digits(&hay[hex_at..]) else {
-            i += next.len_utf8();
-            continue;
-        };
-        let end = hex_at + hex_len;
-        if !color_right_ok(&hay[end..]) {
-            i += next.len_utf8();
-            continue;
-        }
-        let index = i.saturating_sub(shift);
-        out.push(ColorSpan {
-            value: digits,
-            index,
-            length: hash_len + hex_len,
-        });
-        i = end;
+        i += next.len_utf8();
     }
     out
+}
+
+fn take_explicit_color(text: &str, i: usize) -> Option<ColorSpan> {
+    let rest = &text[i..];
+    if rest.len() < 7 || !rest.is_char_boundary(7) || !rest[..7].eq_ignore_ascii_case("color(#") {
+        return None;
+    }
+    if i > 0 {
+        let before = text[..i].chars().next_back()?;
+        if is_pastel_boundary_char(before) || before == '#' || before == '\u{FF03}' {
+            return None;
+        }
+    }
+    let open = 7;
+    let Some((digits, hex_len)) = take_color_digits(&rest[open..]) else {
+        return None;
+    };
+    let after_hex = open + hex_len;
+    if rest.as_bytes().get(after_hex) != Some(&b')') {
+        return None;
+    }
+    let length = after_hex + 1;
+    Some(ColorSpan {
+        value: digits.clone(),
+        label: format!("#{digits}"),
+        index: i,
+        length,
+    })
+}
+
+fn take_bare_color(text: &str, i: usize) -> Option<ColorSpan> {
+    let rest = &text[i..];
+    let Some(hash) = rest.chars().next() else {
+        return None;
+    };
+    let hash_len = hash.len_utf8();
+    let ascii_hash = hash == '#';
+    let fullwidth = hash == '\u{FF03}';
+    if !ascii_hash && !fullwidth {
+        return None;
+    }
+    if !color_left_ok(text, i) {
+        return None;
+    }
+    let hex_at = i + hash_len;
+    let hex_rest = &text[hex_at..];
+    if ascii_hash {
+        let Some(first) = hex_rest.chars().next() else {
+            return None;
+        };
+        if !first.is_ascii_digit() {
+            return None;
+        }
+    }
+    let Some((digits, hex_len)) = take_color_digits(hex_rest) else {
+        return None;
+    };
+    let end = hex_at + hex_len;
+    if !color_right_ok(&text[end..]) {
+        return None;
+    }
+    let label: String = text[i..end].chars().collect();
+    Some(ColorSpan {
+        value: digits,
+        label,
+        index: i,
+        length: end - i,
+    })
 }
 
 fn color_left_ok(text: &str, i: usize) -> bool {
@@ -888,7 +958,7 @@ fn color_left_ok(text: &str, i: usize) -> bool {
     match chars.next() {
         None => true,
         Some(c) if c.is_whitespace() => true,
-        Some('>') => chars.next().is_none_or(|c| c == '\n'),
+        Some('>') => chars.next() == Some('\n'),
         _ => false,
     }
 }
@@ -966,6 +1036,47 @@ fn short_color_ok(digits: &str) -> bool {
         || digits
             .bytes()
             .any(|b| b.is_ascii_hexdigit() && !b.is_ascii_digit())
+}
+
+/// True when `text` is exactly a `#` hex color token (`#fff`, `#ff8a4c`, …).
+pub fn is_hex_color(text: &str) -> bool {
+    let Some(rest) = text.strip_prefix('#') else {
+        return false;
+    };
+    take_color_digits(rest).is_some_and(|(_, len)| len == rest.len())
+}
+
+/// True when the caret sits inside an unfinished `color(#…` prefix.
+pub fn is_typing_explicit_color(text: &str) -> bool {
+    let lower: String = text.chars().flat_map(char::to_lowercase).collect();
+    lower.ends_with("color(")
+        || lower
+            .rsplit_once("color(")
+            .is_some_and(|(_, after)| after.starts_with('#') && !after.contains(')'))
+}
+
+/// The last hashtag in a draft that could be meant as a swatch (`#dead` → `color(#dead)`).
+pub fn ambiguous_color_in_draft(text: &str) -> Option<(usize, String)> {
+    hashtag_spans(text)
+        .into_iter()
+        .rev()
+        .find(|(start, end)| {
+            let token = &text[*start..*end];
+            is_hex_color(token) && !is_typing_explicit_color(&text[..*start])
+        })
+        .map(|(start, end)| (start, text[start..end].to_owned()))
+}
+
+/// Wrap the last ambiguous color hashtag as `color(#hex)` for the composer hint (#1634).
+pub fn apply_color_swatch_hint(text: &str) -> Option<(String, usize)> {
+    let (index, hex) = ambiguous_color_in_draft(text)?;
+    let markup = format!("color({hex})");
+    let mut out = String::with_capacity(text.len() + markup.len());
+    out.push_str(&text[..index]);
+    out.push_str(&markup);
+    out.push_str(&text[index + hex.len()..]);
+    let caret = index + markup.len();
+    Some((out, caret))
 }
 
 fn css_hex(digits: &str) -> Option<String> {
@@ -2068,41 +2179,66 @@ mod tests {
 
     #[test]
     fn finds_hex_colors_and_skips_issue_numbers() {
-        let colors = colors_in("#fff then #000 and #ff8a4c", true);
+        let colors = colors_in("color(#Fff), color(#dead) #0ff", false);
         assert_eq!(
-            colors.iter().map(|c| c.value.as_str()).collect::<Vec<_>>(),
-            ["fff", "000", "ff8a4c"]
+            colors
+                .iter()
+                .map(|c| (c.value.as_str(), c.label.as_str()))
+                .collect::<Vec<_>>(),
+            [("Fff", "#Fff"), ("dead", "#dead"), ("0ff", "#0ff")]
         );
         assert!(colors_in("#123 is an issue", true).is_empty());
-        assert!(colors_in("x#fff", true).is_empty());
-        assert!(colors_in("#fff-x", true).is_empty());
-        assert!(colors_in("#ff8a4c.com", true).is_empty());
+        assert!(colors_in("#fff #dead #ff8a4c", true).is_empty());
+        assert!(colors_in("x#0ff", true).is_empty());
+        assert!(colors_in("#0ff-x", true).is_empty());
+        assert!(colors_in("#0f8a4c.com", true).is_empty());
         assert_eq!(
-            colors_in(">#abc", true)
+            colors_in(">#0ff", true)
                 .iter()
                 .map(|c| c.value.as_str())
                 .collect::<Vec<_>>(),
-            ["abc"]
+            ["0ff"]
         );
-        let marked = with_colors("#ff8a4c");
+        assert!(colors_in(">#0ff", false).is_empty());
+        let marked = with_colors("color(#ff8a4c)");
         assert!(marked.contains("foreground=\"#ff8a4c\""));
         assert!(marked.contains("■"));
         assert!(marked.contains("#ff8a4c"));
+        assert!(!marked.contains("color("));
+        assert_eq!(
+            colors_in("#000, #000000 and #333333", false)
+                .iter()
+                .map(|c| c.value.as_str())
+                .collect::<Vec<_>>(),
+            ["000", "000000", "333333"]
+        );
+        assert!(colors_in("＃ff8a4c", false)
+            .iter()
+            .any(|c| c.value == "ff8a4c"));
     }
 
     #[test]
-    fn links_hashtags_and_keeps_hex_colors_as_swatches() {
+    fn links_hashtags_and_keeps_explicit_colors_as_swatches() {
         let marked = with_mentions(
-            "shipping #rust and #dead next to C# and #123",
+            "shipping #rust and #dead next to color(#cafe) and #123",
             CapturedMentions::default(),
         );
         assert!(marked.contains("href=\"hashtag:#rust\""));
         assert!(marked.contains("underline=\"none\">#rust</span></a>"));
-        assert!(marked.contains("foreground=\"#ddeeaa\">■</span>#dead"));
-        assert!(!marked.contains("href=\"hashtag:#dead\""));
+        assert!(marked.contains("href=\"hashtag:#dead\""));
+        assert!(marked.contains("foreground=\"#ccaaff\">■</span>#cafe"));
+        assert!(!marked.contains("color(#cafe)"));
         assert!(!marked.contains("href=\"hashtag:#123\""));
-        assert!(marked.contains("C#"));
         assert!(!marked.contains("href=\"hashtag:#\""));
+    }
+
+    #[test]
+    fn wraps_an_ambiguous_draft_hashtag_as_an_explicit_color() {
+        let (body, caret) = apply_color_swatch_hint("try #dead next").unwrap();
+        assert_eq!(body, "try color(#dead) next");
+        assert_eq!(caret, "try color(#dead)".len());
+        assert!(ambiguous_color_in_draft("try color(#dead) next").is_none());
+        assert!(ambiguous_color_in_draft("no colors here").is_none());
     }
 
     #[test]

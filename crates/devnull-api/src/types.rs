@@ -1964,6 +1964,31 @@ pub struct TimeoutNotice {
     pub ends_at: Option<DateTime<Utc>>,
 }
 
+/// A guild as `GET /api/v1/guilds` returns it (directory row).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct Guild {
+    #[serde(default)]
+    pub handle: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub emoji: Option<String>,
+    #[serde(default)]
+    pub icon_url: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_i64ish")]
+    pub member_count: i64,
+    #[serde(default, deserialize_with = "deserialize_boolish")]
+    pub is_joined: bool,
+    #[serde(default, deserialize_with = "deserialize_boolish")]
+    pub is_muted: bool,
+    #[serde(default, deserialize_with = "deserialize_boolish")]
+    pub is_paused: bool,
+    #[serde(default)]
+    pub html_url: Option<String>,
+}
+
 /// Own timeouts and lifted bans from `GET /api/v1/me/moderation-history` (#1575).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct ModerationHistory {
@@ -3499,6 +3524,27 @@ mod unread_count_tests {
         }))
         .unwrap();
         assert_eq!(user.username, "local_dev");
+    }
+
+    #[test]
+    fn guild_directory_row_reads_membership_flags() {
+        let guild: Guild = serde_json::from_value(json!({
+            "handle": "rust",
+            "name": "Rust",
+            "description": "Fearless concurrency",
+            "emoji": "🦀",
+            "icon_url": "https://dev-null.sh/guild-icons/rust.webp",
+            "member_count": 2,
+            "is_joined": true,
+            "is_muted": false,
+            "is_paused": false,
+            "html_url": "https://dev-null.sh/guilds/rust"
+        }))
+        .unwrap();
+        assert_eq!(guild.handle, "rust");
+        assert!(guild.is_joined);
+        assert!(!guild.is_paused);
+        assert_eq!(guild.member_count, 2);
     }
 
     #[test]

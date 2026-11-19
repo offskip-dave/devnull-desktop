@@ -14,7 +14,7 @@ On a Mac this is the Homebrew GTK build, not a replacement for the Swift app at 
 
 - Sign in with GitHub in the system browser (`devnull://linux/auth` on both Linux and macOS); device redeem records terms acceptance
 - Following, Latest, Trending, and Starred logs
-- Composer: text, images, polls, scheduling, preview, emoji picker, `:` shortcodes, `@` mentions, and `#hashtags`
+- Composer: text, images, polls, scheduling, preview, emoji picker, `:` shortcodes, `@` mentions, `#hashtags`, and `color(#hex)` swatches (with a Use as color hint)
 - Commit threads: replies, quotes, related commits, stars, pastéis, poll voting; more menu for copy link, Send in Remotes, pin / unpin, follow / mute / block, report, and delete (with 30s undo)
 - Profiles: activity graph, achievements, XP, follow / follow back, following and followers lists (Follows you chips), share link or ID, Go live / End stream, GitHub edit/sync, own moderation history; a profile photo opens in the viewer; hover-card Remote / mute / block
 - Organization pages: commits, mentions, follow, claim, lane color, share
