@@ -839,6 +839,43 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | headline cache (7513965) | Skip | Server cache |
 
 
+### 2026-11-17
+
+Auto-imported by the changelog parity cron.
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| paginate and search the guild directory | Waiting | Auto-imported from [00c4fed](https://github.com/dev-null-sh/dev-null.sh/commit/00c4fed970a993685b368ffa5bb36ed7348dd66e); needs GTK port or API probe |
+| browse guild members in pages of fifty | Waiting | Auto-imported from [173bf55](https://github.com/dev-null-sh/dev-null.sh/commit/173bf55f9a034d622242e5df7edaa4fd0608ce11); needs GTK port or API probe |
+| keep guild board commits attached to their guild | Waiting | Auto-imported from [d27f6a3](https://github.com/dev-null-sh/dev-null.sh/commit/d27f6a34792c893c7bc85ad6331ab974304c0b1c); needs GTK port or API probe |
+
+### 2026-11-18
+
+Auto-imported by the changelog parity cron.
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| show guilds on the left | Waiting | Auto-imported from [0199607](https://github.com/dev-null-sh/dev-null.sh/commit/0199607c5aa36ecc2cb92b85bb8fe860b056bad5); needs GTK port or API probe |
+| let API clients post and schedule to a guild board | Waiting | Auto-imported from [0567057](https://github.com/dev-null-sh/dev-null.sh/commit/05670577713afddd4d50b20e9e3e9c8fe43399fb); needs GTK port or API probe |
+| send flagged guilds to the moderation queue instead of refusing them | Skip | Out of scope for GTK (auto) |
+| show the guild on board posts outside its board | Waiting | Auto-imported from [13df08c](https://github.com/dev-null-sh/dev-null.sh/commit/13df08c8b6f56fdf32b1cdbe1c09e3c921b87b5f); needs GTK port or API probe |
+| let API clients list and search guilds | Waiting | Auto-imported from [7b52abb](https://github.com/dev-null-sh/dev-null.sh/commit/7b52abbd5899dcc52264ce66ddd1108194dfa896); needs GTK port or API probe |
+| let guild moderators pin a board commit | Skip | Out of scope for GTK (auto) |
+| let guild moderators edit the display name | Skip | Out of scope for GTK (auto) |
+| share one link preview per canonical URL (#1625) | Waiting | Auto-imported from [c200235](https://github.com/dev-null-sh/dev-null.sh/commit/c200235e0a142108177e1879deed28ca17f07458); needs GTK port or API probe |
+| send phone push notifications through Firebase | Waiting | Auto-imported from [c2eccd8](https://github.com/dev-null-sh/dev-null.sh/commit/c2eccd80d1682e38d3718ca9f3b1c6c70e0c7690); needs GTK port or API probe |
+| add link pages (#1626) | Waiting | Auto-imported from [f3d4ea0](https://github.com/dev-null-sh/dev-null.sh/commit/f3d4ea0e79a7254280c6e1ae9aaa1f1f833395c1); needs GTK port or API probe |
+
+### 2026-11-19
+
+Auto-imported by the changelog parity cron.
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| show the /dev/null wordmark in guild descriptions (#1623) | Waiting | Auto-imported from [2bb3bc0](https://github.com/dev-null-sh/dev-null.sh/commit/2bb3bc04255e7f26f1995ac25298c26d2fde16fe); needs GTK port or API probe |
+| removes mac app & performance improvements | Skip | Out of scope for GTK (auto) |
+| orders guilds by activity | Waiting | Auto-imported from [6946cfb](https://github.com/dev-null-sh/dev-null.sh/commit/6946cfb7195aba884e9e8c0aaa98342fcf5aa246); needs GTK port or API probe |
+
 ## Standing gaps (priority)
 
 Blocked on API or hard infra — not same-day launch work:
