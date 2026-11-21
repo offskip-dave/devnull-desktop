@@ -885,6 +885,7 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | show the /dev/null wordmark in guild descriptions (#1623) | Waiting | Guild page UI |
 | orders guilds by activity (6946cfb) | Skip | Server directory order |
 | order guilds by `reat_at` first (6d3a957) | Skip | Server directory order |
+| show joined guilds on profiles | Waiting | Port task opened; web [8dfd9f7](https://github.com/dev-null-sh/dev-null.sh/commit/8dfd9f70d9eb47780ea8b676a03b324ddbd7b345) |
 
 
 ## Standing gaps (priority)
