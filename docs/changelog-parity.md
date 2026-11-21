@@ -885,7 +885,17 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | show the /dev/null wordmark in guild descriptions (#1623) | Waiting | Guild page UI |
 | orders guilds by activity (6946cfb) | Skip | Server directory order |
 | order guilds by `reat_at` first (6d3a957) | Skip | Server directory order |
+| show joined guilds on profiles | Waiting | Auto-imported from [8dfd9f7](https://github.com/dev-null-sh/dev-null.sh/commit/8dfd9f70d9eb47780ea8b676a03b324ddbd7b345); needs GTK port or API probe |
 
+
+### 2026-11-20
+
+Auto-imported by the changelog parity cron.
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| join or leave guilds from a profile's guild list | Waiting | Auto-imported from [903ebec](https://github.com/dev-null-sh/dev-null.sh/commit/903ebecf5c6e59d152d5114661d695d4c1aa5b06); needs GTK port or API probe |
+| let API clients read a guild's board | Waiting | Auto-imported from [b928f9c](https://github.com/dev-null-sh/dev-null.sh/commit/b928f9c7f041cf0057d6dce4e690aa4499324012); needs GTK port or API probe |
 
 ## Standing gaps (priority)
 
