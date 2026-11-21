@@ -9983,13 +9983,14 @@ async fn fetch_joined_guilds(client: Client) -> Result<Vec<JoinedGuild>, ApiErro
         };
         let next = batch.next_page();
         for guild in batch.data {
-            if guild.is_joined && !guild.is_muted && !guild.handle.trim().is_empty() {
-                if !joined
+            if guild.is_joined
+                && !guild.is_muted
+                && !guild.handle.trim().is_empty()
+                && !joined
                     .iter()
                     .any(|known: &JoinedGuild| known.handle.eq_ignore_ascii_case(&guild.handle))
-                {
-                    joined.push(JoinedGuild::from_guild(guild));
-                }
+            {
+                joined.push(JoinedGuild::from_guild(guild));
             }
         }
         let Some(next) = next else {

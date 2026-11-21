@@ -22,7 +22,7 @@ Point at a local or staging API:
 DEVNULL_URL=http://127.0.0.1:8000 cargo run -p devnull
 ```
 
-You still need GTK 4 and libadwaita. Linux also needs a Secret Service daemon; macOS uses the login Keychain. See the [README](../README.md#requirements) for distro and Homebrew packages.
+You still need GTK 4 and libadwaita. Linux also needs WebKitGTK 6.0 (embeds) and a Secret Service daemon; macOS uses the login Keychain and opens embeds in the system browser. See the [README](../README.md#requirements) for distro and Homebrew packages.
 
 The workspace `rust-version` is **1.93** (Relm4 0.11). If cargo says your rustc is too old:
 

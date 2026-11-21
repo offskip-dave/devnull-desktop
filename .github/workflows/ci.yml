@@ -20,7 +20,9 @@ jobs:
       - name: Install GTK
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config libgtk-4-dev libadwaita-1-dev libglib2.0-dev libpango1.0-dev libgraphene-1.0-dev openssh-client
+          sudo apt-get install -y build-essential pkg-config \
+            libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev \
+            libglib2.0-dev libpango1.0-dev libgraphene-1.0-dev openssh-client
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy

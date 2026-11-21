@@ -51,9 +51,9 @@ Linux is the primary platform; keep macOS (Homebrew GTK) green. Do not add a Web
 
 - Rust **1.93+** (`rustup update stable` if `cargo` refuses to build)
 - GTK 4.14+ and libadwaita 1.5+
-- WebKitGTK 6.0 (in-place YouTube / media embeds)
+- On Linux: WebKitGTK 6.0 (in-place YouTube / media embeds)
 - On Linux: a Secret Service daemon (GNOME Keyring, KWallet, or KeePassXC)
-- On macOS: the login Keychain (used automatically)
+- On macOS: the login Keychain (used automatically); embeds open in the system browser (Homebrew has no WebKitGTK)
 
 On Arch / Omarchy:
 
@@ -64,13 +64,13 @@ sudo pacman -S gtk4 libadwaita webkitgtk-6.0
 On Debian / Ubuntu:
 
 ```bash
-sudo apt install libgtk-4-dev libadwaita-1-dev
+sudo apt install libgtk-4-dev libadwaita-1-dev libwebkitgtk-6.0-dev
 ```
 
 On Fedora:
 
 ```bash
-sudo dnf install gtk4-devel libadwaita-devel
+sudo dnf install gtk4-devel libadwaita-devel webkitgtk6.0-devel
 ```
 
 On macOS (Homebrew):

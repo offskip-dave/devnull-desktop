@@ -98,6 +98,7 @@ This is a GTK build, not a `.app` / `.dmg` of the first-party Mac client.
 
 ```bash
 brew install gtk4 libadwaita pkgconf
+# WebKitGTK is not packaged for macOS Homebrew; in-app embeds are Linux-only.
 scripts/build-macos.sh
 # or:
 cargo build --release -p devnull

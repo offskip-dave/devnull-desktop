@@ -5,9 +5,9 @@ use devnull_api::{
     event_line, Achievements, Activity, ActivityCell, ApiError, Badge, ChatThread, Client, Commit,
     CommitImage, CommitTranslation, ConversationSummary, CurrentUser, Embed, Guild, GuildLabel,
     HotTopic, JoinedGuild, Lane, LinkPreview, MentionSuggestions, Message, MessageImage,
-    MessageReaction,
-    ModerationHistory, Notification, Organization, Poll, Profile, RemoteCandidate, RemotesSettings,
-    SearchResults, Streaks, ThreadRef, TranslationLanguage, Upload, User, UserPreview,
+    MessageReaction, ModerationHistory, Notification, Organization, Poll, Profile, RemoteCandidate,
+    RemotesSettings, SearchResults, Streaks, ThreadRef, TranslationLanguage, Upload, User,
+    UserPreview,
 };
 use relm4::adw;
 use relm4::adw::prelude::{AdwDialogExt, AlertDialogExt};
@@ -1470,7 +1470,9 @@ pub fn bind_window_scroll(
             }
             glib::Propagation::Stop
         });
-        sidebar.upcast_ref::<gtk::Widget>().add_controller(controller);
+        sidebar
+            .upcast_ref::<gtk::Widget>()
+            .add_controller(controller);
     }
 
     {
@@ -4395,8 +4397,20 @@ fn rounded_rect(cairo: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64, r: 
     cairo.new_sub_path();
     cairo.arc(x + w - r, y + r, r, -std::f64::consts::FRAC_PI_2, 0.0);
     cairo.arc(x + w - r, y + h - r, r, 0.0, std::f64::consts::FRAC_PI_2);
-    cairo.arc(x + r, y + h - r, r, std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
-    cairo.arc(x + r, y + r, r, std::f64::consts::PI, 3.0 * std::f64::consts::FRAC_PI_2);
+    cairo.arc(
+        x + r,
+        y + h - r,
+        r,
+        std::f64::consts::FRAC_PI_2,
+        std::f64::consts::PI,
+    );
+    cairo.arc(
+        x + r,
+        y + r,
+        r,
+        std::f64::consts::PI,
+        3.0 * std::f64::consts::FRAC_PI_2,
+    );
     cairo.close_path();
 }
 
@@ -8283,9 +8297,11 @@ fn embed_card(preview: &LinkPreview, embed: &Embed, sender: Sender<AppMsg>) -> g
             click.set_button(1);
             click.set_propagation_phase(gtk::PropagationPhase::Capture);
             let stage_play = stage.clone();
+            let open_url = preview.url.clone();
+            let open_sender = sender.clone();
             click.connect_pressed(move |gesture, _, _, _| {
                 gesture.set_state(gtk::EventSequenceState::Claimed);
-                stage_play.set_child(Some(&embed_player(&src)));
+                play_embed(&stage_play, &src, &open_url, &open_sender);
             });
             stage.add_controller(click);
         } else {
@@ -8320,22 +8336,30 @@ fn embed_card(preview: &LinkPreview, embed: &Embed, sender: Sender<AppMsg>) -> g
             let preview = preview.clone();
             click.connect_pressed(move |gesture, _, _, _| {
                 gesture.set_state(gtk::EventSequenceState::Claimed);
-                while let Some(child) = card_play.first_child() {
-                    card_play.remove(&child);
+                #[cfg(target_os = "linux")]
+                {
+                    while let Some(child) = card_play.first_child() {
+                        card_play.remove(&child);
+                    }
+                    card_play.remove_css_class("dn-embed-audio");
+                    let frame = gtk::AspectFrame::new(0.5, 0.5, 16.0 / 9.0, false);
+                    frame.set_obey_child(false);
+                    frame.add_css_class("dn-embed-frame");
+                    frame.set_hexpand(true);
+                    frame.set_size_request(-1, 240);
+                    frame.set_child(Some(&embed_player(&src)));
+                    card_play.append(&frame);
+                    let details = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                    details.add_css_class("dn-embed-details");
+                    details.append(&embed_details(&preview, &embed));
+                    open_on_click(&details, Some(&preview_url), &sender_play);
+                    card_play.append(&details);
                 }
-                card_play.remove_css_class("dn-embed-audio");
-                let frame = gtk::AspectFrame::new(0.5, 0.5, 16.0 / 9.0, false);
-                frame.set_obey_child(false);
-                frame.add_css_class("dn-embed-frame");
-                frame.set_hexpand(true);
-                frame.set_size_request(-1, 240);
-                frame.set_child(Some(&embed_player(&src)));
-                card_play.append(&frame);
-                let details = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-                details.add_css_class("dn-embed-details");
-                details.append(&embed_details(&preview, &embed));
-                open_on_click(&details, Some(&preview_url), &sender_play);
-                card_play.append(&details);
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let _ = (&src, &card_play, &preview, &embed);
+                    sender_play.emit(AppMsg::OpenWeb(preview_url.clone()));
+                }
             });
             thumb.set_can_target(true);
             thumb.add_controller(click);
@@ -8360,7 +8384,22 @@ fn embed_card(preview: &LinkPreview, embed: &Embed, sender: Sender<AppMsg>) -> g
     card.upcast()
 }
 
-/// In-place player for `embed.src` (YouTube, etc.) via WebKitGTK.
+fn play_embed(stage: &gtk::Overlay, src: &str, page_url: &str, sender: &Sender<AppMsg>) {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = page_url;
+        let _ = sender;
+        stage.set_child(Some(&embed_player(src)));
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (stage, src);
+        sender.emit(AppMsg::OpenWeb(page_url.to_owned()));
+    }
+}
+
+/// In-place player for `embed.src` (YouTube, etc.) via WebKitGTK (Linux only).
+#[cfg(target_os = "linux")]
 fn embed_player(src: &str) -> gtk::Widget {
     use webkit6::prelude::*;
 
@@ -16866,10 +16905,8 @@ mod embed_tests {
             Some("https://i.ytimg.com/vi/dQw4w9WgXcQ/hq720.jpg")
         );
         assert_eq!(
-            prefer_youtube_poster(Some(
-                "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"
-            ))
-            .as_deref(),
+            prefer_youtube_poster(Some("https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"))
+                .as_deref(),
             Some("https://i.ytimg.com/vi/dQw4w9WgXcQ/hq720.jpg")
         );
         assert_eq!(
