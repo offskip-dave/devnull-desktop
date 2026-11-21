@@ -887,6 +887,14 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | order guilds by `reat_at` first (6d3a957) | Skip | Server directory order |
 
 
+### 2026-11-20
+
+Auto-imported by the changelog parity cron.
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| let API clients read a guild's board | Waiting | Port task opened; web [b928f9c](https://github.com/dev-null-sh/dev-null.sh/commit/b928f9c7f041cf0057d6dce4e690aa4499324012) |
+
 ## Standing gaps (priority)
 
 Blocked on API or hard infra — not same-day launch work:
