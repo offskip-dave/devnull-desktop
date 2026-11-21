@@ -1073,10 +1073,26 @@ impl UserPreview {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Activity {
-    #[serde(default)]
+    #[serde(default = "year_scale", deserialize_with = "deserialize_scale")]
     pub scale: String,
     #[serde(default)]
     pub buckets: Vec<ActivityBucket>,
+}
+
+fn year_scale() -> String {
+    "year".to_owned()
+}
+
+/// Draw a scale we don't know (or a missing / non-string one) as a year.
+fn deserialize_scale<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let scale = serde_json::Value::deserialize(deserializer)?;
+    Ok(match scale.as_str() {
+        Some(scale @ ("day" | "week" | "month")) => scale.to_owned(),
+        _ => year_scale(),
+    })
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
