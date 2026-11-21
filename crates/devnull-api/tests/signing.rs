@@ -296,6 +296,39 @@ fn profile_reads_activity_achievements_and_follow_state() {
     assert_eq!(profile.pasteis_received, Some(3));
 }
 
+#[test]
+fn profile_reads_an_unexpected_activity_scale_as_a_year() {
+    // An empty entry leaves `scale` out entirely.
+    for scale in [
+        r#""scale": "quarter","#,
+        r#""scale": ["day"],"#,
+        r#""scale": null,"#,
+        r#""scale": 3,"#,
+        "",
+    ] {
+        let json = format!(
+            r#"{{
+                "data": {{
+                    "id": "u1",
+                    "username": "ada",
+                    "activity": {{
+                        {scale}
+                        "buckets": [
+                            {{"date": "2026-10-18", "count": 0}},
+                            {{"date": "2026-10-19", "count": 3}}
+                        ]
+                    }}
+                }}
+            }}"#
+        );
+        let profile =
+            devnull_api::Profile::from_value(serde_json::from_str(&json).unwrap()).unwrap();
+        assert_eq!(profile.activity.scale, "year", "{scale:?}");
+        assert_eq!(profile.activity.window(), "in the last year");
+        assert_eq!(profile.activity.cells().len(), 2, "{scale:?}");
+    }
+}
+
 fn armor(signature: &str) -> String {
     let mut out = String::from("-----BEGIN SSH SIGNATURE-----\n");
     for chunk in signature.as_bytes().chunks(70) {
