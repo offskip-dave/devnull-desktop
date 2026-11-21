@@ -8504,6 +8504,7 @@ fn prefer_youtube_poster(url: Option<&str>) -> Option<String> {
     Some(upgraded.unwrap_or_else(|| url.to_owned()))
 }
 
+#[cfg(target_os = "linux")]
 fn html_attr_escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
