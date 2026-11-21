@@ -153,11 +153,11 @@ Durable inventory by product area. Every production `feat` from day one is also 
 
 | Capability | Status | Notes |
 | --- | --- | --- |
-| List / search guilds via signed API | Partial | `GET /api/v1/guilds`; 404 while feature is admin-only |
-| Read a guild board via signed API | Partial | `GET /api/v1/guilds/{handle}`; board page UI Waiting |
-| Post / schedule to a guild board via API | Partial | `guild_handle` on create; no board UI yet |
-| Guild chip on board posts outside the board | Done | “posted in #handle · not shown in general logs”; opens web board for now |
-| Guild directory, board, nav, join / mute | Waiting | Still preview-gated for most accounts |
+| List / search guilds via signed API | Done | `GET /api/v1/guilds`; directory UI with search + pagination; 404 empty state while preview-gated |
+| Read a guild board via signed API | Done | `GET /api/v1/guilds/{handle}`; in-app board with hero, pin, feed, load more |
+| Post / schedule to a guild board via API | Partial | `guild_handle` on create; board composer UI Waiting |
+| Guild chip on board posts outside the board | Done | “posted in #handle · not shown in general logs”; opens in-app board |
+| Guild directory / board / nav | Done | Sidebar Guilds + joined list with missed counts; join / mute still Waiting |
 
 ## Day by day (Oct 15 → present)
 
@@ -830,7 +830,7 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | show a timestamp's times on tap on touch screens (#1549) | Done | Commit time opens absolute-time popover |
 | add the milestones since the stream to the about timeline (#1546) | Skip | Website about |
 | list your organizations and Post as in the API's current user (#1492) | Done | `/me` organizations (+ role); Post as already wired |
-| add public guilds with memberships and bulletin boards (#1576) | Partial | Signed `GET guilds` + `guild_handle` on create; UI Waiting (still preview-gated) |
+| add public guilds with memberships and bulletin boards (#1576) | Partial | Directory + board + nav Done; join/mute/composer Waiting (still preview-gated) |
 | removes vet in favour of `cooldown/period` (6500841) | Skip | Server chore |
 | fix ci (a7a1582) | Skip | Website CI |
 
@@ -855,7 +855,7 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | --- | --- | --- |
 | keep guild board commits attached to their guild (d27f6a3) | Skip | Server / web board |
 | browse guild members in pages of fifty (173bf55) | Waiting | No signed members route yet |
-| paginate and search the guild directory (00c4fed) | Partial | Signed `GET guilds?q=&page=`; directory UI Waiting |
+| paginate and search the guild directory (00c4fed) | Done | Signed `GET guilds?q=&page=` + in-app directory search / Load more |
 | keep the search guild banner in step with the search box (0eabad2) | Skip | Website search chrome |
 
 ### 2026-11-18
@@ -864,11 +864,11 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | --- | --- | --- |
 | let guild moderators edit the display name (9ebb36e) | Skip | Moderator / Inertia |
 | send flagged guilds to the moderation queue instead of refusing them (0dfeac4) | Skip | Server moderation |
-| show the guild on board posts outside its board (13df08c) | Done | `guild` / `guild_handle` on commits; notice under the author row |
+| show the guild on board posts outside its board (13df08c) | Done | `guild` / `guild_handle` on commits; notice opens in-app board |
 | let guild moderators pin a board commit (8046f85) | Skip | Moderator tools |
 | let API clients post and schedule to a guild board (0567057) | Partial | `guild_handle` on create_commit; board composer UI Waiting |
 | say the guild is paused when committing now a board post (5d18bf9) | Waiting | Board composer + `guild_paused` error |
-| let API clients list and search guilds (7b52abb) | Partial | `Client::guilds()`; directory UI Waiting (404 while preview-gated) |
+| let API clients list and search guilds (7b52abb) | Done | `Client::guilds()` + Guilds directory (404 empty state while preview-gated) |
 | send phone push notifications through Firebase (c2eccd8) | Skip | Mobile |
 | disambiguate color swatches and guild hashtags (#1630) | Done | `color(#hex)` + digit-led bare; `#dead` is a hashtag |
 | share one link preview per canonical URL (#1625) | Skip | Server link cards |
@@ -876,7 +876,7 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | keep the fragment of a link (#1637) | Skip | Website deep links |
 | add link pages (#1626) | Skip | Inertia `/links` |
 | open the page of a link with a fragment (#1638) | Skip | Website tests |
-| show guilds on the left (0199607) | Waiting | Nav list when guilds leave preview |
+| show guilds on the left (0199607) | Done | Joined guilds under Collapse with missed counts (`GET me/guilds`); clears via `PUT guilds/{handle}/read` |
 | counter of guilds (200bd03) | Skip | Website / server |
 
 ### 2026-11-19
@@ -884,7 +884,7 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | Item | Status | Notes |
 | --- | --- | --- |
 | removes mac app & performance improvements (411a6d8) | Skip | Website / other apps |
-| show the /dev/null wordmark in guild descriptions (#1623) | Waiting | Guild page UI |
+| show the /dev/null wordmark in guild descriptions (#1623) | Waiting | Board hero shows plain description; wordmark markup deferred |
 | orders guilds by activity (6946cfb) | Skip | Server directory order |
 | order guilds by `reat_at` first (6d3a957) | Skip | Server directory order |
 | name the link, not its site, in the section about it on a commit page (#1639) | Skip | Website link-topic chrome |
@@ -896,7 +896,7 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | --- | --- | --- |
 | join or leave guilds from a profile's guild list (903ebec) | Waiting | Web profile list; no signed membership routes yet |
 | keep a left guild listed until the profile guilds dialog reopens (366bae3) | Skip | Website nav |
-| let API clients read a guild's board (b928f9c) | Partial | `Client::guild_board()`; in-app board page Waiting |
+| let API clients read a guild's board (b928f9c) | Done | `Client::guild_board()` + in-app board (hero, pin, feed, load more) |
 | serve guild icons to API clients through signed URLs (90f528e) | Done | `icon_url` already consumed; server now signs for the viewer |
 
 
@@ -911,7 +911,7 @@ Blocked on API or hard infra — not same-day launch work:
 5. **Calls** — WebRTC (button currently opens the web thread)  
 6. **Commit link-card picker** — API create-commit does not accept `link_preview_url` yet  
 7. **Feature / bug report from composer** — signed `POST /api/v1/issues` (#1543); slash-command UI  
-8. **Guilds UI** — directory, board, nav, join/mute when the feature is available beyond admin preview (#1576)  
+8. **Guilds join / mute / composer** — membership routes and board posting when signed APIs exist (#1576)  
 9. **Remotes nostalgic sounds** — prefs + bundled MSN/ICQ/AIM cues  
 10. **Recent search chips** — local prefs polish (web uses localStorage); optional  
 

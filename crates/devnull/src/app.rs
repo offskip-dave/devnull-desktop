@@ -13,10 +13,11 @@ use relm4::prelude::*;
 
 use devnull_api::{
     ApiError, ChatThread, Client, Commit, CommitPage, CommitTranslation, ConversationSummary,
-    CurrentUser, DeviceKey, HeadlinePage, HotTopic, InboxPage, InboxTab, Lane, LogKind, LogPage,
-    MentionSuggestions, Message, MessageReaction, ModerationHistory, Notification,
-    NotificationFilter, Organization, Page, PastelAward, Profile, RemoteCandidate,
-    ReplyParticipant, SearchResults, ThreadRef, Upload, User, UserPreview, UserSettings,
+    CurrentUser, DeviceKey, Guild, GuildBoardPage, HeadlinePage, HotTopic, InboxPage, InboxTab,
+    JoinedGuild, Lane, LogKind, LogPage, MentionSuggestions, Message, MessageReaction,
+    ModerationHistory, Notification, NotificationFilter, Organization, Page, PastelAward, Profile,
+    RemoteCandidate, ReplyParticipant, SearchResults, ThreadRef, Upload, User, UserPreview,
+    UserSettings,
 };
 use devnull_auth::{self as auth, Pkce, APP_ID};
 
@@ -255,6 +256,16 @@ pub enum AppMsg {
     SearchLoaded(Result<SearchResults, ApiError>),
     OpenHeadline(String),
     HeadlineLoaded(Result<HeadlinePage, ApiError>),
+    OpenGuilds,
+    GuildsQuery(String),
+    OpenGuildsReload(u64),
+    GuildsLoaded(u64, Result<Page<Guild>, ApiError>),
+    LoadMoreGuilds,
+    OpenGuild(String),
+    GuildBoardLoaded(String, Result<GuildBoardPage, ApiError>),
+    LoadMoreGuildBoard,
+    JoinedGuildsLoaded(Result<Vec<JoinedGuild>, ApiError>),
+    GuildMarkReadDone(String, Result<(), ApiError>),
     SuggestedLoaded(Result<Vec<User>, ApiError>, HashSet<String>),
     LiveFollowingLoaded(Result<Vec<User>, ApiError>),
     HotTopicsLoaded(Result<Vec<HotTopic>, ApiError>),
@@ -519,6 +530,23 @@ pub struct App {
     connections_orgs_expanded: bool,
     connections_loading: bool,
     connections_list: gtk::ListBox,
+    guilds: Vec<Guild>,
+    guilds_query: String,
+    guilds_page: Option<u32>,
+    guilds_unavailable: bool,
+    guilds_loading: bool,
+    guilds_search_gen: u64,
+    /// Directory stays the Back target when opened from the Guilds nav.
+    guilds_from_nav: bool,
+    open_guild: Option<Guild>,
+    guild_commits: Vec<Commit>,
+    guild_board_page: Option<u32>,
+    guild_pinned_id: Option<String>,
+    /// Joined, unmuted guilds for the left rail (`GET me/guilds`, with missed counts).
+    joined_guilds: Vec<JoinedGuild>,
+    guilds_list: gtk::ListBox,
+    guild_hero: gtk::Box,
+    nav_guilds: gtk::Box,
     inbox: Vec<ConversationSummary>,
     inbox_tab: InboxTab,
     inbox_requests: i64,
@@ -583,6 +611,7 @@ enum Sidebar {
     Remotes,
     Profile,
     Starred,
+    Guilds,
     Settings,
     Search,
 }
@@ -646,6 +675,7 @@ impl SimpleComponent for App {
                         #[watch]
                         set_css_classes: &model.sidebar_classes(),
                         set_hexpand: false,
+                        set_vexpand: true,
                         set_overflow: gtk::Overflow::Hidden,
                         #[watch]
                         set_width_request: model.sidebar_width(),
@@ -658,6 +688,7 @@ impl SimpleComponent for App {
                             add_css_class: "dn-wordmark-btn",
                             add_css_class: "dn-wordmark-row",
                             set_has_frame: false,
+                            set_vexpand: false,
                             set_tooltip_text: Some("/dev/null"),
                             connect_clicked => AppMsg::Select(Nav::Latest),
                             #[watch]
@@ -710,6 +741,27 @@ impl SimpleComponent for App {
                                 },
                             },
                         },
+
+                        #[name = "nav_scroll"]
+                        gtk::ScrolledWindow {
+                            set_vexpand: true,
+                            set_hexpand: true,
+                            set_hscrollbar_policy: gtk::PolicyType::Never,
+                            set_vscrollbar_policy: gtk::PolicyType::Automatic,
+                            set_propagate_natural_height: false,
+                            set_propagate_natural_width: false,
+                            set_kinetic_scrolling: true,
+                            set_overlay_scrolling: true,
+                            set_min_content_height: 0,
+                            add_css_class: "dn-nav-scroll",
+                            #[wrap(Some)]
+                            set_child = &gtk::Box {
+                                set_orientation: gtk::Orientation::Vertical,
+                                set_spacing: 4,
+                                set_hexpand: true,
+                                set_vexpand: false,
+                                set_valign: gtk::Align::Start,
+                                add_css_class: "dn-nav-scroll-inner",
 
                         gtk::Button {
                             #[watch]
@@ -879,6 +931,30 @@ impl SimpleComponent for App {
                         },
                         gtk::Button {
                             #[watch]
+                            set_css_classes: &model.nav_classes(Sidebar::Guilds),
+                            #[watch]
+                            set_halign: model.nav_rail_align(),
+                            set_tooltip_text: Some("Guilds"),
+                            connect_clicked => AppMsg::OpenGuilds,
+                            #[wrap(Some)]
+                            set_child = &gtk::Box {
+                                set_orientation: gtk::Orientation::Horizontal,
+                                set_spacing: 12,
+                                gtk::Image {
+                                    set_icon_name: Some("dn-users-round-symbolic"),
+                                    set_pixel_size: 20,
+                                },
+                                gtk::Label {
+                                    set_label: "Guilds",
+                                    set_xalign: 0.0,
+                                    set_hexpand: true,
+                                    #[watch]
+                                    set_visible: !model.nav_collapsed(),
+                                },
+                            },
+                        },
+                        gtk::Button {
+                            #[watch]
                             set_css_classes: &model.nav_classes(Sidebar::Settings),
                             #[watch]
                             set_halign: model.nav_rail_align(),
@@ -993,8 +1069,23 @@ impl SimpleComponent for App {
                             },
                         },
 
-                        gtk::Box {
-                            set_vexpand: true,
+                        gtk::Separator {
+                            set_orientation: gtk::Orientation::Horizontal,
+                            add_css_class: "dn-nav-guilds-sep",
+                            #[watch]
+                            set_visible: !model.joined_guilds.is_empty(),
+                            set_margin_top: 8,
+                            set_margin_bottom: 4,
+                        },
+                        #[local_ref]
+                        nav_guilds -> gtk::Box {
+                            set_orientation: gtk::Orientation::Vertical,
+                            set_spacing: 2,
+                            add_css_class: "dn-nav-guilds",
+                            #[watch]
+                            set_visible: !model.joined_guilds.is_empty(),
+                        },
+                            },
                         },
 
                             gtk::MenuButton {
@@ -1003,6 +1094,8 @@ impl SimpleComponent for App {
                                 set_overflow: gtk::Overflow::Visible,
                                 set_always_show_arrow: false,
                                 set_has_frame: false,
+                                set_vexpand: false,
+                                set_valign: gtk::Align::End,
                                 #[watch]
                                 set_halign: model.nav_rail_align(),
                                 set_direction: gtk::ArrowType::Up,
@@ -1672,6 +1765,59 @@ impl SimpleComponent for App {
                                 set_vexpand: true,
                                 set_hscrollbar_policy: gtk::PolicyType::Never,
                                 set_child: Some(&model.connections_list),
+                            },
+                        },
+
+                        add_titled[Some("guilds"), "Guilds"] = &gtk::Box {
+                            set_orientation: gtk::Orientation::Vertical,
+                            gtk::Box {
+                                set_orientation: gtk::Orientation::Horizontal,
+                                set_spacing: 12,
+                                add_css_class: "dn-commit-bar",
+                                gtk::Button {
+                                    set_icon_name: "dn-arrow-left-symbolic",
+                                    set_tooltip_text: Some("Back"),
+                                    add_css_class: "flat",
+                                    add_css_class: "dn-commit-bar-btn",
+                                    connect_clicked => AppMsg::Back,
+                                },
+                                gtk::Label {
+                                    #[watch]
+                                    set_label: &model.guilds_bar_title(),
+                                    add_css_class: "dn-commit-bar-title",
+                                    set_xalign: 0.0,
+                                    set_ellipsize: pango::EllipsizeMode::End,
+                                    set_hexpand: true,
+                                },
+                                gtk::Label {
+                                    #[watch]
+                                    set_label: &model.guilds_bar_handle(),
+                                    add_css_class: "dn-handle",
+                                    #[watch]
+                                    set_visible: model.open_guild.is_some(),
+                                },
+                            },
+                            gtk::SearchEntry {
+                                set_placeholder_text: Some("Search guilds"),
+                                add_css_class: "dn-guilds-search",
+                                set_margin_start: 12,
+                                set_margin_end: 12,
+                                set_margin_top: 8,
+                                set_margin_bottom: 4,
+                                #[watch]
+                                set_visible: model.open_guild.is_none(),
+                                connect_search_changed[sender] => move |entry| {
+                                    sender.input(AppMsg::GuildsQuery(entry.text().to_string()));
+                                },
+                                connect_activate[sender] => move |entry| {
+                                    sender.input(AppMsg::GuildsQuery(entry.text().to_string()));
+                                },
+                            },
+                            #[name = "guilds_scroll"]
+                            gtk::ScrolledWindow {
+                                set_vexpand: true,
+                                set_hscrollbar_policy: gtk::PolicyType::Never,
+                                set_child: Some(&model.guilds_list),
                             },
                         },
 
@@ -2600,6 +2746,10 @@ impl SimpleComponent for App {
         let connections_list = gtk::ListBox::new();
         connections_list.set_selection_mode(gtk::SelectionMode::None);
         fill_feed_list(&connections_list);
+        let guilds_list = gtk::ListBox::new();
+        guilds_list.set_selection_mode(gtk::SelectionMode::None);
+        guilds_list.set_activate_on_single_click(true);
+        fill_feed_list(&guilds_list);
         let notif_list = gtk::ListBox::new();
         notif_list.set_selection_mode(gtk::SelectionMode::None);
         notif_list.set_activate_on_single_click(true);
@@ -2761,6 +2911,26 @@ impl SimpleComponent for App {
             profile_list,
             search_list,
             connections_list,
+            guilds: Vec::new(),
+            guilds_query: String::new(),
+            guilds_page: None,
+            guilds_unavailable: false,
+            guilds_loading: false,
+            guilds_search_gen: 0,
+            guilds_from_nav: false,
+            open_guild: None,
+            guild_commits: Vec::new(),
+            guild_board_page: None,
+            guild_pinned_id: None,
+            joined_guilds: Vec::new(),
+            guilds_list,
+            guild_hero: gtk::Box::new(gtk::Orientation::Vertical, 0),
+            nav_guilds: {
+                let box_ = gtk::Box::new(gtk::Orientation::Vertical, 2);
+                box_.add_css_class("dn-nav-guilds");
+                box_.set_visible(false);
+                box_
+            },
             notif_list,
             inbox_list,
             thread_list,
@@ -2862,6 +3032,7 @@ impl SimpleComponent for App {
         model.people_picker.window.set_transient_for(Some(&root));
         let paste_entry = &model.paste_entry;
         let suggested_list = &model.suggested_list;
+        let nav_guilds = &model.nav_guilds;
         let live_list = &model.live_list;
         let poll_editor = &model.poll_editor;
         let profile_bar_avatar = &model.profile_bar_avatar;
@@ -2895,6 +3066,15 @@ impl SimpleComponent for App {
                     }
                 }
             });
+        widgets.guilds_scroll.vadjustment().connect_value_changed({
+            let sender = sender.clone();
+            move |adj| {
+                if adj.value() + adj.page_size() >= adj.upper() - 80.0 {
+                    sender.input(AppMsg::LoadMoreGuilds);
+                    sender.input(AppMsg::LoadMoreGuildBoard);
+                }
+            }
+        });
         widgets.profile_scroll.vadjustment().connect_value_changed({
             let sender = sender.clone();
             move |adj| {
@@ -2998,6 +3178,7 @@ impl SimpleComponent for App {
             &log_vscroll,
             &widgets.stack,
             &widgets.nav_sidebar,
+            &widgets.nav_scroll,
             &widgets.aside_pane,
             &[
                 ("log", model.log_scroll.clone()),
@@ -3148,6 +3329,7 @@ impl SimpleComponent for App {
                 self.phase = Phase::SignedIn;
                 sender.input(AppMsg::Select(Nav::Latest));
                 sender.input(AppMsg::RefreshSuggested);
+                self.load_joined_guilds(&sender);
                 self.load_safety_quiet(&sender);
                 self.load_user_settings(&sender);
             }
@@ -3217,6 +3399,7 @@ impl SimpleComponent for App {
                 self.error = None;
                 sender.input(AppMsg::Select(Nav::Latest));
                 sender.input(AppMsg::RefreshSuggested);
+                self.load_joined_guilds(&sender);
                 self.load_safety_quiet(&sender);
                 self.load_user_settings(&sender);
             }
@@ -3244,6 +3427,20 @@ impl SimpleComponent for App {
                 self.translation_loading.clear();
                 self.notifications.clear();
                 self.notif_groups.clear();
+                self.guilds.clear();
+                self.guilds_query.clear();
+                self.guilds_page = None;
+                self.guilds_unavailable = false;
+                self.guilds_from_nav = false;
+                self.joined_guilds.clear();
+                self.clear_guild_board();
+                ui::fill_joined_guilds_nav(
+                    &self.nav_guilds,
+                    &[],
+                    None,
+                    self.nav_collapsed(),
+                    sender.input_sender().clone(),
+                );
                 ui::fill_live_following(&self.live_list, &[], sender.input_sender().clone());
                 ui::fill_hot_topics(&self.hot_topics_list, &[], sender.input_sender().clone());
                 self.phase = Phase::SignedOut;
@@ -3287,6 +3484,7 @@ impl SimpleComponent for App {
                         self.load_log(&sender, false);
                     }
                 }
+                self.render_joined_guilds_nav(&sender);
                 self.poll_unread(&sender);
             }
             AppMsg::OpenSettings => {
@@ -3637,9 +3835,11 @@ impl SimpleComponent for App {
             }
             AppMsg::ToggleSidebar => {
                 self.sidebar_collapsed = Some(!self.nav_collapsed());
+                self.render_joined_guilds_nav(&sender);
             }
             AppMsg::NavCompact(compact) => {
                 self.nav_compact = compact;
+                self.render_joined_guilds_nav(&sender);
             }
             AppMsg::AsideCompact(compact) => {
                 self.aside_compact = compact;
@@ -3748,6 +3948,20 @@ impl SimpleComponent for App {
                         sender.input(AppMsg::OpenProfile(self.connections_handle.clone()));
                         return;
                     }
+                }
+                if self.visible == "guilds" {
+                    if self.open_guild.is_some() && self.guilds_from_nav {
+                        self.clear_guild_board();
+                        self.render_joined_guilds_nav(&sender);
+                        self.render_guilds_directory(&sender);
+                        return;
+                    }
+                    if self.open_guild.is_some() {
+                        self.clear_guild_board();
+                        self.render_joined_guilds_nav(&sender);
+                    }
+                    sender.input(AppMsg::Select(self.nav));
+                    return;
                 }
                 sender.input(AppMsg::Select(self.nav));
             }
@@ -6079,6 +6293,7 @@ impl SimpleComponent for App {
                     return;
                 }
                 self.poll_unread(&sender);
+                self.load_joined_guilds(&sender);
                 if self.remotes_on() {
                     self.load_remotes(&sender);
                 }
@@ -6155,6 +6370,175 @@ impl SimpleComponent for App {
                     sender.input(AppMsg::LoadMore);
                 }
             }
+            AppMsg::OpenGuilds => {
+                self.user_card.dismiss();
+                self.guilds_from_nav = true;
+                self.clear_guild_board();
+                self.visible = "guilds";
+                self.load_guilds(&sender, false);
+            }
+            AppMsg::GuildsQuery(query) => {
+                if self.visible != "guilds" || self.open_guild.is_some() {
+                    return;
+                }
+                let query = query.trim().to_string();
+                if query == self.guilds_query {
+                    return;
+                }
+                self.guilds_query = query;
+                self.guilds_search_gen = self.guilds_search_gen.wrapping_add(1);
+                let gen = self.guilds_search_gen;
+                let sender2 = sender.clone();
+                glib::timeout_add_local_once(Duration::from_millis(250), move || {
+                    sender2.input(AppMsg::OpenGuildsReload(gen));
+                });
+            }
+            AppMsg::OpenGuildsReload(gen) => {
+                if gen != self.guilds_search_gen
+                    || self.visible != "guilds"
+                    || self.open_guild.is_some()
+                {
+                    return;
+                }
+                self.load_guilds(&sender, false);
+            }
+            AppMsg::GuildsLoaded(gen, result) => {
+                if gen != self.guilds_search_gen {
+                    return;
+                }
+                self.end_busy();
+                self.guilds_loading = false;
+                match result {
+                    Ok(page) => {
+                        self.guilds_unavailable = false;
+                        let more = page.next_page();
+                        if self.guilds_page.is_none() {
+                            self.guilds = page.data;
+                        } else {
+                            self.guilds.extend(page.data);
+                        }
+                        self.guilds_page = more;
+                        self.render_guilds_directory(&sender);
+                    }
+                    Err(err) if err.status == 404 => {
+                        self.guilds.clear();
+                        self.guilds_page = None;
+                        self.guilds_unavailable = true;
+                        self.render_guilds_directory(&sender);
+                    }
+                    Err(err) => {
+                        if self.guilds.is_empty() {
+                            ui::clear_list(&self.guilds_list);
+                            self.fail(err);
+                        } else {
+                            self.toast(&err.message);
+                        }
+                    }
+                }
+            }
+            AppMsg::LoadMoreGuilds => {
+                if self.visible != "guilds"
+                    || self.open_guild.is_some()
+                    || self.guilds_loading
+                    || self.guilds_page.is_none()
+                    || self.guilds_unavailable
+                {
+                    return;
+                }
+                self.load_guilds(&sender, true);
+            }
+            AppMsg::OpenGuild(handle) => {
+                let handle = handle.trim().trim_start_matches('#').to_string();
+                if handle.is_empty() {
+                    return;
+                }
+                self.user_card.dismiss();
+                if self.visible != "guilds" || self.open_guild.is_none() {
+                    // Keep directory as Back target only when already browsing guilds.
+                    if self.visible != "guilds" {
+                        self.guilds_from_nav = false;
+                    }
+                }
+                self.visible = "guilds";
+                self.open_guild = Some(Guild {
+                    handle: handle.clone(),
+                    name: format!("#{handle}"),
+                    ..Guild::default()
+                });
+                self.guild_commits.clear();
+                self.guild_board_page = None;
+                self.guild_pinned_id = None;
+                self.clear_joined_guild_missed(&handle);
+                self.render_joined_guilds_nav(&sender);
+                self.mark_guild_read(&handle, &sender);
+                ui::reset_profile_list(&self.guilds_list, &self.guild_hero);
+                ui::append_commit_skeletons(&self.guilds_list, 3);
+                self.load_guild_board(&sender, handle, false);
+            }
+            AppMsg::GuildBoardLoaded(handle, result) => {
+                self.end_busy();
+                self.guilds_loading = false;
+                let current = self
+                    .open_guild
+                    .as_ref()
+                    .map(|guild| guild.handle.as_str())
+                    .unwrap_or_default();
+                if current != handle {
+                    return;
+                }
+                match result {
+                    Ok(page) => {
+                        self.apply_guild_board(page, &sender);
+                    }
+                    Err(err) if err.status == 404 => {
+                        self.clear_guild_board();
+                        self.guilds_unavailable = true;
+                        self.guilds.clear();
+                        self.render_guilds_directory(&sender);
+                        self.toast("Guilds aren’t available on this account yet.");
+                    }
+                    Err(err) => {
+                        if self.guild_commits.is_empty() {
+                            ui::clear_list(&self.guilds_list);
+                            self.fail(err);
+                        } else {
+                            self.toast(&err.message);
+                        }
+                    }
+                }
+            }
+            AppMsg::LoadMoreGuildBoard => {
+                if self.visible != "guilds"
+                    || self.open_guild.is_none()
+                    || self.guilds_loading
+                    || self.guild_board_page.is_none()
+                {
+                    return;
+                }
+                let handle = self
+                    .open_guild
+                    .as_ref()
+                    .map(|guild| guild.handle.clone())
+                    .unwrap_or_default();
+                self.load_guild_board(&sender, handle, true);
+            }
+            AppMsg::JoinedGuildsLoaded(result) => match result {
+                Ok(guilds) => {
+                    self.joined_guilds = guilds;
+                    self.render_joined_guilds_nav(&sender);
+                }
+                Err(err) if err.status == 404 => {
+                    self.joined_guilds.clear();
+                    self.render_joined_guilds_nav(&sender);
+                }
+                Err(_) => {}
+            },
+            AppMsg::GuildMarkReadDone(handle, result) => {
+                if result.is_ok() || matches!(&result, Err(err) if err.status == 404) {
+                    self.clear_joined_guild_missed(&handle);
+                    self.render_joined_guilds_nav(&sender);
+                }
+            }
             AppMsg::OpenWeb(url) => self.open_link(&url, &sender),
             AppMsg::ConfirmOpenWeb { url, trust_domain } => {
                 if let Some(domain) = trust_domain {
@@ -6188,6 +6572,13 @@ impl App {
         if self.visible == "connections" {
             return self.connections_kind.title();
         }
+        if self.visible == "guilds" {
+            return if self.open_guild.is_some() {
+                "Guild"
+            } else {
+                "Guilds"
+            };
+        }
         if self.visible == "settings" {
             return "Settings";
         }
@@ -6201,11 +6592,26 @@ impl App {
         }
     }
 
+    fn guilds_bar_title(&self) -> String {
+        match &self.open_guild {
+            Some(guild) => guild.name.clone(),
+            None => "Guilds".into(),
+        }
+    }
+
+    fn guilds_bar_handle(&self) -> String {
+        self.open_guild
+            .as_ref()
+            .map(|guild| format!("#{}", guild.handle))
+            .unwrap_or_default()
+    }
+
     fn sidebar(&self) -> Sidebar {
         match self.visible {
             "notifications" => Sidebar::Notifications,
             "remotes" => Sidebar::Remotes,
             "profile" | "connections" => Sidebar::Profile,
+            "guilds" => Sidebar::Guilds,
             "settings" => Sidebar::Settings,
             "search" => Sidebar::Search,
             _ if self.nav == Nav::Starred => Sidebar::Starred,
@@ -6702,6 +7108,9 @@ impl App {
         if self.profile_commits.iter_mut().any(bump) {
             return;
         }
+        if self.guild_commits.iter_mut().any(bump) {
+            return;
+        }
         if self.thread_replies.iter_mut().any(bump) {
             return;
         }
@@ -6722,7 +7131,260 @@ impl App {
                 self.render_profile_readme(sender)
             }
             "profile" => self.render_profile_feed(sender, restore),
+            "guilds" if self.open_guild.is_some() => self.render_guild_board(sender, restore),
+            "guilds" => self.render_guilds_directory(sender),
             _ => self.render_log(sender, restore),
+        }
+    }
+
+    fn clear_guild_board(&mut self) {
+        self.open_guild = None;
+        self.guild_commits.clear();
+        self.guild_board_page = None;
+        self.guild_pinned_id = None;
+        ui::detach_from_list_row(&self.guild_hero);
+        while let Some(child) = self.guild_hero.first_child() {
+            self.guild_hero.remove(&child);
+        }
+    }
+
+    fn load_joined_guilds(&self, sender: &ComponentSender<App>) {
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let sender2 = sender.clone();
+        relm4::spawn(async move {
+            sender2.input(AppMsg::JoinedGuildsLoaded(
+                fetch_joined_guilds(client).await,
+            ));
+        });
+    }
+
+    fn mark_guild_read(&self, handle: &str, sender: &ComponentSender<App>) {
+        let handle = handle.trim().trim_start_matches('#').to_string();
+        if handle.is_empty() {
+            return;
+        }
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        let sender2 = sender.clone();
+        relm4::spawn(async move {
+            sender2.input(AppMsg::GuildMarkReadDone(
+                handle.clone(),
+                client.mark_guild_read(&handle).await,
+            ));
+        });
+    }
+
+    fn clear_joined_guild_missed(&mut self, handle: &str) {
+        if let Some(guild) = self
+            .joined_guilds
+            .iter_mut()
+            .find(|guild| guild.handle.eq_ignore_ascii_case(handle))
+        {
+            guild.missed_commits = 0;
+        }
+    }
+
+    fn render_joined_guilds_nav(&self, sender: &ComponentSender<App>) {
+        ui::fill_joined_guilds_nav(
+            &self.nav_guilds,
+            &self.joined_guilds,
+            self.open_guild
+                .as_ref()
+                .filter(|_| self.visible == "guilds")
+                .map(|guild| guild.handle.as_str()),
+            self.nav_collapsed(),
+            sender.input_sender().clone(),
+        );
+    }
+
+    fn sync_joined_guild_from_board(&mut self, guild: &Guild, sender: &ComponentSender<App>) {
+        let handle = guild.handle.as_str();
+        if handle.is_empty() {
+            return;
+        }
+        if guild.is_joined && !guild.is_muted {
+            if let Some(existing) = self
+                .joined_guilds
+                .iter_mut()
+                .find(|known| known.handle.eq_ignore_ascii_case(handle))
+            {
+                existing.name = guild.name.clone();
+                existing.emoji = guild.emoji.clone();
+                existing.icon_url = guild.icon_url.clone();
+                existing.html_url = guild.html_url.clone();
+                existing.missed_commits = 0;
+            } else {
+                self.joined_guilds
+                    .push(JoinedGuild::from_guild(guild.clone()));
+            }
+        } else {
+            self.joined_guilds
+                .retain(|known| !known.handle.eq_ignore_ascii_case(handle));
+        }
+        self.render_joined_guilds_nav(sender);
+    }
+
+    fn load_guilds(&mut self, sender: &ComponentSender<App>, more: bool) {
+        if self.guilds_loading {
+            return;
+        }
+        let page = if more {
+            match self.guilds_page {
+                Some(page) => Some(page),
+                None => return,
+            }
+        } else {
+            self.guilds.clear();
+            self.guilds_page = None;
+            self.guilds_unavailable = false;
+            ui::clear_list(&self.guilds_list);
+            ui::append_commit_skeletons(&self.guilds_list, 3);
+            None
+        };
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        self.guilds_loading = true;
+        self.begin_busy();
+        let query = self.guilds_query.clone();
+        let gen = self.guilds_search_gen;
+        let sender2 = sender.clone();
+        relm4::spawn(async move {
+            let q = (!query.is_empty()).then_some(query.as_str());
+            sender2.input(AppMsg::GuildsLoaded(gen, client.guilds(q, page).await));
+        });
+    }
+
+    fn load_guild_board(&mut self, sender: &ComponentSender<App>, handle: String, more: bool) {
+        if self.guilds_loading {
+            return;
+        }
+        let page = if more {
+            match self.guild_board_page {
+                Some(page) => Some(page),
+                None => return,
+            }
+        } else {
+            None
+        };
+        let Some(client) = self.client.clone() else {
+            return;
+        };
+        self.guilds_loading = true;
+        self.begin_busy();
+        let sender2 = sender.clone();
+        relm4::spawn(async move {
+            sender2.input(AppMsg::GuildBoardLoaded(
+                handle.clone(),
+                client.guild_board(&handle, page).await,
+            ));
+        });
+    }
+
+    fn apply_guild_board(&mut self, page: GuildBoardPage, sender: &ComponentSender<App>) {
+        self.guilds_unavailable = false;
+        let next = page.next_page();
+        let pinned = page.pinned_commit.clone();
+        let pinned_id = pinned.as_ref().map(|commit| commit.id.clone());
+        self.sync_joined_guild_from_board(&page.guild, sender);
+        self.open_guild = Some(page.guild);
+        self.guild_pinned_id = pinned_id.clone();
+        self.render_joined_guilds_nav(sender);
+        if self.guild_commits.is_empty() {
+            let mut commits = Vec::new();
+            if let Some(pin) = pinned {
+                commits.push(pin);
+            }
+            for commit in page.data {
+                if pinned_id.as_deref() == Some(commit.id.as_str()) {
+                    continue;
+                }
+                commits.push(commit);
+            }
+            self.guild_commits = commits;
+        } else {
+            for commit in page.data {
+                if pinned_id.as_deref() == Some(commit.id.as_str()) {
+                    continue;
+                }
+                if self.guild_commits.iter().any(|known| known.id == commit.id) {
+                    continue;
+                }
+                self.guild_commits.push(commit);
+            }
+        }
+        self.guild_board_page = next;
+        self.seed_reply_previews(&self.guild_commits.clone(), sender);
+        self.render_guild_board(sender, false);
+    }
+
+    fn render_guilds_directory(&self, sender: &ComponentSender<App>) {
+        ui::detach_from_list_row(&self.guild_hero);
+        ui::fill_guilds_directory(
+            &self.guilds_list,
+            &self.guilds,
+            self.guilds_unavailable,
+            &self.guilds_query,
+            sender.input_sender().clone(),
+        );
+    }
+
+    fn render_guild_board(&mut self, sender: &ComponentSender<App>, restore: bool) {
+        let value = self
+            .guilds_list
+            .parent()
+            .and_then(|p| p.downcast::<gtk::Viewport>().ok())
+            .and_then(|v| v.parent())
+            .and_then(|p| p.downcast::<gtk::ScrolledWindow>().ok())
+            .map(|scroll| scroll.vadjustment().value());
+        if let Some(guild) = &self.open_guild {
+            ui::fill_guild_hero(&self.guild_hero, guild);
+        }
+        ui::reset_profile_list(&self.guilds_list, &self.guild_hero);
+        if self.guild_commits.is_empty() {
+            self.guilds_list.append(&ui::empty_row(
+                "fatal: empty board",
+                "No commits on this guild board yet.",
+            ));
+            return;
+        }
+        let ctx = self.feed_ctx(sender);
+        let mut last_lane = None;
+        let mut last_day = None;
+        ui::append_commits(
+            &self.guilds_list,
+            &self.guild_commits,
+            &ctx,
+            &mut last_lane,
+            &mut last_day,
+            None,
+            Some(&ui::ThreadState {
+                nested: &self.nested_replies,
+                expanded: &self.expanded_replies,
+                replying_to: self.replying_to.as_deref(),
+                composer: &self.inline_reply_box,
+            }),
+            0,
+        );
+        if self.guild_board_page.is_none() {
+            self.guilds_list
+                .append(&ui::root_row("That's the end of this guild board."));
+        }
+        if restore {
+            if let Some(value) = value {
+                if let Some(scroll) = self
+                    .guilds_list
+                    .parent()
+                    .and_then(|p| p.downcast::<gtk::Viewport>().ok())
+                    .and_then(|v| v.parent())
+                    .and_then(|p| p.downcast::<gtk::ScrolledWindow>().ok())
+                {
+                    scroll.vadjustment().set_value(value);
+                }
+            }
         }
     }
 
@@ -6943,7 +7605,9 @@ impl App {
             &self.suggested_list,
             &self.suggested,
             self.user.as_ref().map(|u| u.username()),
+            self.user.as_ref().map(|u| u.user.id.clone()),
             &self.following,
+            Some(self.user_card.clone()),
             sender.input_sender().clone(),
         );
     }
@@ -7219,6 +7883,7 @@ impl App {
         }
         self.log_commits.iter_mut().for_each(&mut apply);
         self.profile_commits.iter_mut().for_each(&mut apply);
+        self.guild_commits.iter_mut().for_each(&mut apply);
         self.thread_replies.iter_mut().for_each(&mut apply);
         self.ancestors.iter_mut().for_each(&mut apply);
         self.related_commits.iter_mut().for_each(&mut apply);
@@ -9292,6 +9957,50 @@ impl App {
         }
         self.toast(&err.message);
     }
+}
+
+/// Joined guilds for the left rail (`GET me/guilds`). Falls back to scanning the
+/// directory when that route is not available yet (404), without missed counts.
+async fn fetch_joined_guilds(client: Client) -> Result<Vec<JoinedGuild>, ApiError> {
+    match client.joined_guilds().await {
+        Ok(guilds) => {
+            return Ok(guilds
+                .into_iter()
+                .filter(|guild| !guild.handle.trim().is_empty())
+                .collect())
+        }
+        Err(err) if err.status != 404 => return Err(err),
+        Err(_) => {}
+    }
+    let mut joined = Vec::new();
+    let mut page = 1u32;
+    loop {
+        let result = client.guilds(None, Some(page)).await;
+        let batch = match result {
+            Ok(batch) => batch,
+            Err(err) if err.status == 404 && page == 1 => return Ok(Vec::new()),
+            Err(err) => return Err(err),
+        };
+        let next = batch.next_page();
+        for guild in batch.data {
+            if guild.is_joined && !guild.is_muted && !guild.handle.trim().is_empty() {
+                if !joined
+                    .iter()
+                    .any(|known: &JoinedGuild| known.handle.eq_ignore_ascii_case(&guild.handle))
+                {
+                    joined.push(JoinedGuild::from_guild(guild));
+                }
+            }
+        }
+        let Some(next) = next else {
+            break;
+        };
+        if next <= page || page >= 40 {
+            break;
+        }
+        page = next;
+    }
+    Ok(joined)
 }
 
 async fn restore() -> Result<(CurrentUser, Client), ApiError> {

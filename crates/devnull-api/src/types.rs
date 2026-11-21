@@ -1881,6 +1881,20 @@ impl<T> Page<T> {
                 })
             })
     }
+
+    /// Next numbered page from Laravel's `links.next` (guilds directory, etc.).
+    pub fn next_page(&self) -> Option<u32> {
+        self.links.as_ref().and_then(|links| {
+            links.next.as_ref().and_then(|url| {
+                url::Url::parse(url).ok().and_then(|parsed| {
+                    parsed
+                        .query_pairs()
+                        .find(|(key, _)| key == "page")
+                        .and_then(|(_, value)| value.parse().ok())
+                })
+            })
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2012,6 +2026,22 @@ pub struct GuildLabel {
     pub icon_url: Option<String>,
 }
 
+impl GuildLabel {
+    pub fn as_guild(&self) -> Guild {
+        Guild {
+            handle: self.handle.clone(),
+            name: if self.name.trim().is_empty() {
+                self.handle.clone()
+            } else {
+                self.name.clone()
+            },
+            emoji: self.emoji.clone(),
+            icon_url: self.icon_url.clone(),
+            ..Guild::default()
+        }
+    }
+}
+
 /// A guild as `GET /api/v1/guilds` returns it (directory row).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct Guild {
@@ -2036,6 +2066,60 @@ pub struct Guild {
     pub is_paused: bool,
     #[serde(default)]
     pub html_url: Option<String>,
+}
+
+/// A joined guild for the left nav (`GET /api/v1/me/guilds`): missed commits since last visit.
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct JoinedGuild {
+    #[serde(default)]
+    pub handle: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub emoji: Option<String>,
+    #[serde(default)]
+    pub icon_url: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_i64ish")]
+    pub missed_commits: i64,
+    /// When the missed count starts (last board visit or join), ISO-8601.
+    #[serde(default)]
+    pub read_from: Option<String>,
+    #[serde(default)]
+    pub html_url: Option<String>,
+}
+
+impl JoinedGuild {
+    pub fn from_guild(guild: Guild) -> Self {
+        Self {
+            handle: guild.handle,
+            name: guild.name,
+            emoji: guild.emoji,
+            icon_url: guild.icon_url,
+            missed_commits: 0,
+            read_from: None,
+            html_url: guild.html_url,
+        }
+    }
+
+    pub fn as_guild(&self) -> Guild {
+        Guild {
+            handle: self.handle.clone(),
+            name: self.name.clone(),
+            emoji: self.emoji.clone(),
+            icon_url: self.icon_url.clone(),
+            is_joined: true,
+            html_url: self.html_url.clone(),
+            ..Guild::default()
+        }
+    }
+
+    pub fn missed_label(&self) -> Option<String> {
+        match self.missed_commits {
+            n if n <= 0 => None,
+            n if n > 99 => Some("99+".into()),
+            n => Some(n.to_string()),
+        }
+    }
 }
 
 /// A guild board page from `GET /api/v1/guilds/{handle}`: threads, guild, pin, moderate flag.
@@ -3646,6 +3730,32 @@ mod unread_count_tests {
         assert!(guild.is_joined);
         assert!(!guild.is_paused);
         assert_eq!(guild.member_count, 2);
+    }
+
+    #[test]
+    fn joined_guild_nav_row_reads_missed_commits() {
+        let guild: JoinedGuild = serde_json::from_value(json!({
+            "handle": "rust",
+            "name": "Rust",
+            "emoji": "🦀",
+            "icon_url": "https://dev-null.sh/api/v1/guilds/rust/icon?v=1",
+            "missed_commits": 2,
+            "read_from": "2026-11-18T10:00:00Z",
+            "html_url": "https://dev-null.sh/guilds/rust"
+        }))
+        .unwrap();
+        assert_eq!(guild.handle, "rust");
+        assert_eq!(guild.missed_commits, 2);
+        assert_eq!(guild.missed_label().as_deref(), Some("2"));
+        assert_eq!(
+            JoinedGuild {
+                missed_commits: 100,
+                ..Default::default()
+            }
+            .missed_label()
+            .as_deref(),
+            Some("99+")
+        );
     }
 
     #[test]

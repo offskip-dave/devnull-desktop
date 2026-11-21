@@ -74,6 +74,11 @@ window.dn-window {
   padding: 12px 12px 16px;
 }
 
+.dn-nav-scroll {
+  min-height: 0;
+  min-width: 0;
+}
+
 .dn-sidebar.collapsed {
   min-width: 80px;
   padding: 12px 6px 16px;
@@ -824,6 +829,19 @@ textview.dn-composer-text text {
 
 .dn-embed-frame {
   min-width: 0;
+  min-height: 240px;
+}
+
+.dn-embed-stage {
+  min-width: 0;
+  min-height: 240px;
+  background-color: #000000;
+}
+
+.dn-embed-player {
+  min-width: 0;
+  min-height: 240px;
+  background-color: #000000;
 }
 
 .dn-embed-tall {
@@ -833,12 +851,29 @@ textview.dn-composer-text text {
 .dn-embed-poster {
   background-color: #000000;
   min-width: 0;
+  min-height: 240px;
+}
+
+.dn-embed-poster-image {
+  min-width: 0;
   min-height: 0;
 }
 
 .dn-embed-audio-thumb {
   margin: 8px 0 8px 8px;
   border-radius: 6px;
+}
+
+.dn-embed-play-btn {
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.dn-embed-play-btn:hover {
+  background: transparent;
 }
 
 .dn-embed-play {
@@ -974,6 +1009,112 @@ textview.dn-composer-text text {
   color: var(--dn_ink_muted);
   font-weight: 500;
   font-size: 15px;
+}
+
+.dn-nav-guilds-sep {
+  margin-left: 12px;
+  margin-right: 12px;
+  opacity: 0.45;
+}
+
+.dn-nav-guilds {
+  padding: 0 4px 4px;
+}
+
+.dn-nav-guilds-heading {
+  padding: 4px 12px 6px;
+  font-family: "Geist Mono", "Adwaita Mono", monospace;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--dn_ink_muted);
+}
+
+.dn-nav-guild {
+  padding: 8px 10px;
+  min-height: 40px;
+}
+
+.dn-sidebar.collapsed .dn-nav-guild {
+  padding: 8px;
+}
+
+.dn-guild-avatar {
+  border-radius: 4px;
+  background-color: var(--dn_wash);
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+}
+
+.dn-guild-avatar picture.dn-guild-icon {
+  border-radius: 4px;
+  min-width: 0;
+  min-height: 0;
+}
+
+.dn-nav-guild-icon {
+  min-width: 16px;
+  min-height: 16px;
+  max-width: 16px;
+  max-height: 16px;
+}
+
+.dn-guild-lane-ring {
+  min-width: 0;
+  min-height: 0;
+  background-color: transparent;
+}
+
+.dn-guild-notice .dn-guild-hashtag {
+  min-height: 0;
+  padding: 2px 6px;
+}
+
+.dn-guild-notice .dn-guild-hashtag label {
+  font-size: 12px;
+}
+
+.dn-guild-emoji,
+.dn-guild-initial {
+  line-height: 1;
+}
+
+.dn-guild-initial {
+  font-weight: 600;
+  color: var(--dn_ink_muted);
+}
+
+.dn-nav-guild .dn-guild-emoji,
+.dn-nav-guild .dn-guild-initial {
+  font-size: 10px;
+}
+
+.dn-nav-guild-unread {
+  font-weight: 600;
+  color: var(--dn_ink);
+}
+
+.dn-nav-guild-missed {
+  font-family: "Geist Mono", "Adwaita Mono", monospace;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 16px;
+  color: var(--dn_primary);
+  margin-left: 4px;
+}
+
+.dn-nav-guild-dot {
+  min-width: 8px;
+  min-height: 8px;
+  border-radius: 9999px;
+  background-color: var(--dn_primary);
+  box-shadow: 0 0 0 2px var(--sidebar_bg_color);
+  margin-top: -2px;
+  margin-right: -2px;
+}
+
+.dn-nav-guild.active .dn-nav-guild-missed {
+  opacity: 0;
 }
 
 .dn-nav-btn:hover {

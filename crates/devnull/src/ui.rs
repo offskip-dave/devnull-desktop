@@ -3,10 +3,11 @@ use chrono::{
 };
 use devnull_api::{
     event_line, Achievements, Activity, ActivityCell, ApiError, Badge, ChatThread, Client, Commit,
-    CommitImage, CommitTranslation, ConversationSummary, CurrentUser, Embed, HotTopic, Lane,
-    LinkPreview, MentionSuggestions, Message, MessageImage, MessageReaction, ModerationHistory,
-    Notification, Organization, Poll, Profile, RemoteCandidate, RemotesSettings, SearchResults,
-    Streaks, ThreadRef, TranslationLanguage, Upload, User, UserPreview,
+    CommitImage, CommitTranslation, ConversationSummary, CurrentUser, Embed, Guild, GuildLabel,
+    HotTopic, JoinedGuild, Lane, LinkPreview, MentionSuggestions, Message, MessageImage,
+    MessageReaction,
+    ModerationHistory, Notification, Organization, Poll, Profile, RemoteCandidate, RemotesSettings,
+    SearchResults, Streaks, ThreadRef, TranslationLanguage, Upload, User, UserPreview,
 };
 use relm4::adw;
 use relm4::adw::prelude::{AdwDialogExt, AlertDialogExt};
@@ -1381,6 +1382,7 @@ pub fn bind_window_scroll(
     bar: &gtk::Scrollbar,
     stack: &gtk::Stack,
     sidebar: &impl IsA<gtk::Widget>,
+    nav_scroll: &gtk::ScrolledWindow,
     aside: &impl IsA<gtk::Widget>,
     pages: &[(&str, gtk::ScrolledWindow)],
 ) {
@@ -1449,7 +1451,29 @@ pub fn bind_window_scroll(
     });
     sync();
 
-    for pane in [sidebar.upcast_ref(), aside.upcast_ref()] {
+    // Wheel over the sidebar scrolls only the nav list — never the main feed.
+    {
+        let controller = gtk::EventControllerScroll::new(
+            gtk::EventControllerScrollFlags::VERTICAL | gtk::EventControllerScrollFlags::KINETIC,
+        );
+        controller.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let nav_adj = nav_scroll.vadjustment();
+        controller.connect_scroll(move |controller, _, dy| {
+            let delta = if controller.unit() == gtk::gdk::ScrollUnit::Wheel {
+                dy * nav_adj.step_increment().max(48.0)
+            } else {
+                dy
+            };
+            let upper = (nav_adj.upper() - nav_adj.page_size()).max(nav_adj.lower());
+            if nav_adj.upper() - nav_adj.lower() > nav_adj.page_size() + 1.0 {
+                nav_adj.set_value((nav_adj.value() + delta).clamp(nav_adj.lower(), upper));
+            }
+            glib::Propagation::Stop
+        });
+        sidebar.upcast_ref::<gtk::Widget>().add_controller(controller);
+    }
+
+    {
         let controller = gtk::EventControllerScroll::new(
             gtk::EventControllerScrollFlags::VERTICAL | gtk::EventControllerScrollFlags::KINETIC,
         );
@@ -1468,7 +1492,7 @@ pub fn bind_window_scroll(
             adj.set_value((adj.value() + delta).clamp(adj.lower(), upper));
             glib::Propagation::Stop
         });
-        pane.add_controller(controller);
+        aside.upcast_ref::<gtk::Widget>().add_controller(controller);
     }
 }
 
@@ -1651,7 +1675,8 @@ fn hex_tone_css(color: &str, class: &str) -> String {
          button.dn-badge-chip:hover .dn-badge.unlocked.{class} {{ border-color: {color}; }}\n\
          .dn-name.dn-lane-name.{class} {{ color: {color}; }}\n\
          .dn-notif-node.{class} {{ border-color: {color}; }}\n\
-         .dn-notif-icon.{class} {{ color: {color}; }}\n"
+         .dn-notif-icon.{class} {{ color: {color}; }}\n\
+         .dn-guild-lane-ring.{class} {{ border-color: {color}; }}\n"
     )
 }
 
@@ -4247,32 +4272,51 @@ fn replies_button(commit: &Commit, sender: Sender<AppMsg>, expanded: bool) -> gt
 }
 
 fn commit_guild_notice(commit: &Commit, ctx: &FeedCtx) -> Option<gtk::Widget> {
+    let lane = lane_color(commit.author.as_ref(), adw_is_dark());
     if let Some(handle) = commit
         .joined_guild
         .as_deref()
         .map(str::trim)
         .filter(|handle| !handle.is_empty())
     {
+        let guild = commit
+            .guild
+            .as_ref()
+            .filter(|guild| guild.handle.eq_ignore_ascii_case(handle))
+            .cloned()
+            .unwrap_or_else(|| GuildLabel {
+                handle: handle.to_owned(),
+                name: handle.to_owned(),
+                ..GuildLabel::default()
+            });
         return Some(guild_notice_row(
             "because you joined",
-            handle,
+            &guild,
             None,
+            &lane,
             ctx.sender.clone(),
         ));
     }
     let handle = commit.board_guild_handle()?;
+    let guild = commit.guild.clone().unwrap_or_else(|| GuildLabel {
+        handle: handle.to_owned(),
+        name: handle.to_owned(),
+        ..GuildLabel::default()
+    });
     Some(guild_notice_row(
         "posted in",
-        handle,
+        &guild,
         Some("· not shown in general logs"),
+        &lane,
         ctx.sender.clone(),
     ))
 }
 
 fn guild_notice_row(
     prefix: &str,
-    handle: &str,
+    guild: &GuildLabel,
     suffix: Option<&str>,
+    lane_hex: &str,
     sender: Sender<AppMsg>,
 ) -> gtk::Widget {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
@@ -4281,17 +4325,25 @@ fn guild_notice_row(
     lead.add_css_class("dn-muted");
     lead.set_xalign(0.0);
     row.append(&lead);
-    let tag = gtk::Button::with_label(&format!("#{handle}"));
+    let tag = gtk::Button::new();
     tag.add_css_class("flat");
     tag.add_css_class("dn-guild-hashtag");
     tag.set_halign(gtk::Align::Start);
     pointer(&tag);
-    let url = format!(
-        "{}/guilds/{}",
-        devnull_api::default_base_url().trim_end_matches('/'),
-        handle.trim_start_matches('#')
-    );
-    tag.connect_clicked(move |_| sender.emit(AppMsg::OpenWeb(url.clone())));
+    let chip = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    chip.set_valign(gtk::Align::Center);
+    chip.append(&guild_avatar_with_lane(guild, 12, lane_hex));
+    let title = if guild.name.trim().is_empty() {
+        format!("#{}", guild.handle)
+    } else {
+        guild.name.clone()
+    };
+    let label = gtk::Label::new(Some(&title));
+    label.set_xalign(0.0);
+    chip.append(&label);
+    tag.set_child(Some(&chip));
+    let open = guild.handle.trim().trim_start_matches('#').to_owned();
+    tag.connect_clicked(move |_| sender.emit(AppMsg::OpenGuild(open.clone())));
     row.append(&tag);
     if let Some(suffix) = suffix {
         let trail = gtk::Label::new(Some(suffix));
@@ -4300,6 +4352,375 @@ fn guild_notice_row(
         row.append(&trail);
     }
     row.upcast()
+}
+
+fn guild_avatar_with_lane(guild: &GuildLabel, size: i32, lane_hex: &str) -> gtk::Widget {
+    // Match RailAvatar: lane-colored ring around the face with a little inset.
+    let inset = 2;
+    let stroke = 2.0;
+    let outer = size + inset * 2 + stroke as i32 * 2;
+    let overlay = gtk::Overlay::new();
+    overlay.add_css_class("dn-guild-lane-ring");
+    overlay.set_size_request(outer, outer);
+    overlay.set_halign(gtk::Align::Center);
+    overlay.set_valign(gtk::Align::Center);
+    overlay.set_hexpand(false);
+    overlay.set_vexpand(false);
+    let (lr, lg, lb) = rgb(lane_hex);
+    let ring = gtk::DrawingArea::new();
+    ring.set_content_width(outer);
+    ring.set_content_height(outer);
+    ring.set_can_target(false);
+    ring.set_draw_func(move |_, cairo, width, height| {
+        let w = f64::from(width);
+        let h = f64::from(height);
+        let radius = 3.5;
+        let half = stroke / 2.0;
+        cairo.set_line_width(stroke);
+        cairo.set_source_rgb(lr, lg, lb);
+        rounded_rect(cairo, half, half, w - stroke, h - stroke, radius);
+        cairo.stroke().ok();
+    });
+    overlay.set_child(Some(&ring));
+    let face = guild_avatar_widget(&guild.as_guild(), size);
+    face.set_halign(gtk::Align::Center);
+    face.set_valign(gtk::Align::Center);
+    face.set_can_target(false);
+    overlay.add_overlay(&face);
+    overlay.upcast()
+}
+
+fn rounded_rect(cairo: &gtk::cairo::Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
+    let r = r.min(w / 2.0).min(h / 2.0);
+    cairo.new_sub_path();
+    cairo.arc(x + w - r, y + r, r, -std::f64::consts::FRAC_PI_2, 0.0);
+    cairo.arc(x + w - r, y + h - r, r, 0.0, std::f64::consts::FRAC_PI_2);
+    cairo.arc(x + r, y + h - r, r, std::f64::consts::FRAC_PI_2, std::f64::consts::PI);
+    cairo.arc(x + r, y + r, r, std::f64::consts::PI, 3.0 * std::f64::consts::FRAC_PI_2);
+    cairo.close_path();
+}
+
+pub fn guild_avatar_widget(guild: &Guild, size: i32) -> gtk::Widget {
+    // AspectFrame 1:1 + obey_child=false ignores the image's natural aspect so
+    // every logo stays a hard square. Never stack emoji under icon_url — logos
+    // are often transparent and show as two overlapping graphics.
+    let frame = gtk::AspectFrame::new(0.5, 0.5, 1.0, false);
+    frame.set_obey_child(false);
+    frame.add_css_class("dn-guild-avatar");
+    frame.set_overflow(gtk::Overflow::Hidden);
+    frame.set_size_request(size, size);
+    frame.set_hexpand(false);
+    frame.set_vexpand(false);
+    frame.set_halign(gtk::Align::Center);
+    frame.set_valign(gtk::Align::Center);
+    if let Some(url) = guild.icon_url.as_deref().filter(|u| !u.is_empty()) {
+        let picture = gtk::Picture::new();
+        picture.add_css_class("dn-guild-icon");
+        picture.set_content_fit(gtk::ContentFit::Cover);
+        picture.set_can_shrink(true);
+        picture.set_halign(gtk::Align::Fill);
+        picture.set_valign(gtk::Align::Fill);
+        picture.set_hexpand(true);
+        picture.set_vexpand(true);
+        images::bind_picture(&picture, Some(url));
+        let mapped = url.to_owned();
+        picture.connect_map(move |picture| images::reapply_picture(picture, &mapped));
+        frame.set_child(Some(&picture));
+        return frame.upcast();
+    }
+    let fallback = if let Some(emoji) = guild.emoji.as_deref().filter(|e| !e.is_empty()) {
+        let label = gtk::Label::new(Some(emoji));
+        label.add_css_class("dn-guild-emoji");
+        label.set_halign(gtk::Align::Center);
+        label.set_valign(gtk::Align::Center);
+        label.upcast::<gtk::Widget>()
+    } else {
+        let initial = guild
+            .name
+            .chars()
+            .next()
+            .map(|c| c.to_uppercase().to_string())
+            .unwrap_or_else(|| "#".into());
+        let label = gtk::Label::new(Some(&initial));
+        label.add_css_class("dn-guild-initial");
+        label.set_halign(gtk::Align::Center);
+        label.set_valign(gtk::Align::Center);
+        label.upcast()
+    };
+    frame.set_child(Some(&fallback));
+    frame.upcast()
+}
+
+pub fn fill_joined_guilds_nav(
+    box_: &gtk::Box,
+    guilds: &[JoinedGuild],
+    active_handle: Option<&str>,
+    collapsed: bool,
+    sender: Sender<AppMsg>,
+) {
+    while let Some(child) = box_.first_child() {
+        box_.remove(&child);
+    }
+    if guilds.is_empty() {
+        box_.set_visible(false);
+        return;
+    }
+    box_.set_visible(true);
+    let heading = gtk::Label::new(Some("Your guilds"));
+    heading.add_css_class("dn-nav-guilds-heading");
+    heading.set_xalign(0.0);
+    heading.set_visible(!collapsed);
+    box_.append(&heading);
+    for guild in guilds {
+        let active = active_handle.is_some_and(|handle| handle.eq_ignore_ascii_case(&guild.handle));
+        box_.append(&joined_guild_nav_btn(
+            guild,
+            active,
+            collapsed,
+            sender.clone(),
+        ));
+    }
+}
+
+fn joined_guild_nav_btn(
+    guild: &JoinedGuild,
+    active: bool,
+    collapsed: bool,
+    sender: Sender<AppMsg>,
+) -> gtk::Button {
+    let btn = gtk::Button::new();
+    btn.add_css_class("flat");
+    btn.add_css_class("dn-nav-btn");
+    btn.add_css_class("dn-nav-guild");
+    if active {
+        btn.add_css_class("active");
+    }
+    btn.set_halign(if collapsed {
+        gtk::Align::Center
+    } else {
+        gtk::Align::Fill
+    });
+    let missed = if active { 0 } else { guild.missed_commits };
+    let tip = if missed > 0 {
+        let unit = if missed == 1 { "commit" } else { "commits" };
+        format!(
+            "{}, {} missed {}",
+            guild.name,
+            if missed > 99 {
+                "99+".into()
+            } else {
+                missed.to_string()
+            },
+            unit
+        )
+    } else {
+        guild.name.clone()
+    };
+    btn.set_tooltip_text(Some(&tip));
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let icon = gtk::Overlay::new();
+    icon.add_css_class("dn-nav-guild-icon");
+    icon.set_size_request(16, 16);
+    icon.set_hexpand(false);
+    icon.set_vexpand(false);
+    icon.set_halign(gtk::Align::Center);
+    icon.set_valign(gtk::Align::Center);
+    icon.set_child(Some(&guild_avatar_widget(&guild.as_guild(), 16)));
+    if collapsed && missed > 0 {
+        let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        dot.add_css_class("dn-nav-guild-dot");
+        dot.set_halign(gtk::Align::End);
+        dot.set_valign(gtk::Align::Start);
+        dot.set_can_target(false);
+        icon.add_overlay(&dot);
+    }
+    row.append(&icon);
+    let name = gtk::Label::new(Some(&guild.name));
+    name.set_xalign(0.0);
+    name.set_hexpand(true);
+    name.set_ellipsize(pango::EllipsizeMode::End);
+    name.set_visible(!collapsed);
+    if missed > 0 {
+        name.add_css_class("dn-nav-guild-unread");
+    }
+    row.append(&name);
+    if !collapsed {
+        if let Some(label) = guild.missed_label().filter(|_| missed > 0) {
+            let count = gtk::Label::new(Some(&label));
+            count.add_css_class("dn-nav-guild-missed");
+            count.set_halign(gtk::Align::End);
+            count.set_valign(gtk::Align::Center);
+            row.append(&count);
+        }
+    }
+    btn.set_child(Some(&row));
+    let handle = guild.handle.clone();
+    btn.connect_clicked(move |_| sender.emit(AppMsg::OpenGuild(handle.clone())));
+    pointer(&btn);
+    btn
+}
+
+pub fn fill_guilds_directory(
+    list: &gtk::ListBox,
+    guilds: &[Guild],
+    unavailable: bool,
+    query: &str,
+    sender: Sender<AppMsg>,
+) {
+    clear_list(list);
+    if unavailable {
+        list.append(&empty_row(
+            "fatal: guilds unavailable",
+            "Guilds aren’t available on this account yet.",
+        ));
+        return;
+    }
+    if guilds.is_empty() {
+        let detail = if query.trim().is_empty() {
+            "When guilds are listed, they show up here."
+        } else {
+            "No guilds matched that search."
+        };
+        list.append(&empty_row("fatal: no guilds", detail));
+        return;
+    }
+    for guild in guilds {
+        list.append(&guild_directory_row(guild, sender.clone()));
+    }
+}
+
+fn guild_directory_row(guild: &Guild, sender: Sender<AppMsg>) -> gtk::ListBoxRow {
+    let row = gtk::ListBoxRow::new();
+    row.set_activatable(true);
+    row.add_css_class("dn-guild-row");
+    let wrap = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    wrap.set_margin_top(8);
+    wrap.set_margin_bottom(8);
+    wrap.set_margin_start(12);
+    wrap.set_margin_end(12);
+    wrap.append(&guild_avatar_widget(guild, 32));
+    let col = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    col.set_hexpand(true);
+    let name = gtk::Label::new(Some(&guild.name));
+    name.add_css_class("dn-name");
+    name.set_xalign(0.0);
+    name.set_ellipsize(pango::EllipsizeMode::End);
+    col.append(&name);
+    let handle = gtk::Label::new(Some(&format!("#{}", guild.handle)));
+    handle.add_css_class("dn-handle");
+    handle.set_xalign(0.0);
+    col.append(&handle);
+    if let Some(description) = guild
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        let blurb = gtk::Label::new(Some(description));
+        blurb.add_css_class("dn-muted");
+        blurb.set_xalign(0.0);
+        blurb.set_ellipsize(pango::EllipsizeMode::End);
+        blurb.set_max_width_chars(48);
+        col.append(&blurb);
+    }
+    wrap.append(&col);
+    let meta = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    meta.set_halign(gtk::Align::End);
+    meta.set_valign(gtk::Align::Center);
+    let members = gtk::Label::new(Some(&if guild.member_count == 1 {
+        "1 member".into()
+    } else {
+        format!("{} members", guild.member_count)
+    }));
+    members.add_css_class("dn-mono");
+    members.add_css_class("dn-muted");
+    members.set_xalign(1.0);
+    meta.append(&members);
+    let chips = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    chips.set_halign(gtk::Align::End);
+    if guild.is_joined {
+        chips.append(&guild_chip("Joined"));
+    }
+    if guild.is_muted {
+        chips.append(&guild_chip("Muted"));
+    }
+    if guild.is_paused {
+        chips.append(&guild_chip("Paused"));
+    }
+    if chips.first_child().is_some() {
+        meta.append(&chips);
+    }
+    wrap.append(&meta);
+    row.set_child(Some(&wrap));
+    let handle = guild.handle.clone();
+    row.connect_activate(move |_| sender.emit(AppMsg::OpenGuild(handle.clone())));
+    row
+}
+
+fn guild_chip(label: &str) -> gtk::Label {
+    let chip = gtk::Label::new(Some(label));
+    chip.add_css_class("dn-profile-chip");
+    chip
+}
+
+pub fn fill_guild_hero(hero: &gtk::Box, guild: &Guild) {
+    while let Some(child) = hero.first_child() {
+        hero.remove(&child);
+    }
+    hero.add_css_class("dn-profile-hero");
+    hero.add_css_class("dn-guild-hero");
+    hero.set_hexpand(true);
+    let header = gtk::Box::new(gtk::Orientation::Vertical, 10);
+    header.add_css_class("dn-profile-header");
+    header.set_margin_top(12);
+    header.set_margin_bottom(12);
+    header.set_margin_start(16);
+    header.set_margin_end(16);
+    let top = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    top.append(&guild_avatar_widget(guild, 56));
+    let titles = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    titles.set_hexpand(true);
+    let name = gtk::Label::new(Some(&guild.name));
+    name.add_css_class("dn-title");
+    name.set_xalign(0.0);
+    titles.append(&name);
+    let handle = gtk::Label::new(Some(&format!("#{}", guild.handle)));
+    handle.add_css_class("dn-handle");
+    handle.set_xalign(0.0);
+    titles.append(&handle);
+    top.append(&titles);
+    header.append(&top);
+    if let Some(description) = guild
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+    {
+        let blurb = gtk::Label::new(Some(description));
+        blurb.set_wrap(true);
+        blurb.set_xalign(0.0);
+        header.append(&blurb);
+    }
+    let meta = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let members = gtk::Label::new(Some(&if guild.member_count == 1 {
+        "1 member".into()
+    } else {
+        format!("{} members", guild.member_count)
+    }));
+    members.add_css_class("dn-mono");
+    members.add_css_class("dn-muted");
+    meta.append(&members);
+    if guild.is_joined {
+        meta.append(&guild_chip("Joined"));
+    }
+    if guild.is_muted {
+        meta.append(&guild_chip("Muted"));
+    }
+    if guild.is_paused {
+        meta.append(&guild_chip("Paused"));
+    }
+    header.append(&meta);
+    hero.append(&header);
 }
 
 fn quoted_commit_widget(quoted: Option<&Commit>, sender: Sender<AppMsg>) -> gtk::Widget {
@@ -4350,6 +4771,13 @@ fn quoted_commit_widget(quoted: Option<&Commit>, sender: Sender<AppMsg>) -> gtk:
                     &[],
                     sender.clone(),
                     true,
+                ));
+            }
+            if let Some(preview) = &commit.link_preview {
+                card.append(&link_preview_widget(
+                    preview,
+                    Some(commit.id.as_str()),
+                    sender.clone(),
                 ));
             }
             let id = commit.id.clone();
@@ -7732,7 +8160,20 @@ fn fill_link_preview(wrap: &gtk::Box, preview: &LinkPreview, sender: Sender<AppM
     while let Some(child) = wrap.first_child() {
         wrap.remove(&child);
     }
-    if let Some(embed) = preview.embed.as_ref() {
+    let synthesized = youtube_embed_from_url(&preview.url);
+    let has_src = |embed: &Embed| {
+        embed
+            .src
+            .as_deref()
+            .map(str::trim)
+            .is_some_and(|src| !src.is_empty())
+    };
+    let embed = preview
+        .embed
+        .as_ref()
+        .filter(|embed| has_src(embed))
+        .or(synthesized.as_ref());
+    if let Some(embed) = embed {
         wrap.append(&embed_card(preview, embed, sender));
         return;
     }
@@ -7805,21 +8246,52 @@ fn embed_card(preview: &LinkPreview, embed: &Embed, sender: Sender<AppMsg>) -> g
     card.set_halign(gtk::Align::Fill);
     card.set_overflow(gtk::Overflow::Hidden);
     pointer(&card);
-    open_on_click(&card, Some(&preview.url), &sender);
-    let poster = preview.image_url.as_deref().or(embed.poster.as_deref());
+    let poster = prefer_youtube_poster(preview.image_url.as_deref().or(embed.poster.as_deref()));
+    let embed_src = embed
+        .src
+        .as_deref()
+        .map(str::trim)
+        .filter(|src| !src.is_empty())
+        .map(str::to_owned);
     let is_video = embed.kind.as_deref() == Some("video")
         || embed
             .aspect_ratio
             .as_deref()
-            .is_some_and(|ratio| !ratio.is_empty());
+            .is_some_and(|ratio| !ratio.is_empty())
+        || youtube_video_id(&preview.url).is_some();
     if is_video {
         let ratio = parse_aspect(embed.aspect_ratio.as_deref()).unwrap_or(16.0 / 9.0);
+        // Poster must be the AspectFrame child (like before) — wrapping it in a
+        // Button collapses the frame height so the preview never appears.
         let frame = gtk::AspectFrame::new(0.5, 0.5, ratio, false);
         frame.set_obey_child(false);
         frame.add_css_class("dn-embed-frame");
         frame.set_hexpand(true);
         frame.set_halign(gtk::Align::Fill);
-        frame.set_child(Some(&play_poster(poster, true)));
+        frame.set_size_request(-1, 240);
+        let stage = gtk::Overlay::new();
+        stage.add_css_class("dn-embed-stage");
+        stage.set_hexpand(true);
+        stage.set_vexpand(true);
+        stage.set_halign(gtk::Align::Fill);
+        stage.set_valign(gtk::Align::Fill);
+        stage.set_size_request(-1, 240);
+        stage.set_child(Some(&play_poster(poster.as_deref(), true)));
+        if let Some(src) = embed_src.clone() {
+            // Capture+Claim so the commit row doesn't open the thread instead.
+            let click = gtk::GestureClick::new();
+            click.set_button(1);
+            click.set_propagation_phase(gtk::PropagationPhase::Capture);
+            let stage_play = stage.clone();
+            click.connect_pressed(move |gesture, _, _, _| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                stage_play.set_child(Some(&embed_player(&src)));
+            });
+            stage.add_controller(click);
+        } else {
+            open_on_click(&stage, Some(&preview.url), &sender);
+        }
+        frame.set_child(Some(&stage));
         if ratio < 1.0 {
             frame.add_css_class("dn-embed-tall");
             frame.set_halign(gtk::Align::Center);
@@ -7836,9 +8308,46 @@ fn embed_card(preview: &LinkPreview, embed: &Embed, sender: Sender<AppMsg>) -> g
     } else {
         card.add_css_class("dn-embed-audio");
         let row = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        row.append(&play_poster(poster, false));
+        let thumb = play_poster(poster.as_deref(), false);
+        if let Some(src) = embed_src.clone() {
+            let click = gtk::GestureClick::new();
+            click.set_button(1);
+            click.set_propagation_phase(gtk::PropagationPhase::Capture);
+            let card_play = card.clone();
+            let preview_url = preview.url.clone();
+            let sender_play = sender.clone();
+            let embed = embed.clone();
+            let preview = preview.clone();
+            click.connect_pressed(move |gesture, _, _, _| {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                while let Some(child) = card_play.first_child() {
+                    card_play.remove(&child);
+                }
+                card_play.remove_css_class("dn-embed-audio");
+                let frame = gtk::AspectFrame::new(0.5, 0.5, 16.0 / 9.0, false);
+                frame.set_obey_child(false);
+                frame.add_css_class("dn-embed-frame");
+                frame.set_hexpand(true);
+                frame.set_size_request(-1, 240);
+                frame.set_child(Some(&embed_player(&src)));
+                card_play.append(&frame);
+                let details = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                details.add_css_class("dn-embed-details");
+                details.append(&embed_details(&preview, &embed));
+                open_on_click(&details, Some(&preview_url), &sender_play);
+                card_play.append(&details);
+            });
+            thumb.set_can_target(true);
+            thumb.add_controller(click);
+            pointer(&thumb);
+            row.append(&thumb);
+        } else {
+            open_on_click(&card, Some(&preview.url), &sender);
+            row.append(&thumb);
+        }
         let details = embed_details(preview, embed);
         details.add_css_class("dn-embed-details");
+        open_on_click(&details, Some(&preview.url), &sender);
         row.append(&details);
         card.append(&row);
         return card.upcast();
@@ -7846,8 +8355,122 @@ fn embed_card(preview: &LinkPreview, embed: &Embed, sender: Sender<AppMsg>) -> g
     let details = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     details.add_css_class("dn-embed-details");
     details.append(&embed_details(preview, embed));
+    open_on_click(&details, Some(&preview.url), &sender);
     card.append(&details);
     card.upcast()
+}
+
+/// In-place player for `embed.src` (YouTube, etc.) via WebKitGTK.
+fn embed_player(src: &str) -> gtk::Widget {
+    use webkit6::prelude::*;
+
+    let settings = webkit6::Settings::new();
+    settings.set_enable_media(true);
+    settings.set_enable_mediasource(true);
+    settings.set_enable_media_capabilities(true);
+    settings.set_media_playback_allows_inline(true);
+    settings.set_media_playback_requires_user_gesture(false);
+    // Chrome UA + HTTPS shell: YouTube Error 153 without a real Referer origin.
+    settings.set_user_agent(Some(
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) \
+         Chrome/131.0.0.0 Safari/537.36",
+    ));
+
+    let webview = webkit6::WebView::new();
+    webview.set_settings(&settings);
+    webview.add_css_class("dn-embed-player");
+    webview.set_hexpand(true);
+    webview.set_vexpand(true);
+    webview.set_halign(gtk::Align::Fill);
+    webview.set_valign(gtk::Align::Fill);
+
+    let src = html_attr_escape(src);
+    let html = format!(
+        "<!DOCTYPE html><html><head>\
+         <meta charset=\"utf-8\">\
+         <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\
+         <meta name=\"referrer\" content=\"strict-origin-when-cross-origin\">\
+         <style>html,body{{margin:0;height:100%;background:#000;overflow:hidden}}\
+         iframe{{border:0;width:100%;height:100%;display:block}}</style></head>\
+         <body><iframe src=\"{src}\" \
+         allow=\"accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share\" \
+         allowfullscreen referrerpolicy=\"strict-origin-when-cross-origin\"></iframe></body></html>"
+    );
+    // App origin as base URI so the iframe request carries a Referer YouTube accepts.
+    webview.load_html(&html, Some("https://dev-null.sh/"));
+    webview.upcast()
+}
+
+fn youtube_video_id(url: &str) -> Option<String> {
+    let parsed = url::Url::parse(url).ok()?;
+    let host = parsed.host_str()?.trim_start_matches("www.");
+    match host {
+        "youtu.be" => parsed
+            .path_segments()?
+            .next()
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned),
+        "youtube.com" | "m.youtube.com" | "music.youtube.com" | "youtube-nocookie.com" => {
+            if parsed.path().starts_with("/embed/")
+                || parsed.path().starts_with("/shorts/")
+                || parsed.path().starts_with("/live/")
+            {
+                return parsed
+                    .path_segments()?
+                    .nth(1)
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_owned);
+            }
+            parsed
+                .query_pairs()
+                .find(|(key, _)| key == "v")
+                .map(|(_, value)| value.into_owned())
+                .filter(|id| !id.is_empty())
+        }
+        _ => None,
+    }
+}
+
+fn youtube_embed_from_url(url: &str) -> Option<Embed> {
+    let id = youtube_video_id(url)?;
+    Some(Embed {
+        provider: Some("YouTube".into()),
+        kind: Some("video".into()),
+        src: Some(format!(
+            "https://www.youtube-nocookie.com/embed/{id}?autoplay=1"
+        )),
+        poster: Some(youtube_poster_url(&id)),
+        aspect_ratio: Some("16 / 9".into()),
+        height: None,
+    })
+}
+
+fn youtube_poster_url(id: &str) -> String {
+    // hq720 is 16:9; hqdefault is 4:3 with letterboxing that won't fill the card.
+    format!("https://i.ytimg.com/vi/{id}/hq720.jpg")
+}
+
+fn prefer_youtube_poster(url: Option<&str>) -> Option<String> {
+    let url = url?.trim();
+    if url.is_empty() {
+        return None;
+    }
+    let upgraded = url
+        .strip_prefix("https://i.ytimg.com/vi/")
+        .or_else(|| url.strip_prefix("http://i.ytimg.com/vi/"))
+        .and_then(|rest| {
+            let id = rest.split('/').next()?.trim();
+            (!id.is_empty()).then(|| youtube_poster_url(id))
+        });
+    Some(upgraded.unwrap_or_else(|| url.to_owned()))
+}
+
+fn html_attr_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
 }
 
 fn embed_details(preview: &LinkPreview, embed: &Embed) -> gtk::Box {
@@ -7866,12 +8489,14 @@ fn play_poster(url: Option<&str>, fill: bool) -> gtk::Widget {
     let overlay = gtk::Overlay::new();
     overlay.add_css_class("dn-embed-poster");
     overlay.set_overflow(gtk::Overflow::Hidden);
+    // Let the parent stage receive clicks; keep the poster itself inert.
     overlay.set_can_target(false);
     if fill {
         overlay.set_hexpand(true);
         overlay.set_vexpand(true);
         overlay.set_halign(gtk::Align::Fill);
         overlay.set_valign(gtk::Align::Fill);
+        overlay.set_size_request(-1, 240);
     } else {
         overlay.set_size_request(80, 80);
         overlay.set_halign(gtk::Align::Start);
@@ -7879,7 +8504,13 @@ fn play_poster(url: Option<&str>, fill: bool) -> gtk::Widget {
         overlay.add_css_class("dn-embed-audio-thumb");
     }
     let pic = cover_picture();
+    pic.add_css_class("dn-embed-poster-image");
     pic.set_can_target(false);
+    pic.set_content_fit(gtk::ContentFit::Cover);
+    pic.set_halign(gtk::Align::Fill);
+    pic.set_valign(gtk::Align::Fill);
+    pic.set_hexpand(true);
+    pic.set_vexpand(true);
     images::bind_picture(&pic, url);
     overlay.set_child(Some(&pic));
     let play = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -11639,7 +12270,9 @@ pub fn fill_suggestions(
     box_: &gtk::Box,
     users: &[User],
     me: Option<&str>,
+    me_id: Option<String>,
     following: &HashSet<String>,
+    user_card: Option<Rc<UserCard>>,
     sender: Sender<AppMsg>,
 ) {
     while let Some(child) = box_.first_child() {
@@ -11656,7 +12289,13 @@ pub fn fill_suggestions(
         return;
     }
     for user in shown {
-        box_.append(&suggestion_row(user, sender.clone(), false));
+        box_.append(&suggestion_row(
+            user,
+            sender.clone(),
+            false,
+            user_card.clone(),
+            me_id.clone(),
+        ));
     }
 }
 
@@ -11735,7 +12374,13 @@ fn who_to_follow_in_log(ctx: &FeedCtx) -> gtk::ListBoxRow {
         list.append(&empty);
     } else {
         for user in shown {
-            let item = suggestion_row(user, ctx.sender.clone(), true);
+            let item = suggestion_row(
+                user,
+                ctx.sender.clone(),
+                true,
+                ctx.user_card.clone(),
+                ctx.me_id.clone(),
+            );
             item.add_css_class("dn-who-log-item");
             list.append(&item);
         }
@@ -11746,7 +12391,13 @@ fn who_to_follow_in_log(ctx: &FeedCtx) -> gtk::ListBoxRow {
     row
 }
 
-fn suggestion_row(user: &User, sender: Sender<AppMsg>, stacked: bool) -> gtk::Box {
+fn suggestion_row(
+    user: &User,
+    sender: Sender<AppMsg>,
+    stacked: bool,
+    user_card: Option<Rc<UserCard>>,
+    me_id: Option<String>,
+) -> gtk::Box {
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     row.add_css_class("dn-suggest-row");
     row.set_overflow(gtk::Overflow::Visible);
@@ -11789,6 +12440,9 @@ fn suggestion_row(user: &User, sender: Sender<AppMsg>, stacked: bool) -> gtk::Bo
     }
     inner.append(&col);
     open.set_child(Some(&inner));
+    if let Some(card) = &user_card {
+        card.bind(&inner, user, sender.clone(), me_id);
+    }
     let username = user.username.clone();
     let open_sender = sender.clone();
     open.connect_clicked(move |_| {
@@ -16197,6 +16851,35 @@ mod embed_tests {
         assert!((tall - 9.0 / 16.0).abs() < f32::EPSILON);
         assert!(wide > 1.0);
         assert!(tall < 1.0);
+    }
+
+    #[test]
+    fn synthesizes_youtube_embeds_from_watch_urls() {
+        let embed = youtube_embed_from_url("https://www.youtube.com/watch?v=dQw4w9WgXcQ").unwrap();
+        assert_eq!(embed.kind.as_deref(), Some("video"));
+        assert_eq!(
+            embed.src.as_deref(),
+            Some("https://www.youtube-nocookie.com/embed/dQw4w9WgXcQ?autoplay=1")
+        );
+        assert_eq!(
+            embed.poster.as_deref(),
+            Some("https://i.ytimg.com/vi/dQw4w9WgXcQ/hq720.jpg")
+        );
+        assert_eq!(
+            prefer_youtube_poster(Some(
+                "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"
+            ))
+            .as_deref(),
+            Some("https://i.ytimg.com/vi/dQw4w9WgXcQ/hq720.jpg")
+        );
+        assert_eq!(
+            youtube_video_id("https://youtu.be/5X5csEbmHqs").as_deref(),
+            Some("5X5csEbmHqs")
+        );
+        assert_eq!(
+            youtube_video_id("https://www.youtube.com/shorts/abc123XYZ0_").as_deref(),
+            Some("abc123XYZ0_")
+        );
     }
 }
 

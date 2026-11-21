@@ -660,6 +660,22 @@ impl Client {
         .await
     }
 
+    /// Joined, unmuted guilds for the left nav (`GET me/guilds`), most missed first.
+    pub async fn joined_guilds(&self) -> Result<Vec<JoinedGuild>, ApiError> {
+        let page: DataEnvelope<Vec<JoinedGuild>> = self.get("me/guilds", &[]).await?;
+        Ok(page.data)
+    }
+
+    /// Mark a guild board read (`PUT guilds/{handle}/read`), clearing its missed count.
+    pub async fn mark_guild_read(&self, handle: &str) -> Result<(), ApiError> {
+        let handle = handle.trim().trim_start_matches('#');
+        if handle.is_empty() {
+            return Err(ApiError::decode());
+        }
+        self.send_empty(Method::PUT, &format!("guilds/{handle}/read"))
+            .await
+    }
+
     /// A guild's board (`GET guilds/{handle}`): 30 threads a page, plus guild, pin, and can_moderate.
     pub async fn guild_board(
         &self,
