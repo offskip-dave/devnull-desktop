@@ -660,6 +660,34 @@ impl Client {
         .await
     }
 
+    /// A guild's board (`GET guilds/{handle}`): 30 threads a page, plus guild, pin, and can_moderate.
+    pub async fn guild_board(
+        &self,
+        handle: &str,
+        page: Option<u32>,
+    ) -> Result<GuildBoardPage, ApiError> {
+        let handle = handle.trim().trim_start_matches('#');
+        if handle.is_empty() {
+            return Err(ApiError::decode());
+        }
+        let page = page.map(|n| n.to_string());
+        let bytes = self
+            .execute(self.signed_request(
+                Method::GET,
+                &format!("guilds/{handle}"),
+                &[
+                    ("page", page.as_deref()),
+                    ("replies_per_page", Some(REPLIES_PER_PAGE)),
+                ],
+                None,
+                JSON_NAMESPACE,
+            )?)
+            .await?;
+        let value: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|_| ApiError::decode())?;
+        GuildBoardPage::from_value(value).map_err(|_| ApiError::decode())
+    }
+
     pub async fn user_settings(&self) -> Result<UserSettings, ApiError> {
         self.get("me/settings", &[]).await
     }

@@ -1704,12 +1704,30 @@ pub struct Commit {
     /// Newest replies embedded when the client asks for `replies_per_page`.
     #[serde(default, deserialize_with = "deserialize_vec")]
     pub reply_preview: Vec<Commit>,
+    /// Board posts and hashtag matches name their guild when the API loads it.
+    #[serde(default)]
+    pub guild_handle: Option<String>,
+    /// Compact guild chip on board posts outside the board (`handle`, `name`, `emoji`, `icon_url`).
+    #[serde(default, deserialize_with = "deserialize_opt_ok")]
+    pub guild: Option<GuildLabel>,
+    /// On Following, when this commit appears only because you joined the guild.
+    #[serde(default)]
+    pub joined_guild: Option<String>,
     /// Captured `@handle`s: developers and GitHub organizations.
     #[serde(default, flatten)]
     pub captured: MentionMaps,
 }
 
 impl Commit {
+    pub fn board_guild_handle(&self) -> Option<&str> {
+        self.guild
+            .as_ref()
+            .map(|guild| guild.handle.as_str())
+            .or(self.guild_handle.as_deref())
+            .map(str::trim)
+            .filter(|handle| !handle.is_empty())
+    }
+
     pub fn mentions(&self) -> Option<&HashMap<String, String>> {
         self.captured.users.as_ref()
     }
@@ -1980,6 +1998,20 @@ pub struct TimeoutNotice {
     pub ends_at: Option<DateTime<Utc>>,
 }
 
+/// Compact guild chip on a commit (`CommitResource.guild`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct GuildLabel {
+    #[serde(default)]
+    pub handle: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub emoji: Option<String>,
+    /// Signed for the viewer on API routes; stays stable for a day so clients can cache it.
+    #[serde(default)]
+    pub icon_url: Option<String>,
+}
+
 /// A guild as `GET /api/v1/guilds` returns it (directory row).
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct Guild {
@@ -1991,6 +2023,7 @@ pub struct Guild {
     pub description: Option<String>,
     #[serde(default)]
     pub emoji: Option<String>,
+    /// Signed for the viewer on API routes; stays stable for a day so clients can cache it.
     #[serde(default)]
     pub icon_url: Option<String>,
     #[serde(default, deserialize_with = "deserialize_i64ish")]
@@ -2003,6 +2036,58 @@ pub struct Guild {
     pub is_paused: bool,
     #[serde(default)]
     pub html_url: Option<String>,
+}
+
+/// A guild board page from `GET /api/v1/guilds/{handle}`: threads, guild, pin, moderate flag.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct GuildBoardPage {
+    #[serde(default, deserialize_with = "deserialize_vec")]
+    pub data: Vec<Commit>,
+    #[serde(default)]
+    pub guild: Guild,
+    #[serde(default, deserialize_with = "deserialize_opt_commit")]
+    pub pinned_commit: Option<Commit>,
+    #[serde(default, deserialize_with = "deserialize_boolish")]
+    pub can_moderate: bool,
+    #[serde(default)]
+    pub links: Option<CursorLinks>,
+    #[serde(default)]
+    pub meta: Option<CursorMeta>,
+}
+
+impl GuildBoardPage {
+    pub fn from_value(value: serde_json::Value) -> Result<Self, serde_json::Error> {
+        let mut page: Self = serde_json::from_value(value.clone())?;
+        if page.data.is_empty() {
+            page.data = Commit::list_from_value(value.clone());
+        }
+        if page.guild.handle.is_empty() {
+            if let Some(guild) = value.get("guild").cloned() {
+                page.guild = serde_json::from_value(guild).unwrap_or_default();
+            }
+        }
+        if page.pinned_commit.is_none() {
+            page.pinned_commit = value
+                .get("pinned_commit")
+                .cloned()
+                .and_then(|node| serde_json::from_value(node).ok());
+        }
+        Ok(page)
+    }
+
+    /// Next board page number from Laravel's `links.next`, when present.
+    pub fn next_page(&self) -> Option<u32> {
+        self.links.as_ref().and_then(|links| {
+            links.next.as_ref().and_then(|url| {
+                url::Url::parse(url).ok().and_then(|parsed| {
+                    parsed
+                        .query_pairs()
+                        .find(|(key, _)| key == "page")
+                        .and_then(|(_, value)| value.parse().ok())
+                })
+            })
+        })
+    }
 }
 
 /// Own timeouts and lifted bans from `GET /api/v1/me/moderation-history` (#1575).
@@ -3561,6 +3646,54 @@ mod unread_count_tests {
         assert!(guild.is_joined);
         assert!(!guild.is_paused);
         assert_eq!(guild.member_count, 2);
+    }
+
+    #[test]
+    fn guild_board_page_reads_threads_pin_and_moderate_flag() {
+        let page = GuildBoardPage::from_value(json!({
+            "data": [{
+                "id": "11111111-1111-1111-1111-111111111111",
+                "body": "Straight to the board",
+                "guild_handle": "rust",
+                "guild": {
+                    "handle": "rust",
+                    "name": "Rust",
+                    "emoji": "🦀",
+                    "icon_url": "https://dev-null.sh/api/v1/guilds/rust/icon?v=1"
+                }
+            }],
+            "guild": {
+                "handle": "rust",
+                "name": "Rust",
+                "member_count": 1,
+                "is_joined": true,
+                "is_muted": false,
+                "is_paused": false
+            },
+            "pinned_commit": {
+                "id": "22222222-2222-2222-2222-222222222222",
+                "body": "Pinned"
+            },
+            "can_moderate": true,
+            "links": {
+                "next": "https://dev-null.sh/api/v1/guilds/rust?page=2"
+            },
+            "meta": { "per_page": 30, "current_page": 1 }
+        }))
+        .unwrap();
+        assert_eq!(page.guild.handle, "rust");
+        assert!(page.can_moderate);
+        assert_eq!(page.data.len(), 1);
+        assert_eq!(page.data[0].guild_handle.as_deref(), Some("rust"));
+        assert_eq!(
+            page.data[0].guild.as_ref().map(|g| g.handle.as_str()),
+            Some("rust")
+        );
+        assert_eq!(
+            page.pinned_commit.as_ref().map(|c| c.id.as_str()),
+            Some("22222222-2222-2222-2222-222222222222")
+        );
+        assert_eq!(page.next_page(), Some(2));
     }
 
     #[test]

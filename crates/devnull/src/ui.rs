@@ -3688,6 +3688,10 @@ pub fn commit_row(
         content.append(&reply_to);
     }
 
+    if let Some(notice) = commit_guild_notice(commit, ctx) {
+        content.append(&notice);
+    }
+
     if let Some(body) = commit_display_body(commit, ctx) {
         let class = if chrome.focused {
             "dn-body dn-body-focus"
@@ -4240,6 +4244,62 @@ fn replies_button(commit: &Commit, sender: Sender<AppMsg>, expanded: bool) -> gt
         sender.emit(AppMsg::ToggleReplies(id.clone()));
     });
     btn
+}
+
+fn commit_guild_notice(commit: &Commit, ctx: &FeedCtx) -> Option<gtk::Widget> {
+    if let Some(handle) = commit
+        .joined_guild
+        .as_deref()
+        .map(str::trim)
+        .filter(|handle| !handle.is_empty())
+    {
+        return Some(guild_notice_row(
+            "because you joined",
+            handle,
+            None,
+            ctx.sender.clone(),
+        ));
+    }
+    let handle = commit.board_guild_handle()?;
+    Some(guild_notice_row(
+        "posted in",
+        handle,
+        Some("· not shown in general logs"),
+        ctx.sender.clone(),
+    ))
+}
+
+fn guild_notice_row(
+    prefix: &str,
+    handle: &str,
+    suffix: Option<&str>,
+    sender: Sender<AppMsg>,
+) -> gtk::Widget {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    row.add_css_class("dn-guild-notice");
+    let lead = gtk::Label::new(Some(prefix));
+    lead.add_css_class("dn-muted");
+    lead.set_xalign(0.0);
+    row.append(&lead);
+    let tag = gtk::Button::with_label(&format!("#{handle}"));
+    tag.add_css_class("flat");
+    tag.add_css_class("dn-guild-hashtag");
+    tag.set_halign(gtk::Align::Start);
+    pointer(&tag);
+    let url = format!(
+        "{}/guilds/{}",
+        devnull_api::default_base_url().trim_end_matches('/'),
+        handle.trim_start_matches('#')
+    );
+    tag.connect_clicked(move |_| sender.emit(AppMsg::OpenWeb(url.clone())));
+    row.append(&tag);
+    if let Some(suffix) = suffix {
+        let trail = gtk::Label::new(Some(suffix));
+        trail.add_css_class("dn-muted");
+        trail.set_xalign(0.0);
+        row.append(&trail);
+    }
+    row.upcast()
 }
 
 fn quoted_commit_widget(quoted: Option<&Commit>, sender: Sender<AppMsg>) -> gtk::Widget {
@@ -13687,6 +13747,70 @@ pub fn quote_window(
     compose.append(&view);
     outer.append(&compose);
     outer.append(&quoted_commit_widget(Some(commit), sender.clone()));
+    let color_hint = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    color_hint.add_css_class("dn-color-hint");
+    color_hint.set_height_request(28);
+    color_hint.set_opacity(0.0);
+    color_hint.set_sensitive(false);
+    let color_label = gtk::Label::new(None);
+    color_label.add_css_class("dn-muted");
+    color_label.set_xalign(0.0);
+    color_label.set_hexpand(true);
+    color_hint.append(&color_label);
+    let use_color = gtk::Button::with_label("Use as color");
+    use_color.add_css_class("flat");
+    use_color.add_css_class("dn-color-hint-btn");
+    use_color.set_sensitive(false);
+    pointer(&use_color);
+    color_hint.append(&use_color);
+    outer.append(&color_hint);
+    let sync_hint = {
+        let view = view.clone();
+        let color_hint = color_hint.clone();
+        let color_label = color_label.clone();
+        let use_color = use_color.clone();
+        move || {
+            let buf = view.buffer();
+            let body = buf
+                .text(&buf.start_iter(), &buf.end_iter(), false)
+                .to_string();
+            match body::ambiguous_color_in_draft(&body) {
+                Some((_, hex)) => {
+                    let markup = format!("color({hex})");
+                    color_label.set_markup(&format!(
+                        "For a swatch, use <tt>{}</tt>.",
+                        glib::markup_escape_text(&markup)
+                    ));
+                    color_hint.set_opacity(1.0);
+                    color_hint.set_sensitive(true);
+                    use_color.set_sensitive(true);
+                }
+                None => {
+                    color_label.set_markup("For a swatch, use <tt>color(#a1234567)</tt>.");
+                    color_hint.set_opacity(0.0);
+                    color_hint.set_sensitive(false);
+                    use_color.set_sensitive(false);
+                }
+            }
+        }
+    };
+    sync_hint();
+    let sync_on_change = sync_hint.clone();
+    view.buffer().connect_changed(move |_| sync_on_change());
+    let view_fix = view.clone();
+    use_color.connect_clicked(move |_| {
+        let buf = view_fix.buffer();
+        let body = buf
+            .text(&buf.start_iter(), &buf.end_iter(), false)
+            .to_string();
+        let Some((next, caret)) = body::apply_color_swatch_hint(&body) else {
+            return;
+        };
+        buf.set_text(&next);
+        let insert = buf.iter_at_offset(caret as i32);
+        buf.place_cursor(&insert);
+        view_fix.grab_focus();
+    });
     let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let emoji = gtk::Button::from_icon_name("dn-smile-symbolic");
     emoji.add_css_class("flat");

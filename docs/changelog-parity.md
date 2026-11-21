@@ -1,6 +1,6 @@
 # Changelog parity
 
-Track of [dev-null.sh/changelog](https://dev-null.sh/changelog) against this GTK client, from the platform’s first production commit on **2026-10-15** (`chore: first` — empty repo in the morning, live by lunch; see [About](https://dev-null.sh/about)) through **2026-11-19**. Prefer signed `/api/v1` surfaces. Skip Inertia-only, CLI, PWA, admin/CMS, and first-party Swift/mobile app work unless a client route exists.
+Track of [dev-null.sh/changelog](https://dev-null.sh/changelog) against this GTK client, from the platform’s first production commit on **2026-10-15** (`chore: first` — empty repo in the morning, live by lunch; see [About](https://dev-null.sh/about)) through **2026-11-20**. Prefer signed `/api/v1` surfaces. Skip Inertia-only, CLI, PWA, admin/CMS, and first-party Swift/mobile app work unless a client route exists.
 
 The [capability matrix](#capability-matrix-launch--present) is the durable inventory. [Day by day](#day-by-day-oct-15--present) lists every non-merge `feat` on `production` since day one. Update both when you catch up a changelog day. Link the web PR or commit in your PR description.
 
@@ -39,7 +39,7 @@ Durable inventory by product area. Every production `feat` from day one is also 
 | Collapse nav / responsive shell | Done | 256→80 nav, aside hide, compact |
 | Composer: text, images, polls, schedule, preview | Done | Lane ring fills at 200 chars |
 | Hashtags in commit text | Done | `#tag` opens search; `color(#hex)` swatches (#1630); digit-led bare `#000` |
-| Composer “Use as color” swatch hint | Done | Log, reply, Remotes (#1634); quote dialog still open |
+| Composer “Use as color” swatch hint | Done | Log, reply, Remotes, quote (#1634) |
 | Emoji shortcodes + picker; `@` mention suggestions | Done | |
 | Replies, quotes, related commits, ancestors | Done | |
 | Stars (incl. stargazers of your own commit) | Done | API #1310; stargazer hover cards (#1204) |
@@ -154,7 +154,9 @@ Durable inventory by product area. Every production `feat` from day one is also 
 | Capability | Status | Notes |
 | --- | --- | --- |
 | List / search guilds via signed API | Partial | `GET /api/v1/guilds`; 404 while feature is admin-only |
+| Read a guild board via signed API | Partial | `GET /api/v1/guilds/{handle}`; board page UI Waiting |
 | Post / schedule to a guild board via API | Partial | `guild_handle` on create; no board UI yet |
+| Guild chip on board posts outside the board | Done | “posted in #handle · not shown in general logs”; opens web board for now |
 | Guild directory, board, nav, join / mute | Waiting | Still preview-gated for most accounts |
 
 ## Day by day (Oct 15 → present)
@@ -862,7 +864,7 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | --- | --- | --- |
 | let guild moderators edit the display name (9ebb36e) | Skip | Moderator / Inertia |
 | send flagged guilds to the moderation queue instead of refusing them (0dfeac4) | Skip | Server moderation |
-| show the guild on board posts outside its board (13df08c) | Waiting | Needs guild fields on commit resources + UI |
+| show the guild on board posts outside its board (13df08c) | Done | `guild` / `guild_handle` on commits; notice under the author row |
 | let guild moderators pin a board commit (8046f85) | Skip | Moderator tools |
 | let API clients post and schedule to a guild board (0567057) | Partial | `guild_handle` on create_commit; board composer UI Waiting |
 | say the guild is paused when committing now a board post (5d18bf9) | Waiting | Board composer + `guild_paused` error |
@@ -885,6 +887,17 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | show the /dev/null wordmark in guild descriptions (#1623) | Waiting | Guild page UI |
 | orders guilds by activity (6946cfb) | Skip | Server directory order |
 | order guilds by `reat_at` first (6d3a957) | Skip | Server directory order |
+| name the link, not its site, in the section about it on a commit page (#1639) | Skip | Website link-topic chrome |
+| keep guild sidebar icons mounted on hover (b6ef8e0) | Skip | Website nav perf |
+
+### 2026-11-20
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| join or leave guilds from a profile's guild list (903ebec) | Waiting | Web profile list; no signed membership routes yet |
+| keep a left guild listed until the profile guilds dialog reopens (366bae3) | Skip | Website nav |
+| let API clients read a guild's board (b928f9c) | Partial | `Client::guild_board()`; in-app board page Waiting |
+| serve guild icons to API clients through signed URLs (90f528e) | Done | `icon_url` already consumed; server now signs for the viewer |
 
 
 ## Standing gaps (priority)
@@ -901,7 +914,6 @@ Blocked on API or hard infra — not same-day launch work:
 8. **Guilds UI** — directory, board, nav, join/mute when the feature is available beyond admin preview (#1576)  
 9. **Remotes nostalgic sounds** — prefs + bundled MSN/ICQ/AIM cues  
 10. **Recent search chips** — local prefs polish (web uses localStorage); optional  
-11. **Quote composer color hint** — log / reply / Remotes Done; quote dialog still open  
 
 ## Out of scope (recurring Skip)
 
