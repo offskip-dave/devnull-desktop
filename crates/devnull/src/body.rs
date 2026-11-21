@@ -893,9 +893,7 @@ fn take_explicit_color(text: &str, i: usize) -> Option<ColorSpan> {
         }
     }
     let open = 7;
-    let Some((digits, hex_len)) = take_color_digits(&rest[open..]) else {
-        return None;
-    };
+    let (digits, hex_len) = take_color_digits(&rest[open..])?;
     let after_hex = open + hex_len;
     if rest.as_bytes().get(after_hex) != Some(&b')') {
         return None;
@@ -911,9 +909,7 @@ fn take_explicit_color(text: &str, i: usize) -> Option<ColorSpan> {
 
 fn take_bare_color(text: &str, i: usize) -> Option<ColorSpan> {
     let rest = &text[i..];
-    let Some(hash) = rest.chars().next() else {
-        return None;
-    };
+    let hash = rest.chars().next()?;
     let hash_len = hash.len_utf8();
     let ascii_hash = hash == '#';
     let fullwidth = hash == '\u{FF03}';
@@ -926,16 +922,12 @@ fn take_bare_color(text: &str, i: usize) -> Option<ColorSpan> {
     let hex_at = i + hash_len;
     let hex_rest = &text[hex_at..];
     if ascii_hash {
-        let Some(first) = hex_rest.chars().next() else {
-            return None;
-        };
+        let first = hex_rest.chars().next()?;
         if !first.is_ascii_digit() {
             return None;
         }
     }
-    let Some((digits, hex_len)) = take_color_digits(hex_rest) else {
-        return None;
-    };
+    let (digits, hex_len) = take_color_digits(hex_rest)?;
     let end = hex_at + hex_len;
     if !color_right_ok(&text[end..]) {
         return None;
