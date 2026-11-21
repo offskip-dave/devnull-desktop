@@ -1090,7 +1090,7 @@ where
 {
     let scale = serde_json::Value::deserialize(deserializer)?;
     Ok(match scale.as_str() {
-        Some(scale @ ("day" | "week" | "month")) => scale.to_owned(),
+        Some(scale @ ("day" | "week" | "month" | "year")) => scale.to_owned(),
         _ => year_scale(),
     })
 }
