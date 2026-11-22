@@ -889,6 +889,7 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | order guilds by `reat_at` first (6d3a957) | Skip | Server directory order |
 | name the link, not its site, in the section about it on a commit page (#1639) | Skip | Website link-topic chrome |
 | keep guild sidebar icons mounted on hover (b6ef8e0) | Skip | Website nav perf |
+| show joined guilds on profiles | Waiting | Auto-imported from [8dfd9f7](https://github.com/dev-null-sh/dev-null.sh/commit/8dfd9f70d9eb47780ea8b676a03b324ddbd7b345); needs GTK port or API probe |
 
 ### 2026-11-20
 
@@ -899,6 +900,15 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | let API clients read a guild's board (b928f9c) | Done | `Client::guild_board()` + in-app board (hero, pin, feed, load more) |
 | serve guild icons to API clients through signed URLs (90f528e) | Done | `icon_url` already consumed; server now signs for the viewer |
 
+
+### 2026-11-21
+
+Auto-imported by the changelog parity cron.
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| show the typing ring when posting as an organization (#1662) | Waiting | Auto-imported from [2721251](https://github.com/dev-null-sh/dev-null.sh/commit/2721251df215a678b3b8a35d2a4d084faedcd2b8); needs GTK port or API probe |
+| show a half-year activity grid on profiles under six months old (#1657) | Waiting | Auto-imported from [e131205](https://github.com/dev-null-sh/dev-null.sh/commit/e131205271ce56f3be92956a23f40f46da9b587f); needs GTK port or API probe |
 
 ## Standing gaps (priority)
 
