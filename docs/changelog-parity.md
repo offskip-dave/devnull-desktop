@@ -889,6 +889,7 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | order guilds by `reat_at` first (6d3a957) | Skip | Server directory order |
 | name the link, not its site, in the section about it on a commit page (#1639) | Skip | Website link-topic chrome |
 | keep guild sidebar icons mounted on hover (b6ef8e0) | Skip | Website nav perf |
+| show joined guilds on profiles | Waiting | Port task opened; web [8dfd9f7](https://github.com/dev-null-sh/dev-null.sh/commit/8dfd9f70d9eb47780ea8b676a03b324ddbd7b345) |
 
 ### 2026-11-20
 
