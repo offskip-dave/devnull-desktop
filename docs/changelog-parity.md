@@ -900,6 +900,15 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | serve guild icons to API clients through signed URLs (90f528e) | Done | `icon_url` already consumed; server now signs for the viewer |
 
 
+### 2026-11-21
+
+Auto-imported by the changelog parity cron.
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| show the typing ring when posting as an organization (#1662) | Waiting | Auto-imported from [2721251](https://github.com/dev-null-sh/dev-null.sh/commit/2721251df215a678b3b8a35d2a4d084faedcd2b8); needs GTK port or API probe |
+| show a half-year activity grid on profiles under six months old (#1657) | Waiting | Auto-imported from [e131205](https://github.com/dev-null-sh/dev-null.sh/commit/e131205271ce56f3be92956a23f40f46da9b587f); needs GTK port or API probe |
+
 ## Standing gaps (priority)
 
 Blocked on API or hard infra — not same-day launch work:
