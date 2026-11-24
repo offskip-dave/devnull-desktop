@@ -900,6 +900,30 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | serve guild icons to API clients through signed URLs (90f528e) | Done | `icon_url` already consumed; server now signs for the viewer |
 
 
+### 2026-11-21
+
+Auto-imported by the changelog parity cron.
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| show the typing ring when posting as an organization (#1662) | Waiting | Auto-imported from [2721251](https://github.com/dev-null-sh/dev-null.sh/commit/2721251df215a678b3b8a35d2a4d084faedcd2b8); needs GTK port or API probe |
+| show a half-year activity grid on profiles under six months old (#1657) | Waiting | Auto-imported from [e131205](https://github.com/dev-null-sh/dev-null.sh/commit/e131205271ce56f3be92956a23f40f46da9b587f); needs GTK port or API probe |
+
+### 2026-11-23
+
+Auto-imported by the changelog parity cron.
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| let API clients list a guild's members (#1621) | Waiting | Auto-imported from [15b7642](https://github.com/dev-null-sh/dev-null.sh/commit/15b76427b7669e7360bb38e9b3a875548428f845); needs GTK port or API probe |
+| let API clients join and leave guilds (#1616) | Waiting | Auto-imported from [70f1d61](https://github.com/dev-null-sh/dev-null.sh/commit/70f1d611fb643600eb370072a222b1293b362253); needs GTK port or API probe |
+| let API clients edit guilds (#1632) | Waiting | Auto-imported from [73d298e](https://github.com/dev-null-sh/dev-null.sh/commit/73d298ec24858814976303e6918664d44a3a6303); needs GTK port or API probe |
+| let API clients pin commits to a guild board (#1629) | Waiting | Auto-imported from [86378e6](https://github.com/dev-null-sh/dev-null.sh/commit/86378e6360658a5929c9f4bec7b3ec6a6f42e1a0); needs GTK port or API probe |
+| let API clients report guilds (#1622) | Waiting | Auto-imported from [a9acd2f](https://github.com/dev-null-sh/dev-null.sh/commit/a9acd2f85e46fad327518dd756307412298d32db); needs GTK port or API probe |
+| let API clients mute and unmute guilds (#1618) | Waiting | Auto-imported from [b61eab3](https://github.com/dev-null-sh/dev-null.sh/commit/b61eab327b52009c51994c31904ad271dc2e5b01); needs GTK port or API probe |
+| let API clients read and clear a guild's missed commits (#1653) | Waiting | Auto-imported from [b683891](https://github.com/dev-null-sh/dev-null.sh/commit/b6838917df9f07eaf06e74d712d246e7af3de237); needs GTK port or API probe |
+| let API clients create guilds (#1631) | Waiting | Auto-imported from [f5f5e29](https://github.com/dev-null-sh/dev-null.sh/commit/f5f5e29881c5b9715db450052d744dade197b4eb); needs GTK port or API probe |
+
 ## Standing gaps (priority)
 
 Blocked on API or hard infra — not same-day launch work:
