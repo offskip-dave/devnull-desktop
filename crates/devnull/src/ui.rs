@@ -62,6 +62,10 @@ pub struct FeedCtx {
     pub org_ids: Vec<String>,
     /// Remotes are on for this account — enables Send in Remotes.
     pub remotes_on: bool,
+    /// Guild handle when the open board can be moderated (pin / unpin).
+    pub guild_moderate: Option<String>,
+    /// Currently pinned board commit id, when viewing a guild board.
+    pub guild_pinned_id: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -2450,6 +2454,8 @@ pub struct StagedPaint {
     pub lane: (f64, f64, f64),
     pub fill: f64,
     pub target: f64,
+    /// Rounded-square ring when posting as an organization (#1662).
+    pub square: bool,
     ticking: bool,
     last_us: i64,
 }
@@ -2467,6 +2473,7 @@ impl StagedPaint {
             lane: gray,
             fill: 0.0,
             target: 0.0,
+            square: false,
             ticking: false,
             last_us: 0,
         }
@@ -2502,9 +2509,22 @@ pub fn bind_staged_rail(
         cairo.stroke().ok();
         cairo.set_dash(&[], 0.0);
         cairo.set_source_rgb(sr, sg, sb);
-        cairo.arc(cx, node_y, STAGED_RING + 2.0, 0.0, std::f64::consts::TAU);
-        cairo.fill().ok();
-        draw_staged_ring(cairo, cx, node_y, lr, lg, lb, paint.fill);
+        if paint.square {
+            let pad = STAGED_RING + 2.0;
+            rounded_rect(
+                cairo,
+                cx - pad,
+                node_y - pad,
+                pad * 2.0,
+                pad * 2.0,
+                STAGED_SQUARE_RADIUS + 2.0,
+            );
+            cairo.fill().ok();
+        } else {
+            cairo.arc(cx, node_y, STAGED_RING + 2.0, 0.0, std::f64::consts::TAU);
+            cairo.fill().ok();
+        }
+        draw_staged_ring(cairo, cx, node_y, lr, lg, lb, paint.fill, paint.square);
     });
     overlay.set_child(Some(&area));
     overlay.set_overflow(gtk::Overflow::Visible);
@@ -2514,6 +2534,59 @@ pub fn bind_staged_rail(
     area
 }
 
+/// Corner radius for the org typing ring — matches web `rounded-lg` (8px).
+const STAGED_SQUARE_RADIUS: f64 = 8.0;
+
+fn staged_square_perimeter(half: f64, corner: f64) -> f64 {
+    let corner = corner.min(half);
+    8.0 * (half - corner) + std::f64::consts::TAU * corner
+}
+
+fn staged_square_path(cairo: &gtk::cairo::Context, cx: f64, cy: f64, half: f64, corner: f64) {
+    let corner = corner.min(half);
+    let x0 = cx - half;
+    let y0 = cy - half;
+    let x1 = cx + half;
+    let y1 = cy + half;
+    // Start at top centre, run clockwise (matches the person ring).
+    cairo.new_path();
+    cairo.move_to(cx, y0);
+    cairo.line_to(x1 - corner, y0);
+    cairo.arc(
+        x1 - corner,
+        y0 + corner,
+        corner,
+        -std::f64::consts::FRAC_PI_2,
+        0.0,
+    );
+    cairo.line_to(x1, y1 - corner);
+    cairo.arc(
+        x1 - corner,
+        y1 - corner,
+        corner,
+        0.0,
+        std::f64::consts::FRAC_PI_2,
+    );
+    cairo.line_to(x0 + corner, y1);
+    cairo.arc(
+        x0 + corner,
+        y1 - corner,
+        corner,
+        std::f64::consts::FRAC_PI_2,
+        std::f64::consts::PI,
+    );
+    cairo.line_to(x0, y0 + corner);
+    cairo.arc(
+        x0 + corner,
+        y0 + corner,
+        corner,
+        std::f64::consts::PI,
+        3.0 * std::f64::consts::FRAC_PI_2,
+    );
+    cairo.close_path();
+}
+
+#[allow(clippy::too_many_arguments)]
 fn draw_staged_ring(
     cairo: &gtk::cairo::Context,
     cx: f64,
@@ -2522,10 +2595,42 @@ fn draw_staged_ring(
     g: f64,
     b: f64,
     fill: f64,
+    square: bool,
 ) {
-    let start = -std::f64::consts::FRAC_PI_2;
     cairo.set_line_width(2.0);
     cairo.set_line_cap(gtk::cairo::LineCap::Butt);
+    if square {
+        let half = STAGED_RING;
+        let corner = STAGED_SQUARE_RADIUS;
+        let perimeter = staged_square_perimeter(half, corner);
+        if fill <= 0.0 {
+            cairo.set_dash(&[3.5, 3.5], 0.0);
+            cairo.set_source_rgb(r, g, b);
+            staged_square_path(cairo, cx, cy, half, corner);
+            cairo.stroke().ok();
+            cairo.set_dash(&[], 0.0);
+            return;
+        }
+        if fill < 0.999 {
+            cairo.set_dash(&[3.5, 3.5], 0.0);
+            cairo.set_source_rgba(r, g, b, 0.35);
+            staged_square_path(cairo, cx, cy, half, corner);
+            cairo.stroke().ok();
+            cairo.set_dash(&[], 0.0);
+            cairo.set_line_cap(gtk::cairo::LineCap::Round);
+            cairo.set_source_rgb(r, g, b);
+            cairo.set_dash(&[fill * perimeter, perimeter], 0.0);
+            staged_square_path(cairo, cx, cy, half, corner);
+            cairo.stroke().ok();
+            cairo.set_dash(&[], 0.0);
+        } else {
+            cairo.set_source_rgb(r, g, b);
+            staged_square_path(cairo, cx, cy, half, corner);
+            cairo.stroke().ok();
+        }
+        return;
+    }
+    let start = -std::f64::consts::FRAC_PI_2;
     if fill <= 0.0 {
         cairo.set_dash(&[3.5, 3.5], 0.0);
         cairo.set_source_rgb(r, g, b);
@@ -2563,7 +2668,9 @@ pub fn set_staged_user(
     user: Option<&User>,
 ) {
     let dark = adw_is_dark();
-    paint.borrow_mut().lane = rgb(&lane_color(user, dark));
+    let mut paint = paint.borrow_mut();
+    paint.lane = rgb(&lane_color(user, dark));
+    paint.square = user.is_some_and(User::is_organization);
     area.queue_draw();
 }
 
@@ -4114,6 +4221,34 @@ fn commit_more_menu(commit: &Commit, ctx: &FeedCtx) -> gtk::MenuButton {
         ));
     }
 
+    if let Some(guild) = ctx.guild_moderate.as_ref().filter(|_| !commit.is_deleted()) {
+        let board_pinned = ctx
+            .guild_pinned_id
+            .as_deref()
+            .is_some_and(|id| id == commit.id);
+        list.append(&user_menu_item(
+            "dn-pin-symbolic",
+            if board_pinned {
+                "Unpin from board"
+            } else {
+                "Pin to board"
+            },
+            {
+                let sender = ctx.sender.clone();
+                let handle = guild.clone();
+                let id = commit.id.clone();
+                move || {
+                    sender.emit(AppMsg::ToggleGuildPin {
+                        handle: handle.clone(),
+                        commit_id: id.clone(),
+                        pin: !board_pinned,
+                    })
+                }
+            },
+            &popover,
+        ));
+    }
+
     let author = commit
         .author
         .as_ref()
@@ -4598,8 +4733,11 @@ pub fn fill_guilds_directory(
         list.append(&empty_row("fatal: no guilds", detail));
         return;
     }
-    for guild in guilds {
+    for (index, guild) in guilds.iter().enumerate() {
         list.append(&guild_directory_row(guild, sender.clone()));
+        if index % 6 == 5 {
+            pump_ui();
+        }
     }
 }
 
@@ -4677,7 +4815,7 @@ fn guild_chip(label: &str) -> gtk::Label {
     chip
 }
 
-pub fn fill_guild_hero(hero: &gtk::Box, guild: &Guild) {
+pub fn fill_guild_hero(hero: &gtk::Box, guild: &Guild, sender: Sender<AppMsg>) {
     while let Some(child) = hero.first_child() {
         hero.remove(&child);
     }
@@ -4703,6 +4841,84 @@ pub fn fill_guild_hero(hero: &gtk::Box, guild: &Guild) {
     handle.set_xalign(0.0);
     titles.append(&handle);
     top.append(&titles);
+    let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    actions.set_valign(gtk::Align::Start);
+    let handle_key = guild.handle.clone();
+    if guild.is_joined {
+        let leave = action_button(None, "Leave", false, {
+            let sender = sender.clone();
+            let handle = handle_key.clone();
+            move || sender.emit(AppMsg::LeaveGuild(handle.clone()))
+        });
+        actions.append(&leave);
+        let mute = action_button(
+            None,
+            if guild.is_muted { "Unmute" } else { "Mute" },
+            false,
+            {
+                let sender = sender.clone();
+                let handle = handle_key.clone();
+                let muted = guild.is_muted;
+                move || {
+                    if muted {
+                        sender.emit(AppMsg::UnmuteGuild(handle.clone()));
+                    } else {
+                        sender.emit(AppMsg::MuteGuild(handle.clone()));
+                    }
+                }
+            },
+        );
+        actions.append(&mute);
+    } else {
+        let join = action_button(None, "Join", true, {
+            let sender = sender.clone();
+            let handle = handle_key.clone();
+            move || sender.emit(AppMsg::JoinGuild(handle.clone()))
+        });
+        actions.append(&join);
+    }
+    let members_btn = action_button(None, "Members", false, {
+        let sender = sender.clone();
+        let handle = handle_key.clone();
+        move || sender.emit(AppMsg::OpenGuildMembers(handle.clone()))
+    });
+    actions.append(&members_btn);
+    let more = gtk::MenuButton::new();
+    more.add_css_class("flat");
+    more.add_css_class("dn-icon-btn");
+    more.set_icon_name("dn-ellipsis-symbolic");
+    more.set_tooltip_text(Some("More"));
+    more.set_always_show_arrow(false);
+    pointer(&more);
+    let popover = gtk::Popover::new();
+    popover.set_has_arrow(false);
+    popover.set_position(gtk::PositionType::Bottom);
+    let list = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    list.set_margin_top(4);
+    list.set_margin_bottom(4);
+    list.set_margin_start(4);
+    list.set_margin_end(4);
+    list.set_size_request(180, -1);
+    list.append(&user_menu_item(
+        "dn-flag-symbolic",
+        "Report guild",
+        {
+            let sender = sender.clone();
+            let handle = handle_key.clone();
+            let name = guild.name.clone();
+            move || {
+                sender.emit(AppMsg::ReportGuild {
+                    handle: handle.clone(),
+                    name: name.clone(),
+                })
+            }
+        },
+        &popover,
+    ));
+    popover.set_child(Some(&list));
+    more.set_popover(Some(&popover));
+    actions.append(&more);
+    top.append(&actions);
     header.append(&top);
     if let Some(description) = guild
         .description
@@ -10787,7 +11003,8 @@ fn activity_graph(activity: &Activity, lane_hex: &str, sender: Sender<AppMsg>) -
     wrap.set_overflow(gtk::Overflow::Hidden);
 
     let total: i64 = activity.buckets.iter().map(|b| b.count).sum();
-    let empty = total == 0 && activity.scale != "year";
+    let week_grid = activity.is_week_grid();
+    let empty = total == 0 && !week_grid;
     let head = shrink_box(12);
     let title = gtk::Label::new(Some("Commit activity"));
     title.add_css_class("dn-activity-title");
@@ -10798,7 +11015,8 @@ fn activity_graph(activity: &Activity, lane_hex: &str, sender: Sender<AppMsg>) -
     wrap.append(&head);
 
     let cells = Rc::new(activity.cells());
-    let year = activity.scale == "year";
+    let year = week_grid;
+    let scroll_year = activity.scale == "year";
     let scale = Rc::new(activity.scale.clone());
     let area = gtk::DrawingArea::new();
     area.set_hexpand(true);
@@ -10958,7 +11176,7 @@ fn activity_graph(activity: &Activity, lane_hex: &str, sender: Sender<AppMsg>) -
         area.add_controller(click);
     }
 
-    if year {
+    if scroll_year {
         let scroll = gtk::ScrolledWindow::new();
         scroll.set_policy(gtk::PolicyType::Automatic, gtk::PolicyType::Never);
         scroll.set_hexpand(true);
@@ -11174,7 +11392,7 @@ fn describe_bucket(cell: &ActivityCell, scale: &str) -> String {
         return commits;
     };
     if scale != "day" {
-        let formatted = if scale == "year" {
+        let formatted = if matches!(scale, "year" | "half") {
             day.format("%b %-d, %Y").to_string()
         } else {
             day.format("%a, %b %-d").to_string()
@@ -13219,6 +13437,16 @@ pub fn who_to_follow_index(count: usize) -> Option<usize> {
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Let the main loop answer compositor pings while building a long feed, so the
+/// desktop does not offer "Wait / Force Quit" during API-driven paints.
+pub fn pump_ui() {
+    let ctx = glib::MainContext::default();
+    while ctx.pending() {
+        ctx.iteration(false);
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 pub fn append_commits(
     list: &gtk::ListBox,
     commits: &[Commit],
@@ -13281,6 +13509,9 @@ pub fn append_commits(
         *previous_lane = Some(lane_color(commit.author.as_ref(), dark));
         if ctx.who_to_follow_after == Some(offset + index) {
             list.append(&who_to_follow_in_log(ctx));
+        }
+        if index % 4 == 3 {
+            pump_ui();
         }
     }
 }
@@ -14549,6 +14780,120 @@ const REPORT_REASONS: &[(&str, &str)] = &[
     ("unsafe", "Harmful or private information"),
     ("other", "Something else"),
 ];
+
+pub fn guild_members_window(
+    handle: &str,
+    members: &[User],
+    has_more: bool,
+    sender: Sender<AppMsg>,
+) -> gtk::Window {
+    let win = gtk::Window::new();
+    win.set_title(Some(&format!("#{handle} members")));
+    win.set_default_width(420);
+    win.set_default_height(520);
+    win.set_modal(true);
+    let outer = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    let scroll = gtk::ScrolledWindow::new();
+    scroll.set_vexpand(true);
+    scroll.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
+    let list = gtk::ListBox::new();
+    list.add_css_class("dn-feed");
+    list.set_selection_mode(gtk::SelectionMode::None);
+    if members.is_empty() {
+        list.append(&empty_row(
+            "No members yet",
+            "Join this guild to show up here.",
+        ));
+    } else {
+        for user in members {
+            list.append(&search_user_row(user, sender.clone()));
+        }
+        if has_more {
+            let note = gtk::Label::new(Some("Showing the first 50 members."));
+            note.add_css_class("dn-muted");
+            note.set_margin_top(8);
+            note.set_margin_bottom(8);
+            note.set_xalign(0.0);
+            let row = gtk::ListBoxRow::new();
+            row.set_selectable(false);
+            row.set_activatable(false);
+            row.set_child(Some(&note));
+            list.append(&row);
+        }
+    }
+    scroll.set_child(Some(&list));
+    outer.append(&scroll);
+    win.set_child(Some(&outer));
+    win.connect_map(apply_pointer_cursors);
+    win
+}
+
+pub fn report_guild_window(handle: &str, name: &str, sender: Sender<AppMsg>) -> gtk::Window {
+    let win = gtk::Window::new();
+    win.set_title(Some("Report guild"));
+    win.set_default_width(480);
+    win.set_modal(true);
+    let outer = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    outer.set_margin_top(16);
+    outer.set_margin_bottom(16);
+    outer.set_margin_start(16);
+    outer.set_margin_end(16);
+    let intro = gtk::Label::new(Some(&format!(
+        "Report #{handle} ({name}). Your report is private and goes to moderators."
+    )));
+    intro.set_wrap(true);
+    intro.set_xalign(0.0);
+    intro.add_css_class("dn-muted");
+    outer.append(&intro);
+    let details_label = gtk::Label::new(Some("Details"));
+    details_label.set_xalign(0.0);
+    outer.append(&details_label);
+    let details = gtk::TextView::new();
+    details.set_wrap_mode(gtk::WrapMode::WordChar);
+    details.add_css_class("dn-composer-text");
+    details.set_hexpand(true);
+    details.set_height_request(96);
+    outer.append(&details);
+    let hint = gtk::Label::new(Some("Add context for moderators. Up to 500 characters."));
+    hint.add_css_class("dn-muted");
+    hint.set_xalign(0.0);
+    outer.append(&hint);
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    row.set_halign(gtk::Align::End);
+    let cancel = gtk::Button::with_label("Cancel");
+    pointer(&cancel);
+    let win_cancel = win.clone();
+    cancel.connect_clicked(move |_| win_cancel.close());
+    row.append(&cancel);
+    let submit = gtk::Button::with_label("Report");
+    submit.add_css_class("destructive-action");
+    pointer(&submit);
+    let handle = handle.to_owned();
+    let win_submit = win.clone();
+    submit.connect_clicked(move |_| {
+        let buf = details.buffer();
+        let mut details = buf
+            .text(&buf.start_iter(), &buf.end_iter(), false)
+            .to_string();
+        if details.trim().is_empty() {
+            return;
+        }
+        // API FormRequest: details required, max 500 (#1622).
+        if details.chars().count() > 500 {
+            details = details.chars().take(500).collect();
+        }
+        sender.emit(AppMsg::SubmitGuildReport {
+            handle: handle.clone(),
+            details,
+        });
+        win_submit.close();
+    });
+    row.append(&submit);
+    outer.append(&row);
+    win.set_child(Some(&outer));
+    win.connect_map(apply_pointer_cursors);
+    win
+}
 
 pub fn report_window(commit: &Commit, sender: Sender<AppMsg>) -> gtk::Window {
     let win = gtk::Window::new();

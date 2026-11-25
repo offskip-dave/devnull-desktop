@@ -704,6 +704,104 @@ impl Client {
         GuildBoardPage::from_value(value).map_err(|_| ApiError::decode())
     }
 
+    /// Join a guild (`POST guilds/{handle}/membership`), 204. Clears a mute.
+    pub async fn join_guild(&self, handle: &str) -> Result<(), ApiError> {
+        let handle = handle.trim().trim_start_matches('#');
+        if handle.is_empty() {
+            return Err(ApiError::decode());
+        }
+        self.send_empty(Method::POST, &format!("guilds/{handle}/membership"))
+            .await
+    }
+
+    /// Leave a guild (`DELETE guilds/{handle}/membership`), 204.
+    pub async fn leave_guild(&self, handle: &str) -> Result<(), ApiError> {
+        let handle = handle.trim().trim_start_matches('#');
+        if handle.is_empty() {
+            return Err(ApiError::decode());
+        }
+        self.send_empty(Method::DELETE, &format!("guilds/{handle}/membership"))
+            .await
+    }
+
+    /// Mute a guild (`POST guilds/{handle}/mute`), 204. Keeps membership; hides from Following.
+    pub async fn mute_guild(&self, handle: &str) -> Result<(), ApiError> {
+        let handle = handle.trim().trim_start_matches('#');
+        if handle.is_empty() {
+            return Err(ApiError::decode());
+        }
+        self.send_empty(Method::POST, &format!("guilds/{handle}/mute"))
+            .await
+    }
+
+    /// Unmute a guild (`DELETE guilds/{handle}/mute`), 204.
+    pub async fn unmute_guild(&self, handle: &str) -> Result<(), ApiError> {
+        let handle = handle.trim().trim_start_matches('#');
+        if handle.is_empty() {
+            return Err(ApiError::decode());
+        }
+        self.send_empty(Method::DELETE, &format!("guilds/{handle}/mute"))
+            .await
+    }
+
+    /// Guild members (`GET guilds/{handle}/members`), 50 a page; moderator first.
+    pub async fn guild_members(
+        &self,
+        handle: &str,
+        page: Option<u32>,
+    ) -> Result<Page<User>, ApiError> {
+        let handle = handle.trim().trim_start_matches('#');
+        if handle.is_empty() {
+            return Err(ApiError::decode());
+        }
+        let page = page.map(|n| n.to_string());
+        self.get(
+            &format!("guilds/{handle}/members"),
+            &[("page", page.as_deref())],
+        )
+        .await
+    }
+
+    /// Pin a commit on a guild board you moderate (`PUT guilds/{handle}/commits/{id}/pin`).
+    pub async fn pin_guild_commit(&self, handle: &str, commit_id: &str) -> Result<(), ApiError> {
+        let handle = handle.trim().trim_start_matches('#');
+        if handle.is_empty() || commit_id.trim().is_empty() {
+            return Err(ApiError::decode());
+        }
+        self.send_empty(
+            Method::PUT,
+            &format!("guilds/{handle}/commits/{}/pin", commit_id.trim()),
+        )
+        .await
+    }
+
+    /// Unpin a guild board commit (`DELETE guilds/{handle}/commits/{id}/pin`).
+    pub async fn unpin_guild_commit(&self, handle: &str, commit_id: &str) -> Result<(), ApiError> {
+        let handle = handle.trim().trim_start_matches('#');
+        if handle.is_empty() || commit_id.trim().is_empty() {
+            return Err(ApiError::decode());
+        }
+        self.send_empty(
+            Method::DELETE,
+            &format!("guilds/{handle}/commits/{}/pin", commit_id.trim()),
+        )
+        .await
+    }
+
+    /// Report a guild (`POST guilds/{handle}/reports`) with `details`, 204.
+    pub async fn report_guild(&self, handle: &str, details: &str) -> Result<(), ApiError> {
+        let handle = handle.trim().trim_start_matches('#');
+        if handle.is_empty() {
+            return Err(ApiError::decode());
+        }
+        self.send_json_empty(
+            Method::POST,
+            &format!("guilds/{handle}/reports"),
+            &serde_json::json!({ "details": details }),
+        )
+        .await
+    }
+
     pub async fn user_settings(&self) -> Result<UserSettings, ApiError> {
         self.get("me/settings", &[]).await
     }

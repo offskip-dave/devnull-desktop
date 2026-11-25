@@ -1053,10 +1053,9 @@ textview.dn-composer-text text {
 }
 
 .dn-nav-guild-icon {
+  /* Size is enforced with set_size_request(16); GTK CSS has no max-width/max-height. */
   min-width: 16px;
   min-height: 16px;
-  max-width: 16px;
-  max-height: 16px;
 }
 
 .dn-guild-lane-ring {

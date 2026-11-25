@@ -1084,13 +1084,14 @@ fn year_scale() -> String {
 }
 
 /// Draw a scale we don't know (or a missing / non-string one) as a year.
+/// `half` is the 26-week grid for profiles between 30 days and 6 months (#1657).
 fn deserialize_scale<'de, D>(deserializer: D) -> Result<String, D::Error>
 where
     D: Deserializer<'de>,
 {
     let scale = serde_json::Value::deserialize(deserializer)?;
     Ok(match scale.as_str() {
-        Some(scale @ ("day" | "week" | "month" | "year")) => scale.to_owned(),
+        Some(scale @ ("day" | "week" | "month" | "half" | "year")) => scale.to_owned(),
         _ => year_scale(),
     })
 }
@@ -1108,8 +1109,14 @@ impl Activity {
             "day" => "in the last 24 hours",
             "week" => "in the last 7 days",
             "month" => "in the last 30 days",
+            "half" => "in the last 6 months",
             _ => "in the last year",
         }
+    }
+
+    /// Week-column grids (`half` / `year`) vs the day/week/month strip.
+    pub fn is_week_grid(&self) -> bool {
+        matches!(self.scale.as_str(), "half" | "year")
     }
 
     pub fn cells(&self) -> Vec<ActivityCell> {
@@ -3709,6 +3716,18 @@ mod unread_count_tests {
         }))
         .unwrap();
         assert_eq!(user.username, "local_dev");
+    }
+
+    #[test]
+    fn activity_reads_half_year_scale() {
+        let activity: Activity = serde_json::from_value(json!({
+            "scale": "half",
+            "buckets": [{"date": "2026-10-15", "count": 1}]
+        }))
+        .unwrap();
+        assert_eq!(activity.scale, "half");
+        assert!(activity.is_week_grid());
+        assert_eq!(activity.window(), "in the last 6 months");
     }
 
     #[test]

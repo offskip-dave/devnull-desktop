@@ -1,6 +1,6 @@
 # Changelog parity
 
-Track of [dev-null.sh/changelog](https://dev-null.sh/changelog) against this GTK client, from the platform’s first production commit on **2026-10-15** (`chore: first` — empty repo in the morning, live by lunch; see [About](https://dev-null.sh/about)) through **2026-11-20**. Prefer signed `/api/v1` surfaces. Skip Inertia-only, CLI, PWA, admin/CMS, and first-party Swift/mobile app work unless a client route exists.
+Track of [dev-null.sh/changelog](https://dev-null.sh/changelog) against this GTK client, from the platform’s first production commit on **2026-10-15** (`chore: first` — empty repo in the morning, live by lunch; see [About](https://dev-null.sh/about)) through **2026-11-25**. Prefer signed `/api/v1` surfaces. Skip Inertia-only, CLI, PWA, admin/CMS, and first-party Swift/mobile app work unless a client route exists.
 
 The [capability matrix](#capability-matrix-launch--present) is the durable inventory. [Day by day](#day-by-day-oct-15--present) lists every non-merge `feat` on `production` since day one. Update both when you catch up a changelog day. Link the web PR or commit in your PR description.
 
@@ -66,7 +66,7 @@ Durable inventory by product area. Every production `feat` from day one is also 
 
 | Capability | Status | Notes |
 | --- | --- | --- |
-| Profile page: bio, lane, graph, streaks, achievements / XP | Done | Photo opens in the image viewer |
+| Profile page: bio, lane, graph, streaks, achievements / XP | Done | Photo opens in the image viewer; half-year (26-week) activity grid when API sends `scale: "half"` (#1657) |
 | Seasonal event themes | Done | Auto / Default / Halloween / Christmas / New Year in Appearance |
 | Commits / Replies / README tabs | Done | README via API then GitHub |
 | Follow / Follow back / Follows you chips | Done | Following lists too (#1434) |
@@ -89,7 +89,7 @@ Durable inventory by product area. Every production `feat` from day one is also 
 | Org page: follow, claim, lane color, share | Done | |
 | Org commits tab (API) | Done | #1386 |
 | Org mentions tab | Done | |
-| Post / schedule as organization | Done | Composer “post as”; feature flag removed on the web (6e71709) |
+| Post / schedule as organization | Done | Composer “post as”; feature flag removed on the web (6e71709); square typing ring for orgs (#1662) |
 | Org remotes (groups), pin messages, leave | Done | |
 | Org admin moderation (timeout / ban posters) | Skip | Moderator tools, Inertia |
 | Org calls | Waiting | Same as remotes calls (WebRTC) |
@@ -155,9 +155,15 @@ Durable inventory by product area. Every production `feat` from day one is also 
 | --- | --- | --- |
 | List / search guilds via signed API | Done | `GET /api/v1/guilds`; directory UI with search + pagination; 404 empty state while preview-gated |
 | Read a guild board via signed API | Done | `GET /api/v1/guilds/{handle}`; in-app board with hero, pin, feed, load more |
+| Join / leave / mute / unmute | Done | Board hero actions; `POST`/`DELETE` membership + mute (#1616 / #1618) |
+| Guild members list | Partial | `GET guilds/{handle}/members`; first page (50) in a dialog; Load more Waiting |
+| Pin / unpin board commits (moderator) | Done | More menu on board when `can_moderate`; `PUT`/`DELETE …/pin` (#1629) |
+| Report a guild | Done | Hero more menu; `POST guilds/{handle}/reports` with `details` (#1622) |
+| Create / edit a guild via API | Waiting | Signed create/update exist (#1631 / #1632); no create/edit dialogs yet |
 | Post / schedule to a guild board via API | Partial | `guild_handle` on create; board composer UI Waiting |
 | Guild chip on board posts outside the board | Done | “posted in #handle · not shown in general logs”; opens in-app board |
-| Guild directory / board / nav | Done | Sidebar Guilds + joined list with missed counts; join / mute still Waiting |
+| Following `joined_guild` notice | Done | “from a guild you joined” notice when API sets `joined_guild` (#1649) |
+| Guild directory / board / nav | Done | Sidebar Guilds + joined list with missed counts (#1653) |
 
 ## Day by day (Oct 15 → present)
 
@@ -830,7 +836,7 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | show a timestamp's times on tap on touch screens (#1549) | Done | Commit time opens absolute-time popover |
 | add the milestones since the stream to the about timeline (#1546) | Skip | Website about |
 | list your organizations and Post as in the API's current user (#1492) | Done | `/me` organizations (+ role); Post as already wired |
-| add public guilds with memberships and bulletin boards (#1576) | Partial | Directory + board + nav Done; join/mute/composer Waiting (still preview-gated) |
+| add public guilds with memberships and bulletin boards (#1576) | Partial | Directory + board + nav + join/mute Done; board composer Waiting (still preview-gated) |
 | removes vet in favour of `cooldown/period` (6500841) | Skip | Server chore |
 | fix ci (a7a1582) | Skip | Website CI |
 
@@ -854,7 +860,7 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | Item | Status | Notes |
 | --- | --- | --- |
 | keep guild board commits attached to their guild (d27f6a3) | Skip | Server / web board |
-| browse guild members in pages of fifty (173bf55) | Waiting | No signed members route yet |
+| browse guild members in pages of fifty (173bf55) | Partial | Signed `GET …/members` + first-page dialog; Load more Waiting |
 | paginate and search the guild directory (00c4fed) | Done | Signed `GET guilds?q=&page=` + in-app directory search / Load more |
 | keep the search guild banner in step with the search box (0eabad2) | Skip | Website search chrome |
 
@@ -865,7 +871,7 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | let guild moderators edit the display name (9ebb36e) | Skip | Moderator / Inertia |
 | send flagged guilds to the moderation queue instead of refusing them (0dfeac4) | Skip | Server moderation |
 | show the guild on board posts outside its board (13df08c) | Done | `guild` / `guild_handle` on commits; notice opens in-app board |
-| let guild moderators pin a board commit (8046f85) | Skip | Moderator tools |
+| let guild moderators pin a board commit (8046f85) | Done | More menu Pin to board when `can_moderate` (#1629) |
 | let API clients post and schedule to a guild board (0567057) | Partial | `guild_handle` on create_commit; board composer UI Waiting |
 | say the guild is paused when committing now a board post (5d18bf9) | Waiting | Board composer + `guild_paused` error |
 | let API clients list and search guilds (7b52abb) | Done | `Client::guilds()` + Guilds directory (404 empty state while preview-gated) |
@@ -894,10 +900,36 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 
 | Item | Status | Notes |
 | --- | --- | --- |
-| join or leave guilds from a profile's guild list (903ebec) | Waiting | Web profile list; no signed membership routes yet |
+| join or leave guilds from a profile's guild list (903ebec) | Partial | Board hero Join/Leave Done; profile guilds list Waiting |
 | keep a left guild listed until the profile guilds dialog reopens (366bae3) | Skip | Website nav |
 | let API clients read a guild's board (b928f9c) | Done | `Client::guild_board()` + in-app board (hero, pin, feed, load more) |
 | serve guild icons to API clients through signed URLs (90f528e) | Done | `icon_url` already consumed; server now signs for the viewer |
+
+### 2026-11-21
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| show a half-year activity grid on profiles under six months old (#1657) | Done | Client draws `scale: "half"` as a 26-week grid; API still often returns `year` until a follow-up |
+| show the typing ring when posting as an organization (#1662) | Done | Rounded-square progress ring on the composer rail |
+
+### 2026-11-23
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| let API clients join and leave guilds (#1616) | Done | Board hero Join / Leave |
+| let API clients list a guild's members (#1621) | Partial | First page in dialog; Load more Waiting |
+| let API clients report guilds (#1622) | Done | Hero more menu → report dialog |
+| let API clients mute and unmute guilds (#1618) | Done | Board hero Mute / Unmute |
+| let API clients create guilds (#1631) | Waiting | Signed `POST guilds`; no create dialog yet |
+| let API clients pin commits to a guild board (#1629) | Done | Moderator more menu Pin / Unpin to board |
+| let API clients edit guilds (#1632) | Waiting | Signed update; no edit dialog yet |
+| let API clients read and clear a guild's missed commits (#1653) | Done | `GET me/guilds` + `PUT guilds/{handle}/read` already wired |
+
+### 2026-11-25
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| tell API clients which guild made a commit appear in Following (#1649) | Done | `joined_guild` notice already rendered on the log |
 
 
 ## Standing gaps (priority)
@@ -911,7 +943,8 @@ Blocked on API or hard infra — not same-day launch work:
 5. **Calls** — WebRTC (button currently opens the web thread)  
 6. **Commit link-card picker** — API create-commit does not accept `link_preview_url` yet  
 7. **Feature / bug report from composer** — signed `POST /api/v1/issues` (#1543); slash-command UI  
-8. **Guilds join / mute / composer** — membership routes and board posting when signed APIs exist (#1576)  
+8. **Guilds composer / create / edit** — board posting UI; create/edit dialogs for #1631 / #1632; members Load more  
+
 9. **Remotes nostalgic sounds** — prefs + bundled MSN/ICQ/AIM cues  
 10. **Recent search chips** — local prefs polish (web uses localStorage); optional  
 

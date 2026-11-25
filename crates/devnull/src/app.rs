@@ -179,6 +179,8 @@ pub enum AppMsg {
     ToggleReplies(String),
     NestedRepliesLoaded(String, Result<Page<Commit>, ApiError>),
     PreviewRepliesLoaded(String, Result<Page<Commit>, ApiError>),
+    /// Coalesced redraw after reply previews land (avoids one full paint per commit).
+    PreviewRefresh(u64),
     ToggleNotificationFilter(NotificationFilter),
     ShowAllNotificationFilters,
     OpenCommit(String),
@@ -264,6 +266,28 @@ pub enum AppMsg {
     OpenGuild(String),
     GuildBoardLoaded(String, Result<GuildBoardPage, ApiError>),
     LoadMoreGuildBoard,
+    JoinGuild(String),
+    LeaveGuild(String),
+    MuteGuild(String),
+    UnmuteGuild(String),
+    GuildMembershipDone(String, Result<Guild, ApiError>),
+    OpenGuildMembers(String),
+    GuildMembersLoaded(String, Result<Page<User>, ApiError>),
+    ReportGuild {
+        handle: String,
+        name: String,
+    },
+    SubmitGuildReport {
+        handle: String,
+        details: String,
+    },
+    GuildReportSubmitted(Result<(), ApiError>),
+    ToggleGuildPin {
+        handle: String,
+        commit_id: String,
+        pin: bool,
+    },
+    GuildPinDone(String, Result<(), ApiError>),
     JoinedGuildsLoaded(Result<Vec<JoinedGuild>, ApiError>),
     GuildMarkReadDone(String, Result<(), ApiError>),
     SuggestedLoaded(Result<Vec<User>, ApiError>, HashSet<String>),
@@ -427,6 +451,8 @@ pub struct App {
     notifications: Vec<Notification>,
     notif_groups: HashMap<String, ui::NotifGroup>,
     busy: u32,
+    /// Bumps to coalesce many `PreviewRepliesLoaded` into one feed paint.
+    preview_refresh_gen: u64,
     thread_ref: Option<ThreadRef>,
     composer_images: Vec<Upload>,
     remote_images: Vec<Upload>,
@@ -542,6 +568,8 @@ pub struct App {
     guild_commits: Vec<Commit>,
     guild_board_page: Option<u32>,
     guild_pinned_id: Option<String>,
+    /// True when the signed-in person moderates the open guild board.
+    guild_can_moderate: bool,
     /// Joined, unmuted guilds for the left rail (`GET me/guilds`, with missed counts).
     joined_guilds: Vec<JoinedGuild>,
     guilds_list: gtk::ListBox,
@@ -2853,6 +2881,7 @@ impl SimpleComponent for App {
             notifications: Vec::new(),
             notif_groups: HashMap::new(),
             busy: 0,
+            preview_refresh_gen: 0,
             thread_ref: None,
             composer_images: Vec::new(),
             remote_images: Vec::new(),
@@ -2922,6 +2951,7 @@ impl SimpleComponent for App {
             guild_commits: Vec::new(),
             guild_board_page: None,
             guild_pinned_id: None,
+            guild_can_moderate: false,
             joined_guilds: Vec::new(),
             guilds_list,
             guild_hero: gtk::Box::new(gtk::Orientation::Vertical, 0),
@@ -4339,6 +4369,12 @@ impl SimpleComponent for App {
                 let replies = newest_replies(page.data);
                 self.queue_auto_translations(&replies, &sender);
                 self.nested_replies.insert(id, replies);
+                self.schedule_preview_refresh(&sender);
+            }
+            AppMsg::PreviewRefresh(gen) => {
+                if gen != self.preview_refresh_gen {
+                    return;
+                }
                 self.refresh_visible_feed(&sender, true);
             }
             AppMsg::ToggleNotificationFilter(kind) => {
@@ -6302,13 +6338,9 @@ impl SimpleComponent for App {
                     Nav::Remotes => {
                         self.fetch_open_thread(&sender);
                     }
-                    _ if self.tracks_new_posts() => {
-                        if self.log_away {
-                            self.poll_new_posts(&sender);
-                        } else {
-                            self.load_log(&sender, false);
-                        }
-                    }
+                    // Always use the light new-posts check. A full log reload every
+                    // 30s blocked the UI long enough for "Wait / Terminate" dialogs.
+                    _ if self.tracks_new_posts() => self.poll_new_posts(&sender),
                     _ => {}
                 }
             }
@@ -6317,7 +6349,7 @@ impl SimpleComponent for App {
             }
             AppMsg::UnreadPolled(Err(_)) => {}
             AppMsg::LogPolled(Ok(page)) => {
-                if !self.tracks_new_posts() || !self.log_away {
+                if !self.tracks_new_posts() {
                     return;
                 }
                 let Some(seen) = self.log_seen_id.as_deref() else {
@@ -6337,6 +6369,15 @@ impl SimpleComponent for App {
                             authors.push(author.clone());
                         }
                     }
+                }
+                if count == 0 {
+                    return;
+                }
+                // At the top of the log, refresh only when something new arrived
+                // instead of rebuilding the feed every 30s (that triggered ANR dialogs).
+                if !self.log_away {
+                    self.load_log(&sender, false);
+                    return;
                 }
                 self.new_posts_count = count;
                 self.new_authors = authors;
@@ -6468,6 +6509,7 @@ impl SimpleComponent for App {
                 self.guild_commits.clear();
                 self.guild_board_page = None;
                 self.guild_pinned_id = None;
+                self.guild_can_moderate = false;
                 self.clear_joined_guild_missed(&handle);
                 self.render_joined_guilds_nav(&sender);
                 self.mark_guild_read(&handle, &sender);
@@ -6522,6 +6564,173 @@ impl SimpleComponent for App {
                     .unwrap_or_default();
                 self.load_guild_board(&sender, handle, true);
             }
+            AppMsg::JoinGuild(handle) => {
+                let Some(client) = self.client.clone() else {
+                    return;
+                };
+                let sender2 = sender.clone();
+                relm4::spawn(async move {
+                    let result = match client.join_guild(&handle).await {
+                        Ok(()) => client
+                            .guild_board(&handle, None)
+                            .await
+                            .map(|page| page.guild),
+                        Err(err) => Err(err),
+                    };
+                    sender2.input(AppMsg::GuildMembershipDone(handle, result));
+                });
+            }
+            AppMsg::LeaveGuild(handle) => {
+                let Some(client) = self.client.clone() else {
+                    return;
+                };
+                let sender2 = sender.clone();
+                relm4::spawn(async move {
+                    let result = match client.leave_guild(&handle).await {
+                        Ok(()) => client
+                            .guild_board(&handle, None)
+                            .await
+                            .map(|page| page.guild),
+                        Err(err) => Err(err),
+                    };
+                    sender2.input(AppMsg::GuildMembershipDone(handle, result));
+                });
+            }
+            AppMsg::MuteGuild(handle) => {
+                let Some(client) = self.client.clone() else {
+                    return;
+                };
+                let sender2 = sender.clone();
+                relm4::spawn(async move {
+                    let result = match client.mute_guild(&handle).await {
+                        Ok(()) => client
+                            .guild_board(&handle, None)
+                            .await
+                            .map(|page| page.guild),
+                        Err(err) => Err(err),
+                    };
+                    sender2.input(AppMsg::GuildMembershipDone(handle, result));
+                });
+            }
+            AppMsg::UnmuteGuild(handle) => {
+                let Some(client) = self.client.clone() else {
+                    return;
+                };
+                let sender2 = sender.clone();
+                relm4::spawn(async move {
+                    let result = match client.unmute_guild(&handle).await {
+                        Ok(()) => client
+                            .guild_board(&handle, None)
+                            .await
+                            .map(|page| page.guild),
+                        Err(err) => Err(err),
+                    };
+                    sender2.input(AppMsg::GuildMembershipDone(handle, result));
+                });
+            }
+            AppMsg::GuildMembershipDone(handle, result) => match result {
+                Ok(guild) => {
+                    if let Some(row) = self
+                        .guilds
+                        .iter_mut()
+                        .find(|known| known.handle.eq_ignore_ascii_case(&handle))
+                    {
+                        *row = guild.clone();
+                    }
+                    self.sync_joined_guild_from_board(&guild, &sender);
+                    if self
+                        .open_guild
+                        .as_ref()
+                        .is_some_and(|open| open.handle.eq_ignore_ascii_case(&handle))
+                    {
+                        self.open_guild = Some(guild);
+                        if self.visible == "guilds" {
+                            self.render_guild_board(&sender, true);
+                        }
+                    }
+                    self.load_joined_guilds(&sender);
+                }
+                Err(err) => self.fail(err),
+            },
+            AppMsg::OpenGuildMembers(handle) => {
+                let Some(client) = self.client.clone() else {
+                    return;
+                };
+                let sender2 = sender.clone();
+                self.begin_busy();
+                relm4::spawn(async move {
+                    sender2.input(AppMsg::GuildMembersLoaded(
+                        handle.clone(),
+                        client.guild_members(&handle, None).await,
+                    ));
+                });
+            }
+            AppMsg::GuildMembersLoaded(handle, result) => {
+                self.end_busy();
+                match result {
+                    Ok(page) => {
+                        ui::guild_members_window(
+                            &handle,
+                            &page.data,
+                            page.next_page().is_some(),
+                            sender.input_sender().clone(),
+                        )
+                        .present();
+                    }
+                    Err(err) => self.fail(err),
+                }
+            }
+            AppMsg::ReportGuild { handle, name } => {
+                ui::report_guild_window(&handle, &name, sender.input_sender().clone()).present();
+            }
+            AppMsg::SubmitGuildReport { handle, details } => {
+                let Some(client) = self.client.clone() else {
+                    return;
+                };
+                let sender2 = sender.clone();
+                relm4::spawn(async move {
+                    sender2.input(AppMsg::GuildReportSubmitted(
+                        client.report_guild(&handle, &details).await,
+                    ));
+                });
+            }
+            AppMsg::GuildReportSubmitted(Ok(())) => {
+                self.toast("Guild reported.");
+            }
+            AppMsg::GuildReportSubmitted(Err(err)) => self.fail(err),
+            AppMsg::ToggleGuildPin {
+                handle,
+                commit_id,
+                pin,
+            } => {
+                let Some(client) = self.client.clone() else {
+                    return;
+                };
+                let sender2 = sender.clone();
+                relm4::spawn(async move {
+                    let result = if pin {
+                        client.pin_guild_commit(&handle, &commit_id).await
+                    } else {
+                        client.unpin_guild_commit(&handle, &commit_id).await
+                    };
+                    sender2.input(AppMsg::GuildPinDone(handle, result));
+                });
+            }
+            AppMsg::GuildPinDone(handle, result) => match result {
+                Ok(()) => {
+                    self.toast("Guild board pin updated.");
+                    if self
+                        .open_guild
+                        .as_ref()
+                        .is_some_and(|guild| guild.handle.eq_ignore_ascii_case(&handle))
+                    {
+                        self.guild_commits.clear();
+                        self.guild_board_page = None;
+                        self.load_guild_board(&sender, handle, false);
+                    }
+                }
+                Err(err) => self.fail(err),
+            },
             AppMsg::JoinedGuildsLoaded(result) => match result {
                 Ok(guilds) => {
                     self.joined_guilds = guilds;
@@ -7009,6 +7218,7 @@ impl App {
     }
 
     fn feed_ctx(&self, sender: &ComponentSender<App>) -> ui::FeedCtx {
+        let on_guild_board = self.visible == "guilds" && self.open_guild.is_some();
         ui::FeedCtx {
             sender: sender.input_sender().clone(),
             pasteis_mode: self.user.as_ref().is_some_and(|u| u.pasteis_on()),
@@ -7035,6 +7245,13 @@ impl App {
                 .map(CurrentUser::org_ids)
                 .unwrap_or_default(),
             remotes_on: self.remotes_on(),
+            guild_moderate: on_guild_board
+                .then_some(self.guild_can_moderate)
+                .filter(|can| *can)
+                .and_then(|_| self.open_guild.as_ref().map(|guild| guild.handle.clone())),
+            guild_pinned_id: on_guild_board
+                .then(|| self.guild_pinned_id.clone())
+                .flatten(),
         }
     }
 
@@ -7142,6 +7359,7 @@ impl App {
         self.guild_commits.clear();
         self.guild_board_page = None;
         self.guild_pinned_id = None;
+        self.guild_can_moderate = false;
         ui::detach_from_list_row(&self.guild_hero);
         while let Some(child) = self.guild_hero.first_child() {
             self.guild_hero.remove(&child);
@@ -7290,6 +7508,7 @@ impl App {
         let pinned = page.pinned_commit.clone();
         let pinned_id = pinned.as_ref().map(|commit| commit.id.clone());
         self.sync_joined_guild_from_board(&page.guild, sender);
+        self.guild_can_moderate = page.can_moderate;
         self.open_guild = Some(page.guild);
         self.guild_pinned_id = pinned_id.clone();
         self.render_joined_guilds_nav(sender);
@@ -7317,8 +7536,17 @@ impl App {
             }
         }
         self.guild_board_page = next;
-        self.seed_reply_previews(&self.guild_commits.clone(), sender);
+        // Paint roots first so the shell can answer compositor pings, then expand
+        // reply previews on an idle tick instead of one giant synchronous build.
         self.render_guild_board(sender, false);
+        self.seed_reply_previews(&self.guild_commits.clone(), sender);
+        if self
+            .guild_commits
+            .iter()
+            .any(|commit| self.nested_replies.contains_key(&commit.id))
+        {
+            self.schedule_preview_refresh(sender);
+        }
     }
 
     fn render_guilds_directory(&self, sender: &ComponentSender<App>) {
@@ -7341,7 +7569,7 @@ impl App {
             .and_then(|p| p.downcast::<gtk::ScrolledWindow>().ok())
             .map(|scroll| scroll.vadjustment().value());
         if let Some(guild) = &self.open_guild {
-            ui::fill_guild_hero(&self.guild_hero, guild);
+            ui::fill_guild_hero(&self.guild_hero, guild, sender.input_sender().clone());
         }
         ui::reset_profile_list(&self.guilds_list, &self.guild_hero);
         if self.guild_commits.is_empty() {
@@ -8129,6 +8357,15 @@ impl App {
 
     fn end_busy(&mut self) {
         self.busy = self.busy.saturating_sub(1);
+    }
+
+    fn schedule_preview_refresh(&mut self, sender: &ComponentSender<App>) {
+        self.preview_refresh_gen = self.preview_refresh_gen.wrapping_add(1);
+        let gen = self.preview_refresh_gen;
+        let sender2 = sender.clone();
+        glib::timeout_add_local_once(Duration::from_millis(50), move || {
+            sender2.input(AppMsg::PreviewRefresh(gen));
+        });
     }
 
     fn remotes_on(&self) -> bool {

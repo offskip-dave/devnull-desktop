@@ -53,6 +53,10 @@ fn main() {
     crate::macos::prepare_backend();
     let _ = devnull_auth::register_url_handler();
 
+    // Relm4 defaults to one tokio worker; concurrent API + image work then
+    // serializes and the UI looks frozen until each request finishes.
+    let _ = relm4::RELM_THREADS.set(4);
+
     // RelmApp::new calls gtk/adw init so a display exists before CSS is loaded.
     let relm = RelmApp::new(APP_ID);
     crate::prefs::Prefs::load();
