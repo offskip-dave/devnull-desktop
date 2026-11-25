@@ -900,6 +900,14 @@ Every non-merge `feat` on the website `production` branch, oldest day first. Sta
 | serve guild icons to API clients through signed URLs (90f528e) | Done | `icon_url` already consumed; server now signs for the viewer |
 
 
+### 2026-11-23
+
+Auto-imported by the changelog parity cron.
+
+| Item | Status | Notes |
+| --- | --- | --- |
+| let API clients create guilds (#1631) | Waiting | Port task opened; web [f5f5e29](https://github.com/dev-null-sh/dev-null.sh/commit/f5f5e29881c5b9715db450052d744dade197b4eb) |
+
 ## Standing gaps (priority)
 
 Blocked on API or hard infra — not same-day launch work:
